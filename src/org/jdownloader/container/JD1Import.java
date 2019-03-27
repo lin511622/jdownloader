@@ -15,6 +15,8 @@ import javax.crypto.spec.SecretKeySpec;
 
 import jd.config.DatabaseConnector;
 import jd.controlling.downloadcontroller.DownloadController;
+import jd.controlling.linkcollector.LinkOrigin;
+import jd.controlling.linkcollector.LinkOriginDetails;
 import jd.controlling.linkcrawler.CrawledLink;
 import jd.controlling.linkcrawler.PackageInfo;
 import jd.gui.UserIO;
@@ -30,6 +32,7 @@ import org.appwork.uio.UIOManager;
 import org.appwork.utils.StringUtils;
 import org.appwork.utils.formatter.HexFormatter;
 import org.appwork.utils.net.HexInputStream;
+import org.appwork.utils.os.CrossSystem;
 import org.appwork.utils.swing.dialog.ConfirmDialog;
 import org.appwork.utils.swing.dialog.DialogNoAnswerException;
 import org.jdownloader.gui.IconKey;
@@ -37,13 +40,22 @@ import org.jdownloader.gui.translate._GUI;
 import org.jdownloader.images.AbstractIcon;
 
 public class JD1Import extends PluginsC {
-
     public JD1Import() {
         super("JD1 Import", "file:/.+(\\.jdc|database\\.script)$", "$Revision: 21176 $");
     }
 
     public JD1Import newPluginInstance() {
         return new JD1Import();
+    }
+
+    @Override
+    public ArrayList<CrawledLink> decryptContainer(final CrawledLink source) {
+        final LinkOriginDetails origin = source.getOrigin();
+        if (origin != null && LinkOrigin.CLIPBOARD.equals(origin.getOrigin())) {
+            return null;
+        } else {
+            return super.decryptContainer(source);
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -111,13 +123,12 @@ public class JD1Import extends PluginsC {
                 }
                 for (final FilePackage p : packages) {
                     final PackageInfo packageInfo = new PackageInfo();
-                    packageInfo.setComment(p.getComment());
                     packageInfo.setName(p.getName());
-                    if (new File(p.getDownloadDirectory()).exists()) {
-                        packageInfo.setDestinationFolder(p.getDownloadDirectory());
+                    if (StringUtils.isNotEmpty(p.getDownloadDirectory()) && new File(p.getDownloadDirectory()).isDirectory()) {
+                        packageInfo.setDestinationFolder(CrossSystem.fixPathSeparators(p.getDownloadDirectory() + File.separator));
                     }
                     for (final DownloadLink dl : p.getChildren()) {
-                        CrawledLink cl = new CrawledLink(dl);
+                        final CrawledLink cl = new CrawledLink(dl);
                         if (packageInfo.isNotEmpty()) {
                             cl.setDesiredPackageInfo(packageInfo.getCopy());
                         }
@@ -147,5 +158,4 @@ public class JD1Import extends PluginsC {
     public String[] encrypt(String plain) {
         return null;
     }
-
 }

@@ -42,7 +42,6 @@ import org.jdownloader.settings.staticreferences.CFG_GENERAL;
 import org.jdownloader.translate._JDT;
 
 public class Account extends Property {
-
     private static final String VALID_UNTIL                    = "VALID_UNTIL";
     private static final String ACCOUNT_TYPE                   = "ACCOUNT_TYPE";
     private static final String LATEST_VALID_TIMESTAMP         = "LATEST_VALID_TIMESTAMP";
@@ -91,7 +90,7 @@ public class Account extends Property {
         return getLongProperty(OBJECT_STORAGE + ".ts." + storageID, -1);
     }
 
-    public synchronized void saveCookies(final Cookies cookies, final String ID) {
+    public synchronized long saveCookies(final Cookies cookies, final String ID) {
         final String validation = Hash.getSHA256(getUser() + ":" + getPass());
         final List<CookieStorable> cookieStorables = new ArrayList<CookieStorable>();
         /*
@@ -107,7 +106,9 @@ public class Account extends Property {
         final String COOKIE_STORAGE_ID = COOKIE_STORAGE + ":" + ID;
         setProperty(COOKIE_STORAGE_ID, JSonStorage.toString(cookieStorables));
         final String COOKIE_STORAGE_TIMESTAMP_ID = COOKIE_STORAGE + ":TS:" + ID;
-        setProperty(COOKIE_STORAGE_TIMESTAMP_ID, System.currentTimeMillis());
+        final long ret = System.currentTimeMillis();
+        setProperty(COOKIE_STORAGE_TIMESTAMP_ID, ret);
+        return ret;
     }
 
     public synchronized void clearCookies(final String ID) {
@@ -212,7 +213,8 @@ public class Account extends Property {
      * @return
      */
     private static final String trim(final String string) {
-        return (string == null) ? null : string.trim();
+        // NOTE: don't use String.trim() because users might want to use spaces at the beginning/end for passwords!
+        return (string == null) ? null : StringUtils.removeBOM(string);
     }
 
     public void setAccountController(AccountController ac) {
@@ -271,10 +273,10 @@ public class Account extends Property {
     public void setValid(final boolean b) {
         if (b) {
             if (getError() == AccountError.INVALID) {
-                setError(null, null);
+                setError(null, -1, null);
             }
         } else {
-            setError(AccountError.INVALID, null);
+            setError(AccountError.INVALID, -1, null);
         }
     }
 
@@ -325,6 +327,13 @@ public class Account extends Property {
             if (AccountType.PREMIUM.equals(getType()) && !info.isExpired() && info.getValidUntil() > 0) {
                 setValidPremiumUntil(info.getValidUntil());
             }
+            // this sets default status message based on account type
+            // TODO: translation?
+            if (getType() != null && info.getStatus() == null) {
+                String output = getType().toString();
+                output = output.substring(0, 1) + output.substring(1).toLowerCase(Locale.ENGLISH) + " Account";
+                info.setStatus(output);
+            }
         }
     }
 
@@ -373,7 +382,7 @@ public class Account extends Property {
     private void readObject(final java.io.ObjectInputStream stream) throws java.io.IOException, ClassNotFoundException {
         /* nach dem deserialisieren sollen die transienten neu geholt werden */
         stream.defaultReadObject();
-        tmpDisabledTimeout = -1;
+        setTmpDisabledTimeout(-1);
         isMulti = false;
         id = new UniqueAlltimeID();
         isMultiPlugin = false;
@@ -393,7 +402,7 @@ public class Account extends Property {
         if (AccountError.TEMP_DISABLED.equals(getError())) {
             synchronized (this) {
                 if (getTmpDisabledTimeout() < 0 || System.currentTimeMillis() >= getTmpDisabledTimeout()) {
-                    tmpDisabledTimeout = -1;
+                    setTmpDisabledTimeout(-1);
                     setTempDisabled(false);
                     return false;
                 }
@@ -410,20 +419,21 @@ public class Account extends Property {
         PLUGIN_ERROR;
     }
 
-    public void setError(final AccountError error, String errorString) {
+    public void setError(final AccountError error, final long setTimeout, String errorString) {
         if (error == null) {
             errorString = null;
         }
         if (this.error != error || !StringUtils.equals(this.errorString, errorString)) {
             if (AccountError.TEMP_DISABLED.equals(error)) {
-                long defaultTmpDisabledTimeOut = CFG_GENERAL.CFG.getAccountTemporarilyDisabledDefaultTimeout();
-                Long timeout = this.getLongProperty(PROPERTY_TEMP_DISABLED_TIMEOUT, defaultTmpDisabledTimeOut);
-                if (timeout == null || timeout <= 0) {
-                    timeout = defaultTmpDisabledTimeOut;
+                final long timeout;
+                if (setTimeout <= 0) {
+                    timeout = System.currentTimeMillis() + CFG_GENERAL.CFG.getAccountTemporarilyDisabledDefaultTimeout();
+                } else {
+                    timeout = System.currentTimeMillis() + setTimeout;
                 }
-                this.tmpDisabledTimeout = System.currentTimeMillis() + timeout;
+                setTmpDisabledTimeout(timeout);
             } else {
-                this.tmpDisabledTimeout = -1;
+                setTmpDisabledTimeout(-1);
             }
             this.error = error;
             this.errorString = errorString;
@@ -512,10 +522,8 @@ public class Account extends Property {
                 result = ut + stDifference;
             }
         }
-        this.tmpDisabledTimeout = result > 0 ? result : failOverTime;
-        this.error = AccountError.TEMP_DISABLED;
-        this.errorString = errorString;
-        notifyUpdate(AccountProperty.Property.ERROR, error);
+        final long timeout = (result > 0 ? result : failOverTime);
+        setError(AccountError.TEMP_DISABLED, timeout, errorString);
     }
 
     public void setTmpDisabledTimeout(long tmpDisabledTimeout) {
@@ -595,12 +603,13 @@ public class Account extends Property {
         }
     }
 
+    @Deprecated
     public void setTempDisabled(final boolean tempDisabled) {
         if (tempDisabled) {
-            setError(AccountError.TEMP_DISABLED, null);
+            setError(AccountError.TEMP_DISABLED, -1, null);
         } else {
             if (AccountError.TEMP_DISABLED.equals(getError())) {
-                setError(null, null);
+                setError(null, -1, null);
             }
         }
     }
@@ -773,5 +782,4 @@ public class Account extends Property {
             return AccountType.PREMIUM;
         }
     }
-
 }

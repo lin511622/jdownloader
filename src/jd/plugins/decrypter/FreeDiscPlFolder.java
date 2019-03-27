@@ -13,14 +13,14 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
 
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
-import jd.http.Browser.BrowserException;
+import jd.http.Browser;
+import jd.http.Cookies;
 import jd.http.Request;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
@@ -29,48 +29,108 @@ import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.FilePackage;
+import jd.plugins.LinkStatus;
+import jd.plugins.PluginException;
 import jd.plugins.PluginForDecrypt;
 
+import org.appwork.utils.StringUtils;
 import org.appwork.utils.formatter.SizeFormatter;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperCrawlerPluginRecaptchaV2;
+import org.jdownloader.plugins.components.config.FreeDiscPlConfig;
+import org.jdownloader.plugins.config.PluginJsonConfig;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "freedisc.pl" }, urls = { "http://(www\\.)?freedisc\\.pl/[A-Za-z0-9_\\-]+,d\\-\\d+([A-Za-z0-9_,\\-]+)?" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "freedisc.pl" }, urls = { "https?://(www\\.)?freedisc\\.pl/[A-Za-z0-9_\\-]+,d-\\d+([A-Za-z0-9_,\\-]+)?" })
 public class FreeDiscPlFolder extends PluginForDecrypt {
-
     public FreeDiscPlFolder(PluginWrapper wrapper) {
         super(wrapper);
+        try {
+            Browser.setRequestIntervalLimitGlobal("freedisc.pl", 1000, 20, 60000);
+        } catch (final Throwable ignore) {
+        }
     }
 
-    private static final String TYPE_FOLDER = "http://(www\\.)?freedisc\\.pl/[A-Za-z0-9\\-_]+,d-\\d+";
+    private static final String TYPE_FOLDER    = "https?://(www\\.)?freedisc\\.pl/[A-Za-z0-9\\-_]+,d-\\d+";
+    protected static Cookies    botSafeCookies = new Cookies();
+
+    private Browser prepBR(final Browser br) {
+        jd.plugins.hoster.FreeDiscPl.prepBRStatic(br);
+        synchronized (botSafeCookies) {
+            if (!botSafeCookies.isEmpty()) {
+                br.setCookies(this.getHost(), botSafeCookies);
+            }
+        }
+        return br;
+    }
+
+    /* 2017-01-06: Bot-block captchas. */
+    @Override
+    public int getMaxConcurrentProcessingInstances() {
+        return 1;
+    }
 
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
         final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         final String parameter = param.toString();
         br.setFollowRedirects(true);
-        try {
-            br.getPage(parameter);
-        } catch (final BrowserException e) {
+        prepBR(this.br);
+        getPage(parameter);
+        if (this.br.getHttpConnection().getResponseCode() == 410) {
             decryptedLinks.add(createOfflinelink(parameter));
             return decryptedLinks;
         }
+        final boolean crawlSubfolders = PluginJsonConfig.get(FreeDiscPlConfig.class).isCrawlSubfolders();
         final String fpName = br.getRegex(">([^>]+)</h1>").getMatch(0);
-        final String[] entries = br.getRegex("div class=\"dir-item\"><div.*?</div></div></div>").getColumn(-1);
-        final String fileEntry = "class=('|\"|)[\\w -]+\\1><a href=\"(/[^<>\"]*?,f\\-[^<>\"]*?)\"[^>]*>(.*?)</a>";
-        final String folderEntry = "class=('|\"|)[\\w -]+\\1><a href=\"(/?[A-Za-z0-9\\-_]+,d\\-\\d+[^<>\"]*?)\"";
+        // final String[] entries = br.getRegex("div class=\"dir-item\"><div.*?</div></div></div>").getColumn(-1);
+        final String[] entries = br.getRegex("div\\s*class=\"dir-item\">[^~]*?</div>\\s*</div>").getColumn(-1);
+        // final String fileEntry = "class=('|\"|)[\\w -]+\\1><a href=\"(/[^<>\"]*?,f-[^<>\"]*?)\"[^>]*>(.*?)</a>";
+        final String fileEntry = "class=('|\"|)[\\w -]+\\1>\\s*<a\\s*(?:class\\s*=\\s*\"[^\"]*\")?\\s*href=\"(/[^<>\"]*?,f-[^<>\"]*?)\"[^>]*>\\s*(.*?)\\s*</a>";
+        final String folderEntry = "class=('|\"|)[\\w -]+\\1>\\s*<a\\s*(?:class\\s*=\\s*\"[^\"]*\")?\\s*href=\"(/?[A-Za-z0-9\\-_]+,d-\\d+[^<>\"]*?)\"";
         if (entries != null && entries.length > 0) {
             for (final String e : entries) {
                 final String folder = new Regex(e, folderEntry).getMatch(1);
                 if (folder != null) {
-                    decryptedLinks.add(createDownloadlink(Request.getLocation(folder, br.getRequest())));
+                    if (crawlSubfolders) {
+                        decryptedLinks.add(createDownloadlink(Request.getLocation(folder, br.getRequest()))); // Too much!
+                    }
                     continue;
                 }
                 final String link = new Regex(e, fileEntry).getMatch(1);
-                final String filename = new Regex(e, fileEntry).getMatch(2);
-                final String filesize = new Regex(e, "info\">Rozmiar :(.*?)<").getMatch(0);
-                final DownloadLink dl = createDownloadlink(Request.getLocation(link, br.getRequest()));
-                dl.setName(filename);
-                dl.setDownloadSize(SizeFormatter.getSize(filesize.replace("Bajty", "Bytes")));
-                dl.setAvailableStatus(AvailableStatus.TRUE);
-                decryptedLinks.add(dl);
+                if (link != null) {
+                    final String fileName = new Regex(e, fileEntry).getMatch(2);
+                    final String fileSize = new Regex(e, "info\">Rozmiar :(.*?)<").getMatch(0);
+                    final DownloadLink dl = createDownloadlink(Request.getLocation(link, br.getRequest()));
+                    if (fileSize == null && e.contains("Katalogów")) { // Folder, unmatched filter above
+                        continue;
+                    }
+                    dl.setName(fileName);
+                    if (fileSize != null) {
+                        dl.setDownloadSize(SizeFormatter.getSize(fileSize.replace("Bajty", "Bytes")));
+                    }
+                    dl.setAvailableStatus(AvailableStatus.TRUE);
+                    decryptedLinks.add(dl);
+                } else {
+                    final String infos[] = new Regex(e, "javascript:\\w+\\(\\s*'(.*?)'\\s*,\\s*(\\d+)\\s*,\\s*'(.*?)'").getRow(0);
+                    if (infos.length == 3) {
+                        final DownloadLink dl = createDownloadlink("https://freedisc.pl/" + infos[0] + ",f-" + infos[1] + "," + infos[2]);
+                        final String fileSize = new Regex(e, "info\">Rozmiar :(.*?)<").getMatch(0);
+                        if (fileSize == null && e.contains("Katalogów")) { // Folder, unmatched filter above
+                            continue;
+                        }
+                        final String filename = new Regex(e, "title\\s*=\\s*\".*?\"\\s*>\\s*(.*?)\\s*</").getMatch(0);
+                        if (StringUtils.isNotEmpty(filename)) {
+                            dl.setName(filename);
+                        } else {
+                            dl.setName(infos[2]);
+                        }
+                        if (fileSize != null) {
+                            dl.setDownloadSize(SizeFormatter.getSize(fileSize.replace("Bajty", "Bytes")));
+                        }
+                        dl.setAvailableStatus(AvailableStatus.TRUE);
+                        decryptedLinks.add(dl);
+                    } else {
+                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                    }
+                }
             }
         } else {
             // fail over
@@ -86,13 +146,12 @@ public class FreeDiscPlFolder extends PluginForDecrypt {
                     decryptedLinks.add(createDownloadlink(singleLink));
                 }
             }
-            if (folders != null && folders.length > 0) {
+            if (crawlSubfolders && folders != null && folders.length > 0) {
                 for (final String singleLink : folders) {
-                    decryptedLinks.add(createDownloadlink("http://freedisc.pl" + singleLink));
+                    decryptedLinks.add(createDownloadlink("https://freedisc.pl" + singleLink));
                 }
             }
         }
-
         if (fpName != null) {
             final FilePackage fp = FilePackage.getInstance();
             fp.setName(Encoding.htmlDecode(fpName.trim()));
@@ -101,9 +160,33 @@ public class FreeDiscPlFolder extends PluginForDecrypt {
         return decryptedLinks;
     }
 
+    private void getPage(final String url) throws Exception {
+        this.br.getPage(url);
+        handleAntiBot(br);
+    }
+
+    private void handleAntiBot(final Browser br) throws Exception {
+        if (isBotBlocked()) {
+            /* Process anti-bot captcha */
+            logger.info("Spam protection detected");
+            final String recaptchaV2Response = new CaptchaHelperCrawlerPluginRecaptchaV2(this, br).getToken();
+            br.postPage(br.getURL(), "g-recaptcha-response=" + Encoding.urlEncode(recaptchaV2Response));
+            if (isBotBlocked()) {
+                throw new PluginException(LinkStatus.ERROR_CAPTCHA, "Anti-Bot block", 5 * 60 * 1000l);
+            }
+            // save the session!
+            synchronized (botSafeCookies) {
+                botSafeCookies = br.getCookies(this.getHost());
+            }
+        }
+    }
+
+    private boolean isBotBlocked() {
+        return jd.plugins.hoster.FreeDiscPl.isBotBlocked(this.br);
+    }
+
     /* NO OVERRIDE!! */
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

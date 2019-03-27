@@ -23,6 +23,20 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.appwork.storage.config.annotations.AboutConfig;
+import org.appwork.storage.config.annotations.DefaultBooleanValue;
+import org.appwork.storage.simplejson.JSonUtils;
+import org.appwork.utils.formatter.TimeFormatter;
+import org.jdownloader.gui.translate._GUI;
+import org.jdownloader.plugins.ConditionalSkipReasonException;
+import org.jdownloader.plugins.WaitingSkipReason;
+import org.jdownloader.plugins.WaitingSkipReason.CAUSE;
+import org.jdownloader.plugins.config.PluginConfigInterface;
+import org.jdownloader.plugins.config.PluginJsonConfig;
+import org.jdownloader.plugins.config.TakeValueFromSubconfig;
+import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
+
 import jd.PluginWrapper;
 import jd.config.Property;
 import jd.http.Browser;
@@ -40,17 +54,7 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.PluginJSonUtils;
 
-import org.appwork.storage.config.annotations.AboutConfig;
-import org.appwork.storage.config.annotations.DefaultBooleanValue;
-import org.appwork.storage.simplejson.JSonUtils;
-import org.appwork.utils.formatter.TimeFormatter;
-import org.jdownloader.gui.translate._GUI;
-import org.jdownloader.plugins.config.PluginConfigInterface;
-import org.jdownloader.plugins.config.TakeValueFromSubconfig;
-import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
-import org.jdownloader.scripting.JavaScriptEngineFactory;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "offcloud.com" }, urls = { "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsfs2133" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "offcloud.com" }, urls = { "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsfs2133" })
 public class OffCloudCom extends PluginForHost {
     /** Using API: https://github.com/offcloud/offcloud-api */
     private static final String                            CLEAR_DOWNLOAD_HISTORY_SINGLE_LINK        = "CLEAR_DOWNLOAD_HISTORY_SINGLE_LINK";
@@ -146,7 +150,11 @@ public class OffCloudCom extends PluginForHost {
                 final int maxDlsForCurrentHost = hostMaxdlsMap.get(currentHost);
                 final AtomicInteger currentRunningDlsForCurrentHost = hostRunningDlsNumMap.get(currentHost);
                 if (currentRunningDlsForCurrentHost.get() >= maxDlsForCurrentHost) {
-                    return false;
+                    /*
+                     * Max downloads for specific host for this MOCH reached --> Avoid irritating/wrong 'Account missing' errormessage for
+                     * this case - wait and retry!
+                     */
+                    throw new ConditionalSkipReasonException(new WaitingSkipReason(CAUSE.HOST_TEMP_UNAVAILABLE, 15 * 1000, null));
                 }
             }
         }
@@ -359,6 +367,7 @@ public class OffCloudCom extends PluginForHost {
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         setConstants(account, null);
+        final OffCloudComPluginConfigInterface cfg = PluginJsonConfig.get(jd.plugins.hoster.OffCloudCom.OffCloudComPluginConfigInterface.class);
         final long last_deleted_complete_download_history_time_ago = getLast_deleted_complete_download_history_time_ago();
         this.br = newBrowser();
         final AccountInfo ai = new AccountInfo();
@@ -383,66 +392,90 @@ public class OffCloudCom extends PluginForHost {
          * Basically, at the moment we got 3 account types: Premium, Free account with generate-links feature, Free Account without
          * generate-links feature (used free account, ZERO traffic)
          */
-        String userpackage = null;
-        final String jsonarraypackages = br.getRegex("\"data\": \\[(.*?)\\]").getMatch(0);
-        final String[] packages = jsonarraypackages.split("\\},([\t\r\n ]+)?\\{");
-        if (packages.length == 1) {
-            userpackage = packages[0];
-        } else {
-            for (final String singlepackage : packages) {
-                final String type = PluginJSonUtils.getJsonValue(singlepackage, "type");
-                if (type.contains("link-unlimited")) {
-                    userpackage = singlepackage;
-                    break;
-                }
+        LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(this.br.toString());
+        ArrayList<Object> ressourcelist = (ArrayList) entries.get("data");
+        String packagetype = null;
+        String activeTill = null;
+        boolean foundPackage = false;
+        for (final Object packageO : ressourcelist) {
+            entries = (LinkedHashMap<String, Object>) packageO;
+            packagetype = (String) entries.get("type");
+            activeTill = (String) entries.get("activeTill");
+            /*
+             * 2018-02-07: For some reason, the 'link-unlimited' package (if available) will always expire 1 month after the
+             * "premium-downloading" package which is why we get our data from here. At this stage I have no idea whether this applies for
+             * all accounts or only our test account as some years ago, they had different addons you could purchase and nowdays this is all
+             * a lot simpler.
+             */
+            if ("premium-downloading".equalsIgnoreCase(packagetype)) {
+                foundPackage = true;
+                break;
             }
         }
-        final String packagetype = PluginJSonUtils.getJsonValue(userpackage, "type");
-        if ((userpackage == null && br.containsHTML("-increase")) || userpackage.equals("") || packagetype.equals("premium-link-increase")) {
+        if (ressourcelist.size() == 0 || "premium-link-increase".equalsIgnoreCase(packagetype)) {
+            /* Free usually only has 1 package with packageType "premium-link-increase" */
             account.setType(AccountType.FREE);
             ai.setStatus("Registered (free) account");
             /* Important: If we found our package, get the remaining links count from there as the other one might be wrong! */
-            if ("premium-link-increase".equals(packagetype)) {
-                remaininglinksnum = PluginJSonUtils.getJsonValue(userpackage, "remainingLinksCount");
+            if ("premium-link-increase".equalsIgnoreCase(packagetype)) {
+                remaininglinksnum = Long.toString(JavaScriptEngineFactory.toLong(entries.get("remainingLinksCount"), 0));
             }
             account.setProperty("accinfo_linksleft", remaininglinksnum);
             if (remaininglinksnum.equals("0")) {
-                /* No links downloadable anymore --> No traffic left --> Free account limit reached */
+                /*
+                 * No links downloadable (anymore) --> No traffic left --> Free account limit reached --> At this stage the user cannot use
+                 * the account for anything
+                 */
                 ai.setTrafficLeft(0);
             }
-        } else {
+        } else if (foundPackage) {
             account.setType(AccountType.PREMIUM);
             ai.setStatus("Premium account");
             ai.setUnlimitedTraffic();
-            String expiredate = PluginJSonUtils.getJsonValue(userpackage, "activeTill");
-            expiredate = expiredate.replaceAll("Z$", "+0000");
-            ai.setValidUntil(TimeFormatter.getMilliSeconds(expiredate, "yyyy-MM-dd'T'HH:mm:ss.S", Locale.ENGLISH));
+            activeTill = activeTill.replaceAll("Z$", "+0000");
+            ai.setValidUntil(TimeFormatter.getMilliSeconds(activeTill, "yyyy-MM-dd'T'HH:mm:ss.S", Locale.ENGLISH), this.br);
             account.setProperty("accinfo_linksleft", remaininglinksnum);
+        } else {
+            /* This should never happen */
+            account.setType(AccountType.UNKNOWN);
+            account.setValid(false);
+            return ai;
         }
         account.setValid(true);
         /* Only add hosts which are listed as 'active' (working) */
         postAPISafe("https://offcloud.com/stats/sites", "");
         final ArrayList<String> supportedHosts = new ArrayList<String>();
-        final LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(this.br.toString());
-        final ArrayList<Object> ressourcelist = (ArrayList) entries.get("fs");
+        final ArrayList<String> supportedHostStates = new ArrayList<String>();
+        supportedHostStates.add("cloud only");
+        supportedHostStates.add("healthy");
+        supportedHostStates.add("fragile");
+        supportedHostStates.add("limited");
+        if (cfg.isShowHostersWithStatusAwaitingDemand()) {
+            supportedHostStates.add("awaiting demand");
+        }
+        entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(this.br.toString());
+        ressourcelist = (ArrayList) entries.get("fs");
         /**
          * Explanation of their status-types: Healthy = working, Fragile = may work or not - if not will be fixed within the next 72 hours
          * (support also said it means that they currently have no accounts for this host), Limited = broken, will be fixed tomorrow, dead =
          * site offline or their plugin is completely broken, Limited = There are special daily limits for a host but it should work (even
-         * though it is marked RED on the site)
+         * though it is marked RED on the site), Awaiting Demand = Host is unsupported but is shown in that list so if a lot of users try
+         * URLs of such hosts, Offcloud will see that there is demand and maybe add it to the list of supported hosts.
          */
         cloudOnlyHosts.clear();
         for (final Object domaininfo_o : ressourcelist) {
             final LinkedHashMap<String, Object> domaininfo = (LinkedHashMap<String, Object>) domaininfo_o;
-            final String status = (String) domaininfo.get("isActive");
+            String status = (String) domaininfo.get("isActive");
             String realhost = (String) domaininfo.get("displayName");
             if (realhost == null || status == null) {
                 continue;
             }
+            status = status.toLowerCase();
             realhost = realhost.toLowerCase();
-            boolean active = Arrays.asList("cloud only", "Cloud only", "healthy", "Healthy", "fragile", "Fragile", "limited", "Limited").contains(status);
+            Arrays.asList(supportedHosts);
+            final boolean addToArrayOfSupportedHosts = supportedHostStates.contains(status);
             logger.info("offcloud.com status of host " + realhost + ": " + status);
-            if (active) {
+            if (addToArrayOfSupportedHosts) {
                 supportedHosts.add(realhost);
                 if (status.equals("cloud only")) {
                     cloudOnlyHosts.add(realhost);
@@ -454,10 +487,10 @@ public class OffCloudCom extends PluginForHost {
         ai.setMultiHostSupport(this, supportedHosts);
         getAndSetChunklimits();
         /* Let's handle some settings stuff. */
-        if (this.getPluginConfig().getBooleanProperty(CLEAR_ALLOWED_IP_ADDRESSES, default_clear_allowed_ip_addresses)) {
+        if (cfg.isClearAllowedIpAddressesEnabled()) {
             this.clearAllowedIPAddresses();
         }
-        if (this.getPluginConfig().getBooleanProperty(CLEAR_DOWNLOAD_HISTORY_COMPLETE_INSTANT, default_clear_download_history_complete_instant) && (last_deleted_complete_download_history_time_ago >= DELETE_COMPLETE_DOWNLOAD_HISTORY_INTERVAL || last_deleted_complete_download_history_time_ago == 0)) {
+        if (cfg.isDeleteDownloadHistoryCompleteInstantEnabled()) {
             /*
              * Go in here if user wants to have it's history deleted && last deletion was before DELETE_COMPLETE_DOWNLOAD_HISTORY_INTERVAL
              * or never executed (0).
@@ -465,7 +498,7 @@ public class OffCloudCom extends PluginForHost {
             this.deleteCompleteDownloadHistory(PROPERTY_DOWNLOADTYPE_instant);
             account.setProperty("last_time_deleted_history", System.currentTimeMillis());
         }
-        if (this.getPluginConfig().getBooleanProperty(CLEAR_DOWNLOAD_HISTORY_COMPLETE_CLOUD, default_clear_download_history_complete_instant) && (last_deleted_complete_download_history_time_ago >= DELETE_COMPLETE_DOWNLOAD_HISTORY_INTERVAL || last_deleted_complete_download_history_time_ago == 0)) {
+        if (cfg.isDeleteDownloadHistoryCompleteCloudEnabled()) {
             /*
              * Go in here if user wants to have it's history deleted && last deletion was before DELETE_COMPLETE_DOWNLOAD_HISTORY_INTERVAL
              * or never executed (0).
@@ -930,7 +963,7 @@ public class OffCloudCom extends PluginForHost {
             case 15:
                 /*
                  * Current host is only supported via cloud downloading --> Add to Cloud-Array and try again
-                 * 
+                 *
                  * This should only happen if e.g. a user starts JD and starts downloads right away before the cloudOnlyHosts array gets
                  * updated. This cann be considered as a small workaround.
                  */
@@ -940,7 +973,7 @@ public class OffCloudCom extends PluginForHost {
             case 16:
                 /*
                  * Current host is only supported via cloud downloading --> Add to Cloud-Array and try again
-                 * 
+                 *
                  * This should only happen if e.g. a user starts JD and starts downloads right away before the cloudOnlyHosts array gets
                  * updated. This cann be considered as a small workaround.
                  */
@@ -1131,6 +1164,14 @@ public class OffCloudCom extends PluginForHost {
             public String getClearAllowedIpAddressesEnabled_description() {
                 return "<html>Activate 'Confirm IP' workaround?\r\nIn case you often get E-Mails from offcloud to confirm your current IP address, this setting may help.\r\nThis will always delete all of your allowed IPs except your current IP from your offcloud account.\r\n<html><p style=\"color:#F62817\">WARNING: Do NOT use this function in case you\r\n-Use multiple internet connections (IPs) at the same time\r\n-Share your offcloud account with friends\r\n-Use one or more proxies (or VPNs)</p></html>";
             }
+
+            public String getShowHostersWithStatusAwaitingDemand_label() {
+                return "<html>Show hosts with status 'Awaiting Demand' in hostlist?</html>";
+            }
+
+            public String getShowHostersWithStatusAwaitingDemand_description() {
+                return "<html>Keep in mind that such hosts are not (yet) supported by Offcloud; the only purpose of this is that when users try to download from such hosts via JDownloader, Offcloud can see that there is demand and might add them to the list of supported hosts in the future.<html>";
+            }
         }
 
         public static final Translation TRANSLATION = new Translation();
@@ -1162,6 +1203,12 @@ public class OffCloudCom extends PluginForHost {
         boolean isClearAllowedIpAddressesEnabled();
 
         void setClearAllowedIpAddressesEnabled(boolean b);
+
+        @AboutConfig
+        @DefaultBooleanValue(false)
+        boolean isShowHostersWithStatusAwaitingDemand();
+
+        void setShowHostersWithStatusAwaitingDemand(boolean b);
     }
 
     // public void setConfigElements() {

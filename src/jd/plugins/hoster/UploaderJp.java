@@ -13,11 +13,12 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import jd.PluginWrapper;
+import jd.http.Browser;
 import jd.nutils.encoding.Encoding;
+import jd.parser.html.Form;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
@@ -27,9 +28,8 @@ import jd.plugins.PluginException;
 import org.appwork.utils.formatter.SizeFormatter;
 import org.jdownloader.plugins.components.antiDDoSForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "uploader.jp" }, urls = { "http://(www\\.)?ux\\.getuploader\\.com/[a-z0-9\\-_]+/download/\\d+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "uploader.jp" }, urls = { "https?://u[a-z0-9]\\.getuploader\\.com/[a-z0-9\\-_]+/download/\\d+" })
 public class UploaderJp extends antiDDoSForHost {
-
     public UploaderJp(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -45,7 +45,11 @@ public class UploaderJp extends antiDDoSForHost {
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         getPage(link.getDownloadURL());
-        if (br.containsHTML("404 File Not found")) {
+        final Form form = br.getFormByInputFieldKeyValue("q", "age_confirmation");
+        if (form != null) {
+            submitForm(form);
+        }
+        if (isOffline(this.br)) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         String filename = br.getRegex(">オリジナル</span><span class=\"right\">([^<>\"]*?)</span>").getMatch(0);
@@ -61,20 +65,44 @@ public class UploaderJp extends antiDDoSForHost {
         }
         link.setFinalFileName(Encoding.htmlDecode(filename.trim()));
         link.setDownloadSize(SizeFormatter.getSize(filesize));
+        final String md5 = br.getRegex("MD5</label>\\s*?<input[^<>]+value=\"([a-f0-9]{32})\"").getMatch(0);
+        if (md5 != null) {
+            link.setMD5Hash(md5);
+        }
         return AvailableStatus.TRUE;
+    }
+
+    public static boolean isOffline(final Browser br) {
+        return br.getHttpConnection() == null || br.getHttpConnection().getResponseCode() == 404 || br.containsHTML("404 File Not found<|Page not found");
     }
 
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception, PluginException {
         requestFileInformation(downloadLink);
-        final String token = br.getRegex("name=\"token\" value=\"([^<>\"]*?)\"").getMatch(0);
-        if (token == null) {
+        Form form = br.getFormbyProperty("name", "agree");
+        if (form == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        postPage(br.getURL(), "token=" + token);
-        final String md5 = br.getRegex("MD5 \\| ([a-z0-9]+)").getMatch(0);
-        if (md5 != null) {
-            downloadLink.setMD5Hash(md5);
+        if (form.hasInputFieldByName("password")) {
+            String passCode = downloadLink.getDownloadPassword();
+            if (passCode == null) {
+                passCode = getUserInput(null, downloadLink);
+            }
+            form.put("password", Encoding.urlEncode(passCode));
+            submitForm(form);
+            // check to see if its correct password
+            if ((form = br.getFormbyProperty("name", "agree")) != null && form.hasInputFieldByName("password")) {
+                if (downloadLink.getDownloadPassword() != null) {
+                    downloadLink.setDownloadPassword(null);
+                }
+                throw new PluginException(LinkStatus.ERROR_RETRY, "Password wrong!");
+            }
+            downloadLink.setDownloadPassword(passCode);
+            // standard download
+            submitForm(form);
+        } else {
+            // standard download
+            submitForm(form);
         }
         String dllink = br.getRegex("\"(https?://d(?:ownload|l)\\d+\\.getuploader\\.com/[^<>\"]*?)\"").getMatch(0);
         if (dllink == null) {
@@ -106,5 +134,4 @@ public class UploaderJp extends antiDDoSForHost {
     @Override
     public void resetDownloadlink(final DownloadLink link) {
     }
-
 }

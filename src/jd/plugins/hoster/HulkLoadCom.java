@@ -31,11 +31,19 @@ import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 
 import javax.script.ScriptEngine;
 import javax.script.ScriptEngineManager;
 import javax.swing.JOptionPane;
 import javax.swing.SwingUtilities;
+
+import org.appwork.utils.formatter.SizeFormatter;
+import org.appwork.utils.formatter.TimeFormatter;
+import org.appwork.utils.os.CrossSystem;
+import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
 
 import jd.PluginWrapper;
 import jd.config.ConfigContainer;
@@ -67,39 +75,32 @@ import jd.plugins.components.SiteType.SiteTemplate;
 import jd.utils.JDUtilities;
 import jd.utils.locale.JDL;
 
-import org.appwork.utils.formatter.SizeFormatter;
-import org.appwork.utils.formatter.TimeFormatter;
-import org.appwork.utils.os.CrossSystem;
-import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
-import org.jdownloader.scripting.JavaScriptEngineFactory;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "hulkload.com" }, urls = { "https?://(www\\.)?hulkload\\.com/((vid)?embed-)?[a-z0-9]{12}" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "hulkload.com" }, urls = { "https?://(www\\.)?hulkload\\.com/((vid)?embed-)?[a-z0-9]{12}" })
 @SuppressWarnings("deprecation")
 public class HulkLoadCom extends PluginForHost {
     // Site Setters
     // primary website url, take note of redirects
-    private final String               COOKIE_HOST                  = "http://hulkload.com";
+    private final String         COOKIE_HOST                  = "http://hulkload.com";
     // domain names used within download links.
-    private final String               DOMAINS                      = "(hulkload\\.com|pay4me\\.link)";
-    private final String               PASSWORDTEXT                 = "<br><b>Passwor(d|t):</b> <input";
-    private final String               MAINTENANCE                  = ">This server is in maintenance mode";
-    private final String               dllinkRegex                  = "https?://(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|([\\w\\-]+\\.)?" + DOMAINS + ")(:\\d{1,5})?/((files(/(dl|download))?|d|cgi-bin/dl\\.cgi)/(\\d+/)?([a-z0-9]+/){1,4}[^/<>\r\n\t]+|[a-z0-9]{58}/v(ideo)?\\.mp4)";
-    private final boolean              supportsHTTPS                = false;
-    private final boolean              enforcesHTTPS                = false;
-    private final boolean              useRUA                       = false;
-    private final boolean              useAltLinkCheck              = false;
-    private final boolean              useVidEmbed                  = false;
-    private final boolean              useAltEmbed                  = false;
-    private final boolean              useAltExpire                 = true;
-    private final long                 useLoginIndividual           = 6 * 3480000l;
-    private final boolean              waitTimeSkipableReCaptcha    = true;
-    private final boolean              waitTimeSkipableSolveMedia   = false;
-    private final boolean              waitTimeSkipableKeyCaptcha   = false;
-    private final boolean              captchaSkipableSolveMedia    = false;
+    private final String         DOMAINS                      = "(hulkload\\.com|pay4me\\.link)";
+    private final String         PASSWORDTEXT                 = "<br><b>Passwor(d|t):</b> <input";
+    private final String         MAINTENANCE                  = ">This server is in maintenance mode";
+    private final String         dllinkRegex                  = "https?://(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|([\\w\\-]+\\.)?" + DOMAINS + ")(:\\d{1,5})?/((files(/(dl|download))?|d|cgi-bin/dl\\.cgi)/(\\d+/)?([a-z0-9]+/){1,4}[^/<>\r\n\t]+|[a-z0-9]{58}/v(ideo)?\\.mp4)";
+    private final boolean        supportsHTTPS                = false;
+    private final boolean        enforcesHTTPS                = false;
+    private final boolean        useRUA                       = false;
+    private final boolean        useAltLinkCheck              = false;
+    private final boolean        useVidEmbed                  = false;
+    private final boolean        useAltEmbed                  = false;
+    private final boolean        useAltExpire                 = true;
+    private final long           useLoginIndividual           = 6 * 3480000l;
+    private final boolean        waitTimeSkipableReCaptcha    = true;
+    private final boolean        waitTimeSkipableSolveMedia   = false;
+    private final boolean        waitTimeSkipableKeyCaptcha   = false;
+    private final boolean        captchaSkipableSolveMedia    = false;
     // Connection Management
     // note: CAN NOT be negative or zero! (ie. -1 or 0) Otherwise math sections fail. .:. use [1-20]
-    private static final AtomicInteger totalMaxSimultanFreeDownload = new AtomicInteger(20);
+    private static AtomicInteger totalMaxSimultanFreeDownload = new AtomicInteger(20);
 
     // DEV NOTES
     // XfileShare Version 3.0.8.5
@@ -197,7 +198,7 @@ public class HulkLoadCom extends PluginForHost {
         // required for native cloudflare support, without the need to repeat requests.
         try {
             /* not available in old stable */
-            prepBr.setAllowedResponseCodes(new int[] { 503 });
+            prepBr.setAllowedResponseCodes(new int[] { 406, 503 });
         } catch (Throwable e) {
         }
         return prepBr;
@@ -238,7 +239,7 @@ public class HulkLoadCom extends PluginForHost {
         if (cbr.containsHTML("(No such file|>File Not Found<|>The file was removed by|Reason for deletion:\n|<li>The file (expired|deleted by (its owner|administration)))")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-        if (cbr.containsHTML(MAINTENANCE)) {
+        if (cbr.getHttpConnection().getResponseCode() == 406 || cbr.containsHTML(MAINTENANCE)) {
             downloadLink.getLinkStatus().setStatusText(MAINTENANCEUSERTEXT);
             return AvailableStatus.TRUE;
         }
@@ -278,6 +279,12 @@ public class HulkLoadCom extends PluginForHost {
     }
 
     private String[] scanInfo(final DownloadLink downloadLink, final String[] fileInfo) {
+        if (inValidate(fileInfo[0])) {
+            fileInfo[0] = cbr.getRegex("class=\"fa fa-file\"></i>([^<>\"]*?)<").getMatch(0);
+        }
+        if (inValidate(fileInfo[0])) {
+            fileInfo[0] = cbr.getRegex("class=\"dfilename\">([^<>\"]*?)</").getMatch(0);
+        }
         // standard traits from base page
         if (inValidate(fileInfo[0])) {
             fileInfo[0] = cbr.getRegex("You have requested.*?https?://(www\\.)?" + DOMAINS + "/" + fuid + "/(.*?)</font>").getMatch(2);
@@ -314,12 +321,17 @@ public class HulkLoadCom extends PluginForHost {
             if (inValidate(fileInfo[1])) {
                 fileInfo[1] = cbr.getRegex("</font>[ ]+\\(([^<>\"'/]+)\\)(.*?)</font>").getMatch(0);
                 if (inValidate(fileInfo[1])) {
-                    fileInfo[1] = cbr.getRegex("(\\d+(\\.\\d+)? ?(KB|MB|GB))").getMatch(0);
+                    // <a href="http://hulkload.com/?op=report_file&amp;id=gn0ngunrn9kb">Report abuse</a>
+                    // get 9kb, Therefore non CASE_INSENSITIVE
+                    fileInfo[1] = cbr.getRegex(Pattern.compile("(\\d+(\\.\\d+)? ?(KB|MB|GB))")).getMatch(0);
                     if (inValidate(fileInfo[1])) {
-                        try {
-                            // only needed in rare circumstances
-                            // altAvailStat(downloadLink, fileInfo);
-                        } catch (Exception e) {
+                        fileInfo[1] = cbr.getRegex("(\\d+(\\.\\d+)? ?(KB|MB|GB))").getMatch(0);
+                        if (inValidate(fileInfo[1])) {
+                            try {
+                                // only needed in rare circumstances
+                                // altAvailStat(downloadLink, fileInfo);
+                            } catch (Exception e) {
+                            }
                         }
                     }
                 }
@@ -518,11 +530,13 @@ public class HulkLoadCom extends PluginForHost {
         // remove custom rules first!!! As html can change because of generic cleanup rules.
         // generic cleanup
         // this checks for fake or empty forms from original source and corrects
-        for (final Form f : br.getForms()) {
-            if (!f.containsHTML("(<input[^>]+type=\"submit\"(>|[^>]+(?!\\s*disabled\\s*)([^>]+>|>))|<input[^>]+type=\"button\"(>|[^>]+(?!\\s*disabled\\s*)([^>]+>|>))|<form[^>]+onSubmit=(\"|').*?(\"|')(>|[\\s\r\n][^>]+>)|" + dllinkRegex + ")")) {
-                toClean = toClean.replace(f.getHtmlCode(), "");
-            }
-        }
+        // for (final Form f : br.getForms()) {
+        // if
+        // (!f.containsHTML("(<input[^>]+type=\"submit\"(>|[^>]+(?!\\s*disabled\\s*)([^>]+>|>))|<input[^>]+type=\"button\"(>|[^>]+(?!\\s*disabled\\s*)([^>]+>|>))|<form[^>]+onSubmit=(\"|').*?(\"|')(>|[\\s\r\n][^>]+>)|"
+        // + dllinkRegex + ")")) {
+        // toClean = toClean.replace(f.getHtmlCode(), "");
+        // }
+        // }
         regexStuff.add("<!(--.*?--)>");
         regexStuff.add("(<div[^>]+display: ?none;[^>]+>.*?</div>)");
         regexStuff.add("(visibility:hidden>.*?<)");
@@ -558,7 +572,10 @@ public class HulkLoadCom extends PluginForHost {
 
     private void waitTime(final long timeBefore, final DownloadLink downloadLink) throws PluginException {
         /** Ticket Time */
-        String ttt = cbr.getRegex("id=\"countdown_str\">[^<>\"]+<span id=\"[^<>\"]+\"( class=\"[^<>\"]+\")?>([\n ]+)?(\\d+)([\n ]+)?</span>").getMatch(2);
+        String ttt = cbr.getRegex("id=\"countdown\">[^<>\"]+<span class=\"[^<>\"]+\"?>\\s*(\\d+)\\s*</span>").getMatch(0);
+        if (inValidate(ttt)) {
+            ttt = cbr.getRegex("id=\"countdown_str\">[^<>\"]+<span id=\"[^<>\"]+\"( class=\"[^<>\"]+\")?>([\n ]+)?(\\d+)([\n ]+)?</span>").getMatch(2);
+        }
         if (inValidate(ttt)) {
             ttt = cbr.getRegex("id=\"countdown_str\"[^>]+>Wait[^>]+>(\\d+)\\s?+</span>").getMatch(0);
         }
@@ -708,7 +725,7 @@ public class HulkLoadCom extends PluginForHost {
             }
             throw new PluginException(LinkStatus.ERROR_FATAL, msg);
         }
-        if (cbr.containsHTML(MAINTENANCE)) {
+        if (cbr.getHttpConnection().getResponseCode() == 406 || cbr.containsHTML(MAINTENANCE)) {
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, MAINTENANCEUSERTEXT, 2 * 60 * 60 * 1000l);
         }
     }

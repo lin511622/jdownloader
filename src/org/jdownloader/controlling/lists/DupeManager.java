@@ -3,22 +3,24 @@ package org.jdownloader.controlling.lists;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
-
-import jd.controlling.downloadcontroller.DownloadController;
-import jd.plugins.DownloadLink;
-import jd.plugins.FilePackage;
+import java.util.Map;
+import java.util.Map.Entry;
 
 import org.appwork.scheduler.DelayedRunnable;
 import org.appwork.utils.StringUtils;
 import org.jdownloader.settings.staticreferences.CFG_GENERAL;
 
+import jd.controlling.downloadcontroller.DownloadController;
+import jd.plugins.DownloadLink;
+import jd.plugins.FilePackage;
+
 public class DupeManager {
-    private volatile HashMap<String, List<DownloadLink>> map = null;
-    private final DelayedRunnable                        updateDelayer;
-    private final boolean                                enabled;
+    private volatile Map<String, Object> map = null;
+    private final DelayedRunnable        updateDelayer;
+    private final boolean                enabled;
 
     public DupeManager() {
-        map = new HashMap<String, List<DownloadLink>>();
+        map = new HashMap<String, Object>();
         enabled = CFG_GENERAL.CFG.isDupeManagerEnabled();
         if (enabled) {
             updateDelayer = new DelayedRunnable(DownloadController.TIMINGQUEUE, 500, 1000) {
@@ -31,7 +33,6 @@ public class DupeManager {
                 public void delayedrun() {
                     refreshMap();
                 }
-
             };
         } else {
             updateDelayer = null;
@@ -46,52 +47,57 @@ public class DupeManager {
 
     public boolean hasID(String linkID) {
         if (enabled) {
-            final HashMap<String, List<DownloadLink>> lMap = map;
+            final Map<String, Object> lMap = map;
             if (lMap == null) {
                 return false;
             }
-            final List<DownloadLink> lst = lMap.get(linkID);
-            if (lst == null || lst.size() == 0) {
+            final Object item = lMap.get(linkID);
+            if (item == null) {
                 return false;
-            }
-
-            List<DownloadLink> toRemove = null;
-            try {
+            } else if (item instanceof DownloadLink) {
+                final DownloadLink link = (DownloadLink) item;
+                if (StringUtils.equals(link.getLinkID(), linkID)) {
+                    final FilePackage p = link.getParentNode();
+                    if (p != null && p.getControlledBy() != null) {
+                        return true;
+                    } else {
+                        invalidate();
+                    }
+                }
+                return false;
+            } else {
+                final List<DownloadLink> lst = (List<DownloadLink>) item;
+                boolean invalidate = false;
                 for (final DownloadLink link : lst) {
                     if (StringUtils.equals(link.getLinkID(), linkID)) {
                         final FilePackage p = link.getParentNode();
                         if (p != null && p.getControlledBy() != null) {
                             return true;
+                        } else {
+                            invalidate = true;
                         }
                     }
-                    if (toRemove == null) {
-                        toRemove = new ArrayList<DownloadLink>();
-                    }
-                    toRemove.add(link);
                 }
-            } finally {
-                if (toRemove != null) {
-                    lst.removeAll(toRemove);
-                    if (lst.size() == 0) {
-                        lMap.remove(linkID);
-                    }
+                if (invalidate) {
+                    invalidate();
                 }
             }
         }
         return false;
     }
 
-    private HashMap<String, List<DownloadLink>> refreshMap() {
+    private void refreshMap() {
         if (enabled) {
-            final HashMap<String, List<DownloadLink>> map = new HashMap<String, List<DownloadLink>>();
+            final HashMap<String, ArrayList<DownloadLink>> map = new HashMap<String, ArrayList<DownloadLink>>();
             for (final FilePackage fpkg : DownloadController.getInstance().getPackagesCopy()) {
                 final boolean readL2 = fpkg.getModifyLock().readLock();
                 try {
                     for (final DownloadLink link : fpkg.getChildren()) {
-                        List<DownloadLink> lst = map.get(link.getLinkID());
+                        final String linkID = link.getLinkID();
+                        ArrayList<DownloadLink> lst = map.get(linkID);
                         if (lst == null) {
                             lst = new ArrayList<DownloadLink>();
-                            map.put(link.getLinkID(), lst);
+                            map.put(linkID, lst);
                         }
                         lst.add(link);
                     }
@@ -99,12 +105,22 @@ public class DupeManager {
                     fpkg.getModifyLock().readUnlock(readL2);
                 }
             }
-            this.map = map;
-            return map;
+            final Map<String, Object> cowMap = new HashMap<String, Object>();
+            for (final Entry<String, ArrayList<DownloadLink>> entry : map.entrySet()) {
+                if (entry.getValue().size() == 1) {
+                    cowMap.put(entry.getKey(), entry.getValue().get(0));
+                } else {
+                    entry.getValue().trimToSize();
+                    cowMap.put(entry.getKey(), entry.getValue());
+                }
+            }
+            if (cowMap.size() > 0) {
+                this.map = cowMap;
+            } else {
+                this.map = null;
+            }
         } else {
             this.map = null;
-            return null;
         }
     }
-
 }

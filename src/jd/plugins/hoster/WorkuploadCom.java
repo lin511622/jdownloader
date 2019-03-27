@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -31,9 +30,8 @@ import jd.plugins.components.PluginJSonUtils;
 
 import org.appwork.utils.formatter.SizeFormatter;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "workupload.com" }, urls = { "https?://(?:www\\.|en\\.)?workupload\\.com/file/[A-Za-z0-9]+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "workupload.com" }, urls = { "https?://(?:www\\.|en\\.)?workupload\\.com/(file|start)/[A-Za-z0-9]+" })
 public class WorkuploadCom extends PluginForHost {
-
     public WorkuploadCom(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -47,9 +45,7 @@ public class WorkuploadCom extends PluginForHost {
     private static final boolean FREE_RESUME            = false;
     private static final int     FREE_MAXCHUNKS         = 1;
     private static final int     FREE_MAXDOWNLOADS      = 20;
-
     private static final String  html_passwordprotected = "id=\"passwordprotected_file_password\"";
-
     private String               fid                    = null;
     private boolean              passwordprotected      = false;
 
@@ -58,10 +54,11 @@ public class WorkuploadCom extends PluginForHost {
     public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
+        br.setAllowedResponseCodes(new int[] { 410 });
         fid = new Regex(link.getDownloadURL(), "([A-Za-z0-9]+)$").getMatch(0);
         link.setLinkID(fid);
         br.getPage("https://workupload.com/file/" + fid);
-        if (br.getHttpConnection().getResponseCode() == 404 || this.br.containsHTML("img/404\\.jpg\"|>Whoops\\! 404")) {
+        if (br.getHttpConnection().getResponseCode() == 404 || br.getHttpConnection().getResponseCode() == 410 || this.br.containsHTML("img/404\\.jpg\"|>Whoops\\! 404|> Datei gesperrt")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         passwordprotected = this.br.containsHTML(html_passwordprotected);
@@ -87,6 +84,9 @@ public class WorkuploadCom extends PluginForHost {
             }
             if (filesize == null) {
                 filesize = br.getRegex("(\\d+(?:\\.\\d+)? ?(?:B(?:ytes?)?))").getMatch(0);
+            }
+            if (filename == null) {
+                filename = br.getRegex("<title>(.*?)</title>").getMatch(0);
             }
             if (filename == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -136,6 +136,10 @@ public class WorkuploadCom extends PluginForHost {
         dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, resumable, maxchunks);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
+            if (br.getURL().contains("/file/")) {
+                logger.info("Final downloadurl redirected to main url");
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown server error", 10 * 60 * 1000l);
+            }
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         downloadLink.setProperty(directlinkproperty, dllink);
@@ -154,5 +158,4 @@ public class WorkuploadCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

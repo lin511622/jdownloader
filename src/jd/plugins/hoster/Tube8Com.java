@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -34,6 +33,7 @@ import jd.config.ConfigEntry;
 import jd.gui.UserIO;
 import jd.http.Browser;
 import jd.http.URLConnectionAdapter;
+import jd.http.requests.PostRequest;
 import jd.nutils.encoding.Base64;
 import jd.nutils.encoding.Encoding;
 import jd.nutils.nativeintegration.LocalBrowser;
@@ -48,12 +48,10 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.utils.locale.JDL;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "tube8.com" }, urls = { "http://(www\\.)?tube8\\.(?:com|fr)/(?!(cat|latest)/)[^/]+/[^/]+/([^/]+/)?[0-9]+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "tube8.com" }, urls = { "https?://(?:www\\.)?tube8\\.(?:com|fr)/(?!(cat|latest)/)(embed/)?[^/]+/[^/]+/([^/]+/)?[0-9]+" })
 public class Tube8Com extends PluginForHost {
-
     /* DEV NOTES */
     /* Porn_plugin */
-
     private boolean              setEx                           = true;
     private String               dllink                          = null;
     private static final String  mobile                          = "mobile";
@@ -68,12 +66,25 @@ public class Tube8Com extends PluginForHost {
 
     @Override
     public void correctDownloadLink(final DownloadLink link) {
-        link.setUrlDownload(link.getDownloadURL().replace("/embed", ""));
+        final String url_added = link.getDownloadURL().replace("/embed", "");
+        String url_new = null;
+        if (url_added.contains("/embed")) {
+            url_new = url_added.replace("/embed", "");
+        } else {
+            url_new = url_added;
+        }
+        url_new = url_new.replace("http://", "https://");
+        /* 2017-05-19: We will get a 404 response without slash at the end */
+        if (!url_new.endsWith("/")) {
+            url_new += "/";
+        }
+        link.setUrlDownload(url_new);
     }
 
     @SuppressWarnings("deprecation")
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
+        correctDownloadLink(downloadLink);
         dllink = null;
         this.br.setAllowedResponseCodes(500);
         if (setEx) {
@@ -94,18 +105,16 @@ public class Tube8Com extends PluginForHost {
         if (this.br.getHttpConnection().getResponseCode() == 500) {
             return AvailableStatus.UNCHECKABLE;
         }
-        String filename = br.getRegex("<span class=\"item\">\\s+(.*?)\\s+</span>").getMatch(0);
+        String filename = br.getRegex("<span class=\"item\">\\s*(.*?)\\s*</span>").getMatch(0);
         if (filename == null) {
             filename = br.getRegex("<title>(.*?) - Porn Video \\d+[^<]*<").getMatch(0);
         }
         if (filename == null) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-
         boolean failed = true;
         boolean preferMobile = getPluginConfig().getBooleanProperty(mobile, false);
         String videoDownloadUrls = "";
-
         /* streaming link */
         findStreamingLink();
         if (dllink != null && requestVideo(downloadLink)) {
@@ -129,11 +138,9 @@ public class Tube8Com extends PluginForHost {
         if ((failed || preferMobile) && dllink != null && requestVideo(downloadLink)) {
             failed = false;
         }
-
         if (dllink == null) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-
         filename = filename.trim();
         if (dllink.contains(".3gp")) {
             downloadLink.setFinalFileName((filename + ".3gp"));
@@ -178,22 +185,22 @@ public class Tube8Com extends PluginForHost {
         }
         final Browser br2 = br.cloneBrowser();
         br2.getHeaders().put("X-Requested-With", "XMLHttpRequest");
-        br2.getPage("http://www.tube8.com/ajax/getVideoDownloadURL.php?hash=" + hash + "&video=" + new Regex(downloadLink.getDownloadURL(), ".*?(\\d+)$").getMatch(0) + "&download_cdn=true&_=" + System.currentTimeMillis());
+        br2.getPage("https://www.tube8.com/ajax/getVideoDownloadURL.php?hash=" + hash + "&video=" + new Regex(downloadLink.getDownloadURL(), ".*?(\\d+)$").getMatch(0) + "&download_cdn=true&_=" + System.currentTimeMillis());
         String ret = br2.getRegex("^(.*?)$").getMatch(0);
         return ret != null ? ret.replace("\\", "") : "";
     }
 
     private void findMobileLink(final String correctedBR) throws Exception {
-        dllink = new Regex(correctedBR, "\"mobile_url\":\"(http:.*?)\"").getMatch(0);
+        dllink = new Regex(correctedBR, "\"mobile_url\":\"(https?:.*?)\"").getMatch(0);
         if (dllink == null) {
-            dllink = new Regex(correctedBR, "\"(http://cdn\\d+\\.mobile\\.tube8\\.com/.*?)\"").getMatch(0);
+            dllink = new Regex(correctedBR, "\"(https?://cdn\\d+\\.mobile\\.tube8\\.com/.*?)\"").getMatch(0);
         }
     }
 
     private void findNormalLink(final String correctedBR) throws Exception {
         dllink = new Regex(correctedBR, "\"standard_url\":\"(http.*?)\"").getMatch(0);
         if (dllink == null) {
-            dllink = new Regex(correctedBR, "\"(http://cdn\\d+\\.public\\.tube8\\.com/.*?)\"").getMatch(0);
+            dllink = new Regex(correctedBR, "\"(https?://cdn\\d+\\.public\\.tube8\\.com/.*?)\"").getMatch(0);
         }
         if (dllink == null) {
             dllink = new Regex(correctedBR, "page_params\\.videoUrlJS = \"(http[^<>\"]*?)\";").getMatch(0);
@@ -207,14 +214,12 @@ public class Tube8Com extends PluginForHost {
         }
         flashVars = flashVars.replaceAll("\"", "");
         Map<String, String> values = new HashMap<String, String>();
-
         for (String s : flashVars.split(",")) {
             if (!s.matches(".+:.+")) {
                 continue;
             }
             values.put(s.split(":")[0], s.split(":", 2)[1]);
         }
-
         String isEncrypted = values.get("encrypted");
         dllink = values.get("video_url");
         if (dllink != null) {
@@ -312,8 +317,15 @@ public class Tube8Com extends PluginForHost {
         boolean follow = br.isFollowingRedirects();
         try {
             br.setFollowRedirects(true);
-            br.postPage("http://www.tube8.com/ajax/login.php", "username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
-            if (br.containsHTML("invalid") || br.containsHTML("0\\|")) {
+            br.getPage("https://www.tube8.com");
+            final PostRequest postRequest = new PostRequest("https://www.tube8.com/ajax2/login/");
+            postRequest.addVariable("username", Encoding.urlEncode(account.getUser()));
+            postRequest.addVariable("password", Encoding.urlEncode(account.getPass()));
+            postRequest.getHeaders().put("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+            postRequest.getHeaders().put("X-Requested-With", "XMLHttpRequest");
+            postRequest.addVariable("rememberme", "NO");
+            br.getPage(postRequest);
+            if (br.containsHTML("invalid") || br.containsHTML("0\\|")) { // || br.getCookie(getHost(), "ubl") == null) {
                 throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
             }
         } finally {
@@ -335,7 +347,7 @@ public class Tube8Com extends PluginForHost {
 
     /**
      * AES CTR(Counter) Mode for Java ported from AES-CTR-Mode implementation in JavaScript by Chris Veness
-     * 
+     *
      * @see <a href="http://csrc.nist.gov/publications/nistpubs/800-38a/sp800-38a.pdf">
      *      "Recommendation for Block Cipher Modes of Operation - Methods and Techniques"</a>
      */
@@ -351,7 +363,6 @@ public class Tube8Com extends PluginForHost {
         byte[] data = Base64.decode(cipherText.toCharArray());
         /* CHECK: we should always use getBytes("UTF-8") or with wanted charset, never system charset! */
         byte[] k = Arrays.copyOf(key.getBytes(), nBits);
-
         Cipher cipher = Cipher.getInstance("AES/CTR/NoPadding");
         SecretKey secretKey = generateSecretKey(k, nBits);
         byte[] nonceBytes = Arrays.copyOf(Arrays.copyOf(data, 8), nBits / 2);
@@ -459,5 +470,4 @@ public class Tube8Com extends PluginForHost {
             return downloadLink.getHost().equalsIgnoreCase(plugin.getHost());
         }
     }
-
 }

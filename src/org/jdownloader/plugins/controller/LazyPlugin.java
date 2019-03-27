@@ -18,16 +18,13 @@ import org.appwork.utils.StringUtils;
 import org.jdownloader.plugins.controller.PluginClassLoader.PluginClassLoaderChild;
 
 public abstract class LazyPlugin<T extends Plugin> implements MinTimeWeakReferenceCleanup {
-
     private final byte[]                                   patternBytes;
     private volatile MinTimeWeakReference<Pattern>         compiledPattern = null;
     private final String                                   displayName;
     protected volatile WeakReference<Class<T>>             pluginClass;
-
     protected volatile WeakReference<T>                    prototypeInstance;
     /* PluginClassLoaderChild used to load this Class */
     private volatile WeakReference<PluginClassLoaderChild> classLoader;
-
     private volatile MinTimeWeakReference<Matcher>         matcher         = null;
 
     public PluginWrapper getPluginWrapper() {
@@ -57,11 +54,15 @@ public abstract class LazyPlugin<T extends Plugin> implements MinTimeWeakReferen
         if (Application.getJavaVersion() >= Application.JAVA17) {
             this.displayName = displayName.toLowerCase(Locale.ENGLISH).intern();
         } else {
-            this.displayName = displayName;
+            this.displayName = displayName.toLowerCase(Locale.ENGLISH);
         }
         if (classLoader != null) {
             this.classLoader = new WeakReference<PluginClassLoaderChild>(classLoader);
         }
+    }
+
+    public String getID() {
+        return getClassName() + "/" + getDisplayName();
     }
 
     public boolean equals(Object lazyPlugin) {
@@ -243,7 +244,12 @@ public abstract class LazyPlugin<T extends Plugin> implements MinTimeWeakReferen
         if (lCompiledPattern != null && (ret = lCompiledPattern.get()) != null) {
             return ret;
         }
-        compiledPattern = new MinTimeWeakReference<Pattern>(ret = Pattern.compile(getPatternSource(), Pattern.CASE_INSENSITIVE), 60 * 1000l, displayName, this);
+        if (Application.getJavaVersion() >= Application.JAVA17) {
+            ret = Pattern.compile(getPatternSource(), Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CHARACTER_CLASS);
+        } else {
+            ret = Pattern.compile(getPatternSource(), Pattern.CASE_INSENSITIVE);
+        }
+        compiledPattern = new MinTimeWeakReference<Pattern>(ret, 60 * 1000l, displayName, this);
         return ret;
     }
 

@@ -21,9 +21,8 @@ import java.util.Map;
 
 import jd.PluginWrapper;
 import jd.controlling.AccountController;
-import jd.http.Cookie;
-import jd.http.Cookies;
 import jd.nutils.encoding.Encoding;
+import jd.parser.html.Form;
 import jd.plugins.Account;
 import jd.plugins.AccountInfo;
 import jd.plugins.DownloadLink;
@@ -31,13 +30,13 @@ import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
-import jd.plugins.PluginForHost;
 import jd.utils.locale.JDL;
 
 import org.appwork.utils.formatter.SizeFormatter;
+import org.jdownloader.plugins.components.antiDDoSForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "acapellas4u.co.uk" }, urls = { "http://(www\\.)?acapellas4u\\.co\\.uk/\\d+\\-[a-z0-9\\-_]+" }) 
-public class AcapellasFourYouCoUk extends PluginForHost {
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "acapellas4u.co.uk" }, urls = { "http://(www\\.)?acapellas4u\\.co\\.uk/\\d+\\-[a-z0-9\\-_]+" })
+public class AcapellasFourYouCoUk extends antiDDoSForHost {
 
     private static final String MAINPAGE = "http://www.acapellas4u.co.uk/";
 
@@ -91,7 +90,7 @@ public class AcapellasFourYouCoUk extends PluginForHost {
         requestFileInformation(link);
         login(account, false);
         br.setFollowRedirects(false);
-        br.getPage(link.getDownloadURL());
+        getPage(link.getDownloadURL());
         String hash = br.getRegex("filehash=([a-z0-9]+)").getMatch(0);
         if (hash == null) {
             hash = br.getRegex("\"unique_id\" : \"(.*?)\"").getMatch(0);
@@ -124,7 +123,7 @@ public class AcapellasFourYouCoUk extends PluginForHost {
             if (acmatch) {
                 acmatch = Encoding.urlEncode(account.getPass()).equals(account.getStringProperty("pass", Encoding.urlEncode(account.getPass())));
             }
-            if (acmatch && ret != null && ret instanceof HashMap<?, ?> && !force) {
+            if (acmatch && ret != null && ret instanceof HashMap<?, ?>) {
                 final HashMap<String, String> cookies = (HashMap<String, String>) ret;
                 if (cookies.containsKey("acas4u_sevul_u") && account.isValid()) {
                     for (final Map.Entry<String, String> cookieEntry : cookies.entrySet()) {
@@ -132,33 +131,50 @@ public class AcapellasFourYouCoUk extends PluginForHost {
                         final String value = cookieEntry.getValue();
                         this.br.setCookie(MAINPAGE, key, value);
                     }
-                    return;
+                    /* 2017-04-27: Always check if existing cookies work to avoid unnecessary login captchas! */
+                    if (this.br.containsHTML("mode=logout")) {
+                        return;
+                    }
                 }
             }
-            br.getPage("http://www.acapellas4u.co.uk/");
+            getPage("http://www.acapellas4u.co.uk/");
             String sid = br.getRegex("name=\"sid\" value=\"([a-z0-9]{10,})\"").getMatch(0);
             if (sid == null) {
                 sid = br.getCookie(MAINPAGE, "acas4u_sevulx_sid");
             }
-            String loginurl = "http://www.acapellas4u.co.uk/ucp.php?mode=login";
-            String postdata = "username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()) + "&redirect=index.php&login=Login&autologin=on";
-            if (sid != null) {
-                loginurl += "&sid=" + sid;
-                postdata += "&sid=" + sid;
+            final Form loginform = this.br.getFormbyKey("password");
+            if (loginform != null) {
+                /* 2017-04-27: Prefer form handling */
+                loginform.put("username", Encoding.urlEncode(account.getUser()));
+                loginform.put("password", Encoding.urlEncode(account.getPass()));
+                if (sid != null) {
+                    loginform.put("sid", sid);
+                }
+                String captchaurl = loginform.getRegex("\"(https?://(?:www\\.)?[^/]+/ucp\\.php\\?mode=confirm[^<>\"]+)\"").getMatch(0);
+                if (captchaurl != null) {
+                    /* 2017-04-27: New; login captcha (does not happen every attempt) */
+                    captchaurl = Encoding.htmlDecode(captchaurl);
+                    final DownloadLink dummyLink = new DownloadLink(this, "Account", this.getHost(), "http://" + this.getHost(), true);
+                    final String code = this.getCaptchaCode(captchaurl, dummyLink);
+                    loginform.put("confirm_code", Encoding.urlEncode(code));
+                }
+                submitForm(loginform);
+            } else {
+                String loginurl = "http://www.acapellas4u.co.uk/ucp.php?mode=login";
+                String postdata = "username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()) + "&redirect=index.php&login=Login&autologin=on";
+                if (sid != null) {
+                    loginurl += "&sid=" + sid;
+                    postdata += "&sid=" + sid;
+                }
+
+                postPage(loginurl, postdata);
             }
-            br.postPage(loginurl, postdata);
             if ((br.getCookie(MAINPAGE, "acas4u_sevulx_u") == null || "1".equals(br.getCookie(MAINPAGE, "acas4u_sevulx_u"))) && (br.getCookie(MAINPAGE, "acas4u_sevul_u") == null || "1".equals(br.getCookie(MAINPAGE, "acas4u_sevul_u")))) {
                 throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
             }
-            // Save cookies
-            final HashMap<String, String> cookies = new HashMap<String, String>();
-            final Cookies add = this.br.getCookies(MAINPAGE);
-            for (final Cookie c : add.getCookies()) {
-                cookies.put(c.getKey(), c.getValue());
-            }
             account.setProperty("name", Encoding.urlEncode(account.getUser()));
             account.setProperty("pass", Encoding.urlEncode(account.getPass()));
-            account.setProperty("cookies", cookies);
+            account.setProperty("cookies", fetchCookies(MAINPAGE));
         }
     }
 
@@ -179,7 +195,7 @@ public class AcapellasFourYouCoUk extends PluginForHost {
         }
         login(aa, false);
         br.setFollowRedirects(true);
-        br.getPage(link.getDownloadURL());
+        getPage(link.getDownloadURL());
         if (br.getURL().contains("/download_list.php") || br.containsHTML("<title>ACAPELLAS4U \\&bull; Browse Artists</title>")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }

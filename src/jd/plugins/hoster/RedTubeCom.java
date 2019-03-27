@@ -1,9 +1,14 @@
 package jd.plugins.hoster;
 
+import java.util.List;
+import java.util.Map;
+
+import org.appwork.utils.StringUtils;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
+
 import jd.PluginWrapper;
 import jd.config.ConfigContainer;
 import jd.config.ConfigEntry;
-import jd.http.Browser.BrowserException;
 import jd.http.RandomUserAgent;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
@@ -14,13 +19,11 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
+import jd.plugins.components.PluginJSonUtils;
 import jd.utils.locale.JDL;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "redtube.com" }, urls = { "http://(www\\.)?(redtube\\.(cn\\.com|com|tv|com\\.br)/|embed\\.redtube\\.(cn\\.com|com|tv|com\\.br)/[^<>\"]*?\\?id=)\\d+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "redtube.com" }, urls = { "https?://(www\\.|[a-z]{2}\\.)?(redtube\\.(cn\\.com|com|tv|com\\.br)/|embed\\.redtube\\.(cn\\.com|com|tv|com\\.br)/[^<>\"]*?\\?id=)\\d+" })
 public class RedTubeCom extends PluginForHost {
-
-    private String dllink = null;
-
     public RedTubeCom(PluginWrapper wrapper) {
         super(wrapper);
         setConfigElements();
@@ -28,6 +31,8 @@ public class RedTubeCom extends PluginForHost {
 
     private static final String  ALLOW_MULTIHOST_USAGE           = "ALLOW_MULTIHOST_USAGE";
     private static final boolean default_allow_multihoster_usage = false;
+    private String               dllink                          = null;
+    private boolean              server_issues                   = false;
 
     private void setConfigElements() {
         String user_text;
@@ -61,72 +66,132 @@ public class RedTubeCom extends PluginForHost {
     @SuppressWarnings("deprecation")
     @Override
     public void correctDownloadLink(DownloadLink link) throws Exception {
-        link.setUrlDownload("http://www.redtube.com/" + new Regex(link.getDownloadURL(), "(\\d+)$").getMatch(0));
+        link.setUrlDownload("https://www.redtube.com/" + new Regex(link.getDownloadURL(), "(\\d+)$").getMatch(0));
     }
 
+    @SuppressWarnings("unchecked")
     @Override
     public AvailableStatus requestFileInformation(DownloadLink link) throws Exception {
+        dllink = null;
+        server_issues = false;
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         br.getHeaders().put("User-Agent", RandomUserAgent.generate());
-        br.setCookie("http://www.redtube.com", "language", "en");
-        try {
-            br.getPage(link.getDownloadURL().toLowerCase());
-        } catch (final Exception e) {
-            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-        }
+        br.setCookie("https://www.redtube.com", "language", "en");
+        br.getPage(link.getPluginPatternMatcher().toLowerCase());
         // Offline link
         if (br.containsHTML("is no longer available") || br.containsHTML(">404 Not Found<") || br.getHttpConnection().getResponseCode() == 404) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-        if (br.containsHTML("class=\"video-deleted-info\"")) {
+        if (br.containsHTML("class=\"video-deleted-info\"") || br.containsHTML("class=\"unavailable_text\"")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         // Invalid link
-        if (br.containsHTML(">Error Page Not Found")) {
+        if (br.containsHTML(">Error Page Not Found|<title>Kostenlose Porno Sexvideos")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         String fileName = br.getRegex("<h1 class=\"videoTitle[^>]+>(.*?)</h1>").getMatch(0);
         if (fileName == null) {
-            fileName = br.getRegex("<title>(.*?) (-|\\|) RedTube[^<]+</title>").getMatch(0);
+            fileName = br.getRegex("<title>(.*?) (?:(?:-|\\|)|(?:&#124;)) RedTube[^<]+</title>").getMatch(0);
         }
         br.setFollowRedirects(true);
-        dllink = br.getRegex("source src=\"(http.*?)(\"|%3D%22)").getMatch(0);
+        final String playervars = br.getRegex("playervars: (.+?\\}),\n").getMatch(0);
+        if (playervars != null) {
+            final Map<String, Object> values = (Map<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(playervars);
+            final List<Object> entries = (List<Object>) values.get("mediaDefinitions");
+            for (Object entry : entries) {
+                final Map<String, Object> e = (Map<String, Object>) entry;
+                String videoUrl = (String) e.get("videoUrl");
+                // maybe 1080p premium only. free is ""
+                if (StringUtils.isNotEmpty(videoUrl)) {
+                    dllink = videoUrl;
+                    long downloadSize = getDownloadSize();
+                    if (downloadSize != -1) {
+                        link.setDownloadSize(downloadSize);
+                    }
+                    break;
+                }
+            }
+        }
         if (dllink == null) {
-            dllink = br.getRegex("flv_h264_url=(http.*?)(\"|%3D%22)").getMatch(0);
+            dllink = br.getRegex("source src=\"(http.*?)(\"|%3D%22)").getMatch(0);
+            if (dllink != null && dllink.contains("&amp;")) {
+                dllink = dllink.replace("&amp;", "&");
+            }
+            if (dllink == null) {
+                dllink = br.getRegex("flv_h264_url=(http.*?)(\"|%3D%22)").getMatch(0);
+                if (dllink == null) {
+                    final String json = PluginJSonUtils.getJsonNested(br, "sources");
+                    if (json != null) {
+                        URLConnectionAdapter con = null;
+                        String[] qualities = { "1080", "720", "480", "240" };
+                        for (String quality : qualities) {
+                            dllink = PluginJSonUtils.getJsonValue(json, quality);
+                            // logger.info("dllink: " + dllink);
+                            if (dllink != null) {
+                                dllink = Encoding.urlDecode(dllink, true);
+                                if (dllink.startsWith("//")) {
+                                    dllink = "http:" + dllink;
+                                }
+                                try {
+                                    con = br.openHeadConnection(dllink);
+                                    if (!con.getContentType().contains("html")) {
+                                        link.setDownloadSize(br.getHttpConnection().getLongContentLength());
+                                        break;
+                                    } else if (quality == "240") {
+                                        server_issues = true;
+                                    }
+                                } finally {
+                                    try {
+                                        con.disconnect();
+                                    } catch (final Throwable e) {
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (dllink == null && br.containsHTML("<source src=\"\" type=\"video/mp4\">")) {
+            /* 2017-03-11 */
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         if (dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        dllink = Encoding.urlDecode(dllink, true);
         String ext = new Regex(dllink, "(\\.flv|\\.mp4).+$").getMatch(0);
         if (fileName != null || ext != null) {
             fileName = Encoding.htmlOnlyDecode(fileName);
             link.setName(fileName.trim() + ext);
         }
+        return AvailableStatus.TRUE;
+    }
+
+    private long getDownloadSize() throws Exception {
+        long result = -1;
         URLConnectionAdapter con = null;
         try {
             con = br.openHeadConnection(dllink);
             if (!con.getContentType().contains("html")) {
-                link.setDownloadSize(br.getHttpConnection().getLongContentLength());
-                return AvailableStatus.TRUE;
+                result = br.getHttpConnection().getLongContentLength();
             }
-        } catch (final BrowserException e) {
-            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         } finally {
             try {
                 con.disconnect();
             } catch (final Throwable e) {
             }
         }
-        throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        return result;
     }
 
     @Override
     public void handleFree(DownloadLink link) throws Exception {
         this.setBrowserExclusive();
         requestFileInformation(link);
-        if (dllink == null) {
+        if (server_issues) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown server error", 10 * 60 * 1000l);
+        } else if (dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         dl = jd.plugins.BrowserAdapter.openDownload(br, link, dllink, true, 0);
@@ -139,12 +204,9 @@ public class RedTubeCom extends PluginForHost {
 
     @Override
     public void reset() {
-
     }
 
     @Override
     public void resetDownloadlink(DownloadLink link) {
-
     }
-
 }

@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -31,10 +30,9 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.utils.locale.JDL;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "bigbooty.com" }, urls = { "http://(?:www\\.)?bigbooty\\.com/video/\\d+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "bigbooty.com" }, urls = { "https?://(?:(?:www|\\w{2})\\.)?bigbooty\\.com/video/\\d+" })
 public class BigBootyCom extends PluginForHost {
-
-    private String DLLINK = null;
+    private String dllink = null;
 
     public BigBootyCom(PluginWrapper wrapper) {
         super(wrapper);
@@ -61,7 +59,7 @@ public class BigBootyCom extends PluginForHost {
         br.getPage(downloadLink.getDownloadURL());
         final String fid = new Regex(downloadLink.getDownloadURL(), "bigbooty\\.com/video/(\\d+)").getMatch(0);
         downloadLink.setLinkID(fid);
-        if (br.getURL().contains("bigbooty.com/error/video_missing") || br.containsHTML("(>This video cannot be found\\. Are you sure you typed in the correct|<h2>ERROR</h2>|<title>Big Booty</title>)")) {
+        if (br.getURL().contains("bigbooty.com/error/video_missing") || br.containsHTML("(>(The page|This video) cannot be found|<h2>ERROR</h2>|<title>Big Booty</title>)")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         if (br.getURL().equals("http://www.bigbooty.com/upgrade")) {
@@ -74,22 +72,28 @@ public class BigBootyCom extends PluginForHost {
         if (filename == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        downloadLink.setFinalFileName(Encoding.htmlDecode(filename) + ".flv");
-        if (br.containsHTML(PREMIUMONLYTEXT)) {
+        if (!downloadLink.isNameSet()) {
+            downloadLink.setFinalFileName(Encoding.htmlDecode(filename));
+        }
+        if (br.containsHTML("video_access_message")) {
             downloadLink.getLinkStatus().setStatusText(PREMIUMONLYUSERTEXT);
             return AvailableStatus.TRUE;
         }
-        DLLINK = br.getRegex("flashvars=\"file=(http.*?)\\&image").getMatch(0);
-        if (DLLINK == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        dllink = br.getRegex("flashvars=\"file=(http.*?)\\&image").getMatch(0);
+        if (dllink == null) {
+            dllink = br.getRegex("<source[^>]*\\s+src\\s*=\\s*('|\"|)(.*?)\\1").getMatch(1);
+            if (dllink == null) {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            }
         }
-        DLLINK = Encoding.htmlDecode(DLLINK);
+        downloadLink.setFinalFileName(Encoding.htmlDecode(filename) + getFileNameExtensionFromString(dllink, ".mp4"));
+        dllink = Encoding.htmlDecode(dllink);
         Browser br2 = br.cloneBrowser();
         // In case the link redirects to the finallink
         br2.setFollowRedirects(true);
         URLConnectionAdapter con = null;
         try {
-            con = br2.openGetConnection(DLLINK);
+            con = br2.openGetConnection(dllink);
             if (!con.getContentType().contains("html")) {
                 downloadLink.setDownloadSize(con.getLongContentLength());
             } else {
@@ -107,10 +111,10 @@ public class BigBootyCom extends PluginForHost {
     @Override
     public void handleFree(DownloadLink downloadLink) throws Exception {
         requestFileInformation(downloadLink);
-        if (br.containsHTML(PREMIUMONLYTEXT)) {
+        if (br.containsHTML("video_access_message")) {
             throw new PluginException(LinkStatus.ERROR_FATAL, PREMIUMONLYUSERTEXT);
         }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, DLLINK, true, 0);
+        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 0);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);

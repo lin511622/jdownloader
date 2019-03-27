@@ -13,10 +13,11 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.util.LinkedHashMap;
+
+import org.jdownloader.plugins.components.antiDDoSForHost;
 
 import jd.PluginWrapper;
 import jd.http.Browser;
@@ -30,18 +31,14 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.components.PluginJSonUtils;
 
-import org.jdownloader.plugins.components.antiDDoSForHost;
-
 /**
  *
  * @author raztoki
  *
  */
-@HostPlugin(revision = "$Revision: 21813 $", interfaceVersion = 2, names = { "animegg.org" }, urls = { "http://(www\\.)?animegg\\.org/(?:embed/\\d+|[\\w\\-]+episode-\\d+)" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "animegg.org" }, urls = { "https?://(www\\.)?animegg\\.org/(?:embed/\\d+|[\\w\\-]+episode-\\d+)" })
 public class AnimeggOrg extends antiDDoSForHost {
-
     // raztoki embed video player template.
-
     private String dllink = null;
 
     public AnimeggOrg(PluginWrapper wrapper) {
@@ -62,7 +59,7 @@ public class AnimeggOrg extends antiDDoSForHost {
     public void handleFree(DownloadLink downloadLink) throws Exception {
         requestFileInformation(downloadLink);
         dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 0);
-        if (!dl.getConnection().isContentDisposition()) {
+        if (!dl.getConnection().isContentDisposition() && !dl.getConnection().getContentType().contains("video")) {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
@@ -73,7 +70,8 @@ public class AnimeggOrg extends antiDDoSForHost {
     public AvailableStatus requestFileInformation(DownloadLink downloadLink) throws Exception {
         this.setBrowserExclusive();
         final String link = downloadLink.getDownloadURL();
-        br.getPage(link);
+        br.setFollowRedirects(true);
+        getPage(link);
         // not yet available. We can only say offline!
         if (br.getHttpConnection().getResponseCode() == 404 || br.containsHTML("<img src=\"\\.\\./images/animegg-unavailable.jpg\" style=\"width: 100%\">")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
@@ -83,7 +81,7 @@ public class AnimeggOrg extends antiDDoSForHost {
             if (embed == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-            br.getPage(embed);
+            getPage(embed);
         }
         final String filename = br.getRegex("<meta property=\"og:title\" content=\"(.*?)\"").getMatch(0);
         // multiple qualities.
@@ -127,13 +125,13 @@ public class AnimeggOrg extends antiDDoSForHost {
             } else {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
-            return AvailableStatus.TRUE;
         } finally {
             try {
                 con.disconnect();
             } catch (Throwable e) {
             }
         }
+        return AvailableStatus.TRUE;
     }
 
     @Override

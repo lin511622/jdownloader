@@ -13,10 +13,8 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.File;
 import java.io.IOException;
 
 import jd.PluginWrapper;
@@ -40,14 +38,14 @@ import jd.plugins.PluginForHost;
 import jd.plugins.components.PluginJSonUtils;
 import jd.plugins.components.SiteType.SiteTemplate;
 
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+import org.appwork.utils.StringUtils;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "digitalplayground.com" }, urls = { "http://digitalplaygrounddecrypted.+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "digitalplayground.com" }, urls = { "https?://digitalplaygrounddecrypted.+" })
 public class DigitalplaygroundCom extends PluginForHost {
-
     public DigitalplaygroundCom(PluginWrapper wrapper) {
         super(wrapper);
-        this.enablePremium("http://join.digitalplayground.com/signup/signup.php");
+        this.enablePremium("https://join.digitalplayground.com/signup/signup.php");
         setConfigElements();
     }
 
@@ -63,20 +61,18 @@ public class DigitalplaygroundCom extends PluginForHost {
     private static final boolean ACCOUNT_PREMIUM_RESUME       = true;
     private static final int     ACCOUNT_PREMIUM_MAXCHUNKS    = 0;
     private static final int     ACCOUNT_PREMIUM_MAXDOWNLOADS = 20;
-
     private final String         type_premium_pic             = ".+\\.jpg.*?";
-
+    private final String         type_premium_pic_archive     = ".+\\.zip.*?";
     public static final String   html_loggedin                = "class=\"member\\-nav\"";
-
     private String               dllink                       = null;
     private boolean              server_issues                = false;
 
     public static Browser prepBR(final Browser br) {
-        return jd.plugins.hoster.BrazzersCom.pornportalPrepBR(br, jd.plugins.decrypter.WickedCom.DOMAIN_PREFIX_PREMIUM + jd.plugins.decrypter.WickedCom.DOMAIN_BASE);
+        return jd.plugins.hoster.BrazzersCom.pornportalPrepBR(br, jd.plugins.decrypter.WickedCom.DOMAIN_BASE);
     }
 
     public void correctDownloadLink(final DownloadLink link) {
-        link.setUrlDownload(link.getDownloadURL().replaceAll("http://digitalplaygrounddecrypted", "http://"));
+        link.setUrlDownload(link.getDownloadURL().replaceAll("https?://digitalplaygrounddecrypted", "https://"));
     }
 
     @SuppressWarnings("deprecation")
@@ -98,7 +94,7 @@ public class DigitalplaygroundCom extends PluginForHost {
             con = br.openHeadConnection(dllink);
             if (con.getContentType().contains("html")) {
                 /* Refresh directurl */
-                refreshDirecturl(link);
+                refreshDirecturl(aa, link);
                 con = br.openHeadConnection(dllink);
                 if (con.getContentType().contains("html")) {
                     server_issues = true;
@@ -118,18 +114,18 @@ public class DigitalplaygroundCom extends PluginForHost {
         return AvailableStatus.TRUE;
     }
 
-    private void refreshDirecturl(final DownloadLink link) throws PluginException, IOException {
+    private void refreshDirecturl(final Account account, final DownloadLink link) throws PluginException, IOException {
         final String fid = link.getStringProperty("fid", null);
         if (fid == null) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         if (link.getDownloadURL().matches(type_premium_pic)) {
-            this.br.getPage(jd.plugins.decrypter.DigitalplaygroundCom.getPicUrl(fid));
             final String number_formatted = link.getStringProperty("picnumber_formatted", null);
             if (fid == null || number_formatted == null) {
                 /* User added url without decrypter --> Impossible to refresh this directurl! */
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
+            this.br.getPage(jd.plugins.decrypter.DigitalplaygroundCom.getPicUrl(account, fid));
             if (jd.plugins.decrypter.DigitalplaygroundCom.isOffline(this.br)) {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
@@ -140,10 +136,24 @@ public class DigitalplaygroundCom extends PluginForHost {
                     break;
                 }
             }
+        } else if (link.getDownloadURL().matches(type_premium_pic_archive)) {
+            this.br.getPage(jd.plugins.decrypter.DigitalplaygroundCom.getPicUrl(account, fid));
+            if (jd.plugins.decrypter.DigitalplaygroundCom.isOffline(this.br)) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
+            /*
+             * There is only one .zip downloadurl so we can use a simple RegEx as there is not really any possibility for us to fail and
+             * ppick the wrong url compared to the other linktypes.
+             */
+            dllink = jd.plugins.decrypter.DigitalplaygroundCom.getPicArchiveDownloadlink(this.br);
         } else {
-            this.br.getPage(jd.plugins.decrypter.DigitalplaygroundCom.getVideoUrlPremium(fid));
             final String quality = link.getStringProperty("quality", null);
             if (quality == null) {
+                /* This should never happen. */
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
+            this.br.getPage(jd.plugins.decrypter.DigitalplaygroundCom.getVideoUrlPremium(account, fid));
+            if (jd.plugins.decrypter.DigitalplaygroundCom.isOffline(this.br)) {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
             /* We don't need the exact json source for that but we have to make sure to grab the http source, not the rtmp source! */
@@ -170,10 +180,8 @@ public class DigitalplaygroundCom extends PluginForHost {
         return FREE_MAXDOWNLOADS;
     }
 
-    private static Object LOCK = new Object();
-
     public void login(Browser br, final Account account, final boolean force) throws Exception {
-        synchronized (LOCK) {
+        synchronized (account) {
             try {
                 br.setCookiesExclusive(true);
                 prepBR(br);
@@ -184,41 +192,60 @@ public class DigitalplaygroundCom extends PluginForHost {
                      * when the user logs in via browser.
                      */
                     br.setCookies(account.getHoster(), cookies);
-                    br.getPage("http://" + jd.plugins.decrypter.DigitalplaygroundCom.DOMAIN_PREFIX_PREMIUM + account.getHoster() + "/");
-                    if (br.containsHTML(html_loggedin)) {
-                        logger.info("Cookie login successful");
+                    if (System.currentTimeMillis() - account.getCookiesTimeStamp("") <= 300000l && !force) {
+                        /* Trust cookies without verifying them. */
                         return;
+                    }
+                    final String digitalPlaygroundDomain = account.getStringProperty("digitalPlaygroundDomain", null);
+                    if (digitalPlaygroundDomain != null) {
+                        br.getPage("https://" + digitalPlaygroundDomain + "/");
+                        if (br.getHostCookie("instance_token", Cookies.NOTDELETEDPATTERN) != null && br.getHostCookie("access_token_ma", Cookies.NOTDELETEDPATTERN) != null) {
+                            account.saveCookies(br.getCookies(account.getHoster()), "");
+                            logger.info("Cookie login successful");
+                            return;
+                        }
                     }
                     logger.info("Cookie login failed --> Performing full login");
                     br = prepBR(new Browser());
                 }
-                br.getPage("http://" + jd.plugins.decrypter.DigitalplaygroundCom.DOMAIN_PREFIX_PREMIUM + account.getHoster() + "/access/login/");
+                br.getPage("https://ma." + account.getHoster() + "/access/login/");
                 String postdata = "rememberme=on&username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass());
-                if (br.containsHTML("api\\.recaptcha\\.net|google\\.com/recaptcha/api/")) {
-                    final Recaptcha rc = new Recaptcha(br, this);
-                    rc.findID();
-                    rc.load();
-                    final File cf = rc.downloadCaptcha(getLocalCaptchaFile());
-                    final DownloadLink dummyLink = new DownloadLink(this, "Account", account.getHoster(), "http://" + jd.plugins.decrypter.DigitalplaygroundCom.DOMAIN_PREFIX_PREMIUM + account.getHoster() + "/", true);
-                    final String code = getCaptchaCode("recaptcha", cf, dummyLink);
-                    postdata += "&recaptcha_challenge_field=" + Encoding.urlEncode(rc.getChallenge()) + "&recaptcha_response_field=" + Encoding.urlEncode(code);
+                if (br.containsHTML("recaptcha_image")) {
+                    final DownloadLink dlinkbefore = this.getDownloadLink();
+                    if (dlinkbefore == null) {
+                        this.setDownloadLink(new DownloadLink(this, "Account", this.getHost(), "http://" + account.getHoster(), true));
+                    }
+                    try {
+                        final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
+                        postdata += "&g-recaptcha-response=" + Encoding.urlEncode(recaptchaV2Response);
+                    } finally {
+                        if (dlinkbefore != null) {
+                            this.setDownloadLink(dlinkbefore);
+                        }
+                    }
                 }
-                br.postPage("http://" + jd.plugins.decrypter.DigitalplaygroundCom.DOMAIN_PREFIX_PREMIUM + account.getHoster() + "/access/submit/", postdata);
+                br.postPage("/access/submit/", postdata);
                 final Form continueform = br.getFormbyKey("response");
                 if (continueform != null) {
                     /* Redirect from probiller.com to main website --> Login complete */
                     br.submitForm(continueform);
-                }
-                if (!br.containsHTML(html_loggedin)) {
-                    if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername,Passwort und/oder login Captcha!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
-                    } else {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password/login captcha!\r\nQuick help:\r\nYou're sure that the username and password you entered are correct?\r\nIf your password contains special characters, change it (remove them) and try again!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                    /* Some errorhandling in case submitting the Form does not take us on their main page. */
+                    if (br.getURL().contains("/postlogin")) {
+                        br.getPage("/home/");
                     }
                 }
+                if (br.getHostCookie("instance_token", Cookies.NOTDELETEDPATTERN) == null) {
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
+                } else if (br.getHostCookie("access_token_ma", Cookies.NOTDELETEDPATTERN) == null) {
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
+                }
+                account.setProperty("digitalPlaygroundDomain", br._getURL().getHost());
                 account.saveCookies(br.getCookies(account.getHoster()), "");
             } catch (final PluginException e) {
-                account.clearCookies("");
+                if (e.getLinkStatus() == LinkStatus.ERROR_PREMIUM) {
+                    account.clearCookies("");
+                    account.removeProperty("digitalPlaygroundDomain");
+                }
                 throw e;
             }
         }
@@ -227,12 +254,7 @@ public class DigitalplaygroundCom extends PluginForHost {
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         final AccountInfo ai = new AccountInfo();
-        try {
-            login(this.br, account, true);
-        } catch (PluginException e) {
-            account.setValid(false);
-            throw e;
-        }
+        login(this.br, account, true);
         ai.setUnlimitedTraffic();
         account.setType(AccountType.PREMIUM);
         account.setMaxSimultanDownloads(ACCOUNT_PREMIUM_MAXDOWNLOADS);
@@ -261,11 +283,58 @@ public class DigitalplaygroundCom extends PluginForHost {
     }
 
     @Override
+    public boolean canHandle(final DownloadLink downloadLink, final Account account) throws Exception {
+        return account != null;
+    }
+
+    public boolean allowHandle(final DownloadLink downloadLink, final PluginForHost plugin) {
+        final boolean is_this_plugin = downloadLink.getHost().equalsIgnoreCase(plugin.getHost());
+        if (is_this_plugin) {
+            /* The original plugin is always allowed to download. */
+            return true;
+        } else if (!downloadLink.isEnabled() && "".equals(downloadLink.getPluginPatternMatcher())) {
+            /*
+             * setMultiHostSupport uses a dummy DownloadLink, with isEnabled == false. we must set to true for the host to be added to the
+             * supported host array.
+             */
+            return true;
+        } else {
+            final String mainlink = getMainlink(downloadLink);
+            /* Multihosts should only be tried if we have the correct url. */
+            return jd.plugins.decrypter.DigitalplaygroundCom.isTrailerUrl(mainlink);
+        }
+    }
+
+    @Override
+    public String buildExternalDownloadURL(final DownloadLink downloadLink, final PluginForHost buildForThisPlugin) {
+        if (!StringUtils.equals(this.getHost(), buildForThisPlugin.getHost())) {
+            final String mainlink = getMainlink(downloadLink);
+            final String extern_url = jd.plugins.decrypter.DigitalplaygroundCom.getVideoUrlFree(mainlink);
+            return extern_url;
+        } else {
+            return super.buildExternalDownloadURL(downloadLink, buildForThisPlugin);
+        }
+    }
+
+    private String getMainlink(final DownloadLink dl) {
+        String mainlink = dl.getStringProperty("mainlink", null);
+        if (mainlink == null) {
+            mainlink = dl.getDownloadURL();
+        }
+        return mainlink;
+    }
+
+    @Override
     public String getDescription() {
         return "Download videos- and pictures with the digitalplayground.com plugin.";
     }
 
     private void setConfigElements() {
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), "ENABLE_FAST_LINKCHECK", "Enable fast linkcheck?\r\nFilesize will not be shown until downloadstart or manual linkcheck!").setDefaultValue(true));
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), "AUTO_PICTURES", "Grab picture galleries automatically when adding movie urls?").setDefaultValue(false));
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), "AUTO_MOVIES", "Grab movies automatically when grabbing picture urls?").setDefaultValue(false));
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_COMBOBOX_INDEX, getPluginConfig(), "PREFERRED_PICTURE_FILE_TYPE", new String[] { "single zip file", "One by one" }, "Download images via: ").setDefaultValue(0));
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_SEPARATOR));
         getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), "GRAB_1080p_6000", "Grab 1080p (mp4)?").setDefaultValue(true));
         getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), "GRAB_720p_4000", "Grab 720p (mp4)?").setDefaultValue(true));
         getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), "GRAB_480p_1500", "Grab 480p (mp4)?").setDefaultValue(true));
@@ -289,5 +358,4 @@ public class DigitalplaygroundCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

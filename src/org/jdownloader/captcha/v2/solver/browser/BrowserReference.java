@@ -4,9 +4,12 @@ import java.awt.Rectangle;
 import java.io.IOException;
 import java.net.URL;
 import java.util.HashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
+
+import jd.controlling.TaskQueue;
+import jd.parser.Regex;
+import jd.plugins.Plugin;
 
 import org.appwork.exceptions.WTFException;
 import org.appwork.net.protocol.http.HTTPConstants;
@@ -18,9 +21,12 @@ import org.appwork.utils.IO;
 import org.appwork.utils.StringUtils;
 import org.appwork.utils.event.queue.QueueAction;
 import org.appwork.utils.net.HTTPHeader;
+import org.appwork.utils.net.httpserver.HttpConnection.ConnectionHook;
 import org.appwork.utils.net.httpserver.HttpHandlerInfo;
+import org.appwork.utils.net.httpserver.handler.ExtendedHttpRequestHandler;
 import org.appwork.utils.net.httpserver.handler.HttpRequestHandler;
 import org.appwork.utils.net.httpserver.requests.GetRequest;
+import org.appwork.utils.net.httpserver.requests.HttpRequest;
 import org.appwork.utils.net.httpserver.requests.PostRequest;
 import org.appwork.utils.net.httpserver.responses.HttpResponse;
 import org.appwork.utils.os.CrossSystem;
@@ -31,22 +37,19 @@ import org.jdownloader.captcha.v2.solver.service.BrowserSolverService;
 import org.jdownloader.captcha.v2.solverjob.SolverJob;
 import org.jdownloader.controlling.UniqueAlltimeID;
 
-import jd.controlling.TaskQueue;
-import jd.parser.Regex;
-
-public abstract class BrowserReference implements HttpRequestHandler {
+public abstract class BrowserReference implements ExtendedHttpRequestHandler, HttpRequestHandler, ConnectionHook {
     private final AtomicReference<HttpHandlerInfo> handlerInfo = new AtomicReference<HttpHandlerInfo>(null);
     private final AbstractBrowserChallenge         challenge;
     private final UniqueAlltimeID                  id          = new UniqueAlltimeID();
-    private final AtomicReference<Process>         process     = new AtomicReference<Process>(null);
-    private BrowserWindow                          browserWindow;
-    private BrowserViewport                        viewport;
-    private final HashMap<String, URL>             resourceIds;
-    private final HashMap<String, String>          types;
-    private long                                   opened;
-    private long                                   latestRequest;
-    private final static AtomicInteger             LATESTPORT  = new AtomicInteger(BrowserSolverService.getInstance().getConfig().getLocalHttpPort());
 
+    public UniqueAlltimeID getId() {
+        return id;
+    }
+
+    private final AtomicReference<Process> process = new AtomicReference<Process>(null);
+    private final HashMap<String, URL>     resourceIds;
+    private final HashMap<String, String>  types;
+    protected String                       base;
     {
         resourceIds = new HashMap<String, URL>();
         resourceIds.put("style.css", BrowserReference.class.getResource("html/style.css"));
@@ -81,27 +84,48 @@ public abstract class BrowserReference implements HttpRequestHandler {
         this.challenge = challenge;
     }
 
+    private String              baseHost;
+    private int                 basePort;
+    private final static Object LOCK = new Object();
+
     public void open() throws IOException {
         TaskQueue.getQueue().addWait(new QueueAction<Void, IOException>() {
             @Override
             protected Void run() throws IOException {
                 HttpHandlerInfo lHandlerInfo = null;
-                try {
-                    int port = LATESTPORT.get();
-                    if (port < 1024) {
-                        port = 0;
-                    } else if (port > 65000) {
-                        port = 65000;
+                synchronized (LOCK) {
+                    try {
+                        int port = BrowserSolverService.getInstance().getConfig().getLocalHttpPort();
+                        if (port < 1024) {
+                            port = 0;
+                        } else if (port > 65000) {
+                            port = 65000;
+                        }
+                        lHandlerInfo = DeprecatedAPIHttpServerController.getInstance().registerRequestHandler(port, true, BrowserReference.this);
+                    } catch (final IOException e) {
+                        lHandlerInfo = DeprecatedAPIHttpServerController.getInstance().registerRequestHandler(0, true, BrowserReference.this);
                     }
-                    lHandlerInfo = DeprecatedAPIHttpServerController.getInstance().registerRequestHandler(port, true, BrowserReference.this);
-                } catch (final IOException e) {
-                    lHandlerInfo = DeprecatedAPIHttpServerController.getInstance().registerRequestHandler(0, true, BrowserReference.this);
+                    BrowserSolverService.getInstance().getConfig().setLocalHttpPort(lHandlerInfo.getPort());
                 }
-                LATESTPORT.set(lHandlerInfo.getPort());
-                openURL("http://127.0.0.1:" + lHandlerInfo.getPort() + "/" + challenge.getHttpPath() + "/?id=" + id.getID());
+                base = "http://127.0.0.1:" + lHandlerInfo.getPort() + "/" + challenge.getHttpPath();
+                baseHost = "127.0.0.1";
+                basePort = lHandlerInfo.getPort();
+                openURL(base + "/?id=" + id.getID());
                 return null;
             }
         });
+    }
+
+    public String getBaseHost() {
+        return baseHost;
+    }
+
+    public int getBasePort() {
+        return basePort;
+    }
+
+    public String getBase() {
+        return base;
     }
 
     private void openURL(String url) {
@@ -131,7 +155,6 @@ public abstract class BrowserReference implements HttpRequestHandler {
             // }
             // }
         }
-        opened = System.currentTimeMillis();
         if (browserCmd == null || browserCmd.length == 0) {
             CrossSystem.openURL(url);
         } else {
@@ -183,9 +206,44 @@ public abstract class BrowserReference implements HttpRequestHandler {
     }
 
     @Override
+    public void onBeforeRequest(HttpRequest request, HttpResponse response) {
+        response.setHook(this);
+    }
+
+    @Override
+    public void onBeforeSendHeaders(HttpResponse response) {
+        HttpRequest request = response.getConnection().getRequest();
+        response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_ACCESS_CONTROL_ALLOW_ORIGIN, "http://" + getBaseHost() + ":" + getBasePort()));
+        // ContentSecurityHeader csp = new ContentSecurityHeader();
+        // csp.addDefaultSrc("'self'");
+        // csp.addDefaultSrc("'unsafe-inline'");
+        // csp.addDefaultSrc("https://fonts.googleapis.com");
+        // csp.addDefaultSrc("https://fonts.gstatic.com");
+        // csp.addDefaultSrc("http://www.sweetcaptcha.com");
+        // csp.addDefaultSrc("http://code.jquery.com/jquery-1.10.2.min.js");
+        // csp.addDefaultSrc("http://sweetcaptcha.s3.amazonaws.com");
+        // response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_SECURITY_POLICY, csp.toHeaderString()));
+        response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_X_FRAME_OPTIONS, "SAMEORIGIN"));
+        response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_X_XSS_PROTECTION, "1; mode=block"));
+        response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_X_CONTENT_TYPE_OPTIONS, "nosniff"));
+    }
+
+    @Override
+    public void onAfterRequest(HttpRequest request, HttpResponse response, boolean handled) {
+        if (!handled) {
+            response.setHook(null);
+        }
+    }
+
+    @Override
+    public void onAfterRequestException(HttpRequest request, HttpResponse response, Throwable e) {
+    }
+
+    @Override
     public boolean onGetRequest(GetRequest request, HttpResponse response) throws BasicRemoteAPIException {
         try {
-            latestRequest = System.currentTimeMillis();
+            HTTPHeader originHeader = request.getRequestHeaders().get(HTTPConstants.HEADER_REQUEST_ORIGIN);
+            // todo: origin check
             if ("/resource".equals(request.getRequestedPath())) {
                 String resourceID = new Regex(request.getRequestedURLParameters().get(0).value, "([^\\?]+)").getMatch(0);
                 URL resource = resourceIds.get(resourceID);
@@ -205,8 +263,9 @@ public abstract class BrowserReference implements HttpRequestHandler {
             if (custom) {
                 return true;
             }
-            String pDo = request.getParameterbyKey("do");
-            String id = request.getParameterbyKey("id");
+            final String pDo = request.getParameterbyKey("do");
+            final String id = request.getParameterbyKey("id");
+            final String useractive = request.getParameterbyKey("useractive");
             if (!StringUtils.equals(id, Long.toString(this.id.getID()))) {
                 return false;
             }
@@ -214,22 +273,37 @@ public abstract class BrowserReference implements HttpRequestHandler {
             response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_TYPE, "text/html; charset=utf-8"));
             if ("loaded".equals(pDo)) {
                 HTTPHeader ua = request.getRequestHeaders().get("User-Agent");
-                browserWindow = new BrowserWindow(ua == null ? null : ua.getValue(), (int) Double.parseDouble(request.getParameterbyKey("x")), (int) Double.parseDouble(request.getParameterbyKey("y")), (int) Double.parseDouble(request.getParameterbyKey("w")), (int) Double.parseDouble(request.getParameterbyKey("h")), (int) Double.parseDouble(request.getParameterbyKey("vw")), (int) Double.parseDouble(request.getParameterbyKey("vh")));
-                if (BrowserSolverService.getInstance().getConfig().isAutoClickEnabled()) {
-                    Rectangle elementBounds = null;
+                final BrowserCaptchaSolverConfig config = BrowserSolverService.getInstance().getConfig();
+                if (config.isAutoClickEnabled()) {
                     try {
-                        elementBounds = new Rectangle((int) Double.parseDouble(request.getParameterbyKey("eleft")), (int) Double.parseDouble(request.getParameterbyKey("etop")), (int) Double.parseDouble(request.getParameterbyKey("ew")), (int) Double.parseDouble(request.getParameterbyKey("eh")));
-                        this.viewport = challenge.getBrowserViewport(browserWindow, elementBounds);
+                        final BrowserWindow browserWindow = new BrowserWindow(ua == null ? null : ua.getValue(), (int) Double.parseDouble(request.getParameterbyKey("x")), (int) Double.parseDouble(request.getParameterbyKey("y")), (int) Double.parseDouble(request.getParameterbyKey("w")), (int) Double.parseDouble(request.getParameterbyKey("h")), (int) Double.parseDouble(request.getParameterbyKey("vw")), (int) Double.parseDouble(request.getParameterbyKey("vh")));
+                        if (CrossSystem.isUnix()) {
+                            config.setAutoClickEnabled(false);
+                            config._getStorageHandler().write();
+                        }
+                        final Rectangle elementBounds = new Rectangle((int) Double.parseDouble(request.getParameterbyKey("eleft")), (int) Double.parseDouble(request.getParameterbyKey("etop")), (int) Double.parseDouble(request.getParameterbyKey("ew")), (int) Double.parseDouble(request.getParameterbyKey("eh")));
+                        final BrowserViewport viewport = challenge.getBrowserViewport(browserWindow, elementBounds);
                         if (viewport != null) {
                             viewport.onLoaded();
                         }
+                    } catch (NumberFormatException e) {
+                        // undefined
                     } catch (Throwable e) {
+                        final Plugin plugin = challenge.getPlugin();
+                        if (plugin != null && plugin.getLogger() != null) {
+                            plugin.getLogger().log(e);
+                        }
+                    } finally {
+                        config.setAutoClickEnabled(true);
                     }
                     response.getOutputStream(true).write("Thanks".getBytes("UTF-8"));
                 }
                 return true;
             } else if ("canClose".equals(pDo)) {
-                SolverJob<?> job = ChallengeResponseController.getInstance().getJobById(challenge.getId().getID());
+                if (useractive != null) {
+                    ChallengeResponseController.getInstance().keepAlivePendingChallenges(challenge);
+                }
+                final SolverJob<?> job = ChallengeResponseController.getInstance().getJobByChallengeId(challenge.getId().getID());
                 if (challenge.isSolved() || job == null || job.isDone() || BrowserSolver.getInstance().isJobDone(job)) {
                     response.getOutputStream(true).write("true".getBytes("UTF-8"));
                     return true;
@@ -237,18 +311,23 @@ public abstract class BrowserReference implements HttpRequestHandler {
                     response.getOutputStream(true).write("false".getBytes("UTF-8"));
                 }
             } else if ("unload".equals(pDo)) {
-                SolverJob<?> job = ChallengeResponseController.getInstance().getJobById(challenge.getId().getID());
-                BrowserSolver.getInstance().kill((SolverJob<String>) job);
+                final SolverJob<?> job = ChallengeResponseController.getInstance().getJobByChallengeId(challenge.getId().getID());
+                if (job != null) {
+                    BrowserSolver.getInstance().kill((SolverJob<String>) job);
+                }
                 response.getOutputStream(true).write("true".getBytes("UTF-8"));
                 return true;
             } else if (pDo == null) {
-                response.getOutputStream(true).write(challenge.getHTML().getBytes("UTF-8"));
+                response.getOutputStream(true).write(challenge.getHTML(request, String.valueOf(this.id.getID())).getBytes("UTF-8"));
             } else {
                 return challenge.onGetRequest(this, request, response);
             }
             return true;
         } catch (Throwable e) {
-            e.printStackTrace();
+            final Plugin plugin = challenge.getPlugin();
+            if (plugin != null && plugin.getLogger() != null) {
+                plugin.getLogger().log(e);
+            }
             error(response, e);
             return true;
         }
@@ -282,6 +361,10 @@ public abstract class BrowserReference implements HttpRequestHandler {
             }
             return challenge.onPostRequest(this, request, response);
         } catch (Throwable e) {
+            final Plugin plugin = challenge.getPlugin();
+            if (plugin != null && plugin.getLogger() != null) {
+                plugin.getLogger().log(e);
+            }
             error(response, e);
             return true;
         }

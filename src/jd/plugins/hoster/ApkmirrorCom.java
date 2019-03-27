@@ -13,10 +13,7 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
-
-import java.io.IOException;
 
 import jd.PluginWrapper;
 import jd.config.Property;
@@ -28,13 +25,12 @@ import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
-import jd.plugins.PluginForHost;
 
 import org.appwork.utils.formatter.SizeFormatter;
+import org.jdownloader.plugins.components.antiDDoSForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "apkmirror.com" }, urls = { "http://(?:www\\.)?apkmirror\\.com/apk/[^/]+/[^/]+/[^/]+/[^/]+\\-download/" })
-public class ApkmirrorCom extends PluginForHost {
-
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "apkmirror.com" }, urls = { "https?://(?:www\\.)?apkmirror\\.com/apk/[^/]+/[^/]+/[^/]+/[^/]+\\-download/" })
+public class ApkmirrorCom extends antiDDoSForHost {
     public ApkmirrorCom(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -58,11 +54,10 @@ public class ApkmirrorCom extends PluginForHost {
     //
     // /* don't touch the following! */
     // private static AtomicInteger maxPrem = new AtomicInteger(1);
-
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         this.setBrowserExclusive();
-        br.getPage(link.getDownloadURL());
+        getPage(link.getDownloadURL());
         if (br.getHttpConnection().getResponseCode() == 404) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
@@ -94,7 +89,7 @@ public class ApkmirrorCom extends PluginForHost {
     private void doFree(final DownloadLink downloadLink, final boolean resumable, final int maxchunks, final String directlinkproperty) throws Exception, PluginException {
         String dllink = checkDirectLink(downloadLink, directlinkproperty);
         if (dllink == null) {
-            this.br.getPage(this.br.getURL() + "download/");
+            getPage(this.br.getURL() + "download/");
             dllink = br.getRegex("download\\.php\\?id=(\\d+)").getMatch(0);
             if (dllink == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -147,5 +142,4 @@ public class ApkmirrorCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

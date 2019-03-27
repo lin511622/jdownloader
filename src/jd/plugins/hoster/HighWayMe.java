@@ -23,11 +23,30 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.appwork.utils.StringUtils;
+import org.jdownloader.controlling.filter.CompiledFiletypeFilter;
+import org.jdownloader.gui.IconKey;
+import org.jdownloader.gui.notify.BasicNotify;
+import org.jdownloader.gui.notify.BubbleNotify;
+import org.jdownloader.gui.notify.BubbleNotify.AbstractNotifyWindowFactory;
+import org.jdownloader.gui.notify.gui.AbstractNotifyWindow;
+import org.jdownloader.images.AbstractIcon;
+import org.jdownloader.plugins.ConditionalSkipReasonException;
+import org.jdownloader.plugins.WaitingSkipReason;
+import org.jdownloader.plugins.WaitingSkipReason.CAUSE;
+import org.jdownloader.plugins.components.usenet.UsenetAccountConfigInterface;
+import org.jdownloader.plugins.components.usenet.UsenetServer;
+import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
+
 import jd.PluginWrapper;
 import jd.config.Property;
+import jd.controlling.AccountController;
 import jd.http.Browser;
+import jd.http.Cookies;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
+import jd.parser.Regex;
 import jd.plugins.Account;
 import jd.plugins.Account.AccountType;
 import jd.plugins.AccountInfo;
@@ -39,26 +58,18 @@ import jd.plugins.Plugin;
 import jd.plugins.PluginException;
 import jd.plugins.components.PluginJSonUtils;
 
-import org.jdownloader.gui.IconKey;
-import org.jdownloader.gui.notify.BasicNotify;
-import org.jdownloader.gui.notify.BubbleNotify;
-import org.jdownloader.gui.notify.BubbleNotify.AbstractNotifyWindowFactory;
-import org.jdownloader.gui.notify.gui.AbstractNotifyWindow;
-import org.jdownloader.images.AbstractIcon;
-import org.jdownloader.plugins.components.usenet.UsenetAccountConfigInterface;
-import org.jdownloader.plugins.components.usenet.UsenetServer;
-import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
-import org.jdownloader.scripting.JavaScriptEngineFactory;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "high-way.me" }, urls = { "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsfs2133" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "high-way.me" }, urls = { "https?://high\\-way\\.me/onlinetv\\.php\\?id=\\d+[^/]+|https?://[a-z0-9\\-\\.]+\\.high\\-way\\.me/dlu/[a-z0-9]+/[^/]+" })
 public class HighWayMe extends UseNet {
     /** General API information: According to admin we can 'hammer' the API every 60 seconds */
     private static final String                            DOMAIN                              = "http://http.high-way.me/api.php";
     private static final String                            NICE_HOST                           = "high-way.me";
     private static final String                            NICE_HOSTproperty                   = NICE_HOST.replaceAll("(\\.|\\-)", "");
     private static final String                            NORESUME                            = NICE_HOSTproperty + "NORESUME";
+    private static final String                            TYPE_TV                             = ".+high\\-way\\.me/onlinetv\\.php\\?id=.+";
+    private static final String                            TYPE_DIRECT                         = ".+high\\-way\\.me/dlu/[a-z0-9]+/[^/]+";
     private static final int                               ERRORHANDLING_MAXLOGINS             = 2;
     private static final int                               STATUSCODE_PASSWORD_NEEDED_OR_WRONG = 13;
+    private static final long                              trust_cookie_age                    = 300000l;
     private static HashMap<Account, HashMap<String, Long>> hostUnavailableMap                  = new HashMap<Account, HashMap<String, Long>>();
     /* Contains <host><Boolean resume possible|impossible> */
     private static HashMap<String, Boolean>                hostResumeMap                       = new HashMap<String, Boolean>();
@@ -70,8 +81,6 @@ public class HighWayMe extends UseNet {
     private static HashMap<String, AtomicInteger>          hostRunningDlsNumMap                = new HashMap<String, AtomicInteger>();
     private static HashMap<String, Integer>                hostRabattMap                       = new HashMap<String, Integer>();
     private static Object                                  UPDATELOCK                          = new Object();
-    /* Last updated: 31.03.15 */
-    private static final int                               defaultMAXDOWNLOADS                 = 10;
     private static final int                               defaultMAXCHUNKS                    = -4;
     private static final boolean                           defaultRESUME                       = false;
     private int                                            statuscode                          = 0;
@@ -121,14 +130,99 @@ public class HighWayMe extends UseNet {
     public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         if (isUsenetLink(link)) {
             return super.requestFileInformation(link);
+        } else if (link.getDownloadURL().matches(TYPE_TV)) {
+            final boolean check_via_json = true;
+            final String dlink = Encoding.urlDecode(link.getDownloadURL(), true);
+            final String linkid = new Regex(dlink, "id=(\\d+)").getMatch(0);
+            link.setName(linkid);
+            link.setLinkID(linkid);
+            link.setMimeHint(CompiledFiletypeFilter.VideoExtensions.MP4);
+            br.setFollowRedirects(true);
+            ArrayList<Account> accs = AccountController.getInstance().getValidAccounts(this.getHost());
+            if (accs == null || accs.size() == 0) {
+                link.getLinkStatus().setStatusText("Only downlodable via account!");
+                return AvailableStatus.UNCHECKABLE;
+            }
+            URLConnectionAdapter con = null;
+            long filesize = -1;
+            String filesize_str;
+            String filename = null;
+            for (Account acc : accs) {
+                this.currAcc = acc;
+                this.loginSafe(false);
+                if (check_via_json) {
+                    final String json_url = link.getDownloadURL().replaceAll("stream=(?:0|1)", "") + "&json=1";
+                    this.br.getPage(json_url);
+                    final String code = PluginJSonUtils.getJsonValue(this.br, "code");
+                    filename = PluginJSonUtils.getJsonValue(this.br, "name");
+                    filesize_str = PluginJSonUtils.getJsonValue(this.br, "size");
+                    if ("5".equals(code)) {
+                        /* Login issue */
+                        return AvailableStatus.UNCHECKABLE;
+                    } else if (!"0".equals(code)) {
+                        throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+                    }
+                    if (StringUtils.isEmpty(filename) || StringUtils.isEmpty(filesize_str) || !filesize_str.matches("\\d+")) {
+                        /* This should never happen at this stage! */
+                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                    }
+                    filesize = Long.parseLong(filesize_str);
+                    break;
+                } else {
+                    try {
+                        con = br.openHeadConnection(dlink);
+                        if (!con.getContentType().contains("html")) {
+                            filesize = con.getLongContentLength();
+                            if (filesize <= 0) {
+                                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+                            }
+                            filename = getFileNameFromHeader(con);
+                        }
+                    } finally {
+                        try {
+                            con.disconnect();
+                        } catch (Throwable e) {
+                        }
+                    }
+                    break;
+                }
+            }
+            if (filesize > -1) {
+                link.setDownloadSize(filesize);
+            }
+            /* 2017-05-18: Even via json API, filenames are often html encoded --> Fix that */
+            filename = Encoding.htmlDecode(filename);
+            link.setFinalFileName(filename);
         } else {
-            return AvailableStatus.UNCHECKABLE;
+            /* Direct URLs (e.g. Usenet Downloads) - downloadable even without account. */
+            URLConnectionAdapter con = null;
+            try {
+                con = br.openHeadConnection(link.getDownloadURL());
+                if (con.getContentType().contains("html")) {
+                    throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+                }
+                final long filesize = con.getLongContentLength();
+                if (filesize <= 0) {
+                    throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+                }
+                link.setFinalFileName(getFileNameFromHeader(con));
+                link.setDownloadSize(filesize);
+            } finally {
+                try {
+                    con.disconnect();
+                } catch (Throwable e) {
+                }
+            }
         }
+        return AvailableStatus.TRUE;
     }
 
     @Override
     public boolean canHandle(final DownloadLink downloadLink, final Account account) throws Exception {
-        if (account == null) {
+        if (account != null && downloadLink.getPluginPatternMatcher().matches(TYPE_DIRECT)) {
+            /* This is the only linktype which is downloadable via account */
+            return true;
+        } else if (account == null) {
             /* without account its not possible to download the link */
             return false;
         }
@@ -139,7 +233,11 @@ public class HighWayMe extends UseNet {
                 final int maxDlsForCurrentHost = hostMaxdlsMap.get(currentHost);
                 final AtomicInteger currentRunningDlsForCurrentHost = hostRunningDlsNumMap.get(currentHost);
                 if (currentRunningDlsForCurrentHost.get() >= maxDlsForCurrentHost) {
-                    return false;
+                    /*
+                     * Max downloads for specific host for this MOCH reached --> Avoid irritating/wrong 'Account missing' errormessage for
+                     * this case - wait and retry!
+                     */
+                    throw new ConditionalSkipReasonException(new WaitingSkipReason(CAUSE.HOST_TEMP_UNAVAILABLE, 15 * 1000, null));
                 }
             }
         }
@@ -147,14 +245,42 @@ public class HighWayMe extends UseNet {
     }
 
     @Override
-    public void handleFree(DownloadLink downloadLink) throws Exception, PluginException {
-        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+    public void handleFree(final DownloadLink downloadLink) throws Exception, PluginException {
+        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, downloadLink.getDownloadURL(), true, defaultMAXCHUNKS);
+        if (dl.getConnection().getContentType().contains("html")) {
+            if (dl.getConnection().getResponseCode() == 403) {
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 30 * 60 * 1000l);
+            } else if (dl.getConnection().getResponseCode() == 404) {
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 404", 60 * 60 * 1000l);
+            }
+            logger.warning("The final dllink seems not to be a file!");
+            this.br.followConnection();
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown server error", 60 * 60 * 1000l);
+        }
+        dl.startDownload();
     }
 
     @Override
-    public void handlePremium(DownloadLink link, Account account) throws Exception {
-        /* handle premium should never be called */
-        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+    public void handlePremium(final DownloadLink link, final Account account) throws Exception {
+        this.setConstants(account, link);
+        this.loginSafe(false);
+        if (isUsenetLink(link)) {
+            super.handleMultiHost(link, account);
+            return;
+        } else {
+            dl = jd.plugins.BrowserAdapter.openDownload(br, link, link.getDownloadURL(), true, defaultMAXCHUNKS);
+            if (dl.getConnection().getContentType().contains("html")) {
+                if (dl.getConnection().getResponseCode() == 403) {
+                    throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 30 * 60 * 1000l);
+                } else if (dl.getConnection().getResponseCode() == 404) {
+                    throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 404", 60 * 60 * 1000l);
+                }
+                logger.warning("The final dllink seems not to be a file!");
+                this.br.followConnection();
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown server error", 60 * 60 * 1000l);
+            }
+            dl.startDownload();
+        }
     }
 
     @SuppressWarnings("deprecation")
@@ -179,13 +305,16 @@ public class HighWayMe extends UseNet {
             maxChunks = 1;
         }
         link.setProperty(NICE_HOSTproperty + "directlink", dllink);
+        br.setAllowedResponseCodes(new int[] { 503 });
         dl = jd.plugins.BrowserAdapter.openDownload(br, link, dllink, resume, maxChunks);
-        if (dl.getConnection().getResponseCode() == 416) {
+        final long responsecode = dl.getConnection().getResponseCode();
+        if (responsecode == 416) {
             logger.info("Resume impossible, disabling it for the next try");
             link.setChunksProgress(null);
             link.setProperty(HighWayMe.NORESUME, Boolean.valueOf(true));
             throw new PluginException(LinkStatus.ERROR_RETRY);
         }
+        jd.plugins.hoster.SimplyPremiumCom.handle503(this.br, responsecode);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             handleErrorRetries("unknowndlerror", 10, 5 * 60 * 1000l);
@@ -319,7 +448,8 @@ public class HighWayMe extends UseNet {
         this.br = newBrowser();
         final AccountInfo ai = new AccountInfo();
         br.setFollowRedirects(true);
-        this.postAPISafe(DOMAIN + "?login&user&hoster", "pass=" + Encoding.urlEncode(this.currAcc.getPass()) + "&user=" + Encoding.urlEncode(this.currAcc.getUser()));
+        this.login(true);
+        getAPISafe(DOMAIN + "?hoster&user");
         final LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
         final LinkedHashMap<String, Object> info_account = (LinkedHashMap<String, Object>) entries.get("user");
         final ArrayList<Object> array_hoster = (ArrayList) entries.get("hoster");
@@ -423,20 +553,39 @@ public class HighWayMe extends UseNet {
         return null;
     }
 
-    /** Login without errorhandling */
-    private void login() throws IOException {
+    /**
+     * Login without errorhandling
+     *
+     * @throws PluginException
+     */
+    private void login(final boolean force) throws IOException, PluginException {
+        final Cookies cookies = this.currAcc.loadCookies("");
+        if (cookies != null && !force) {
+            this.br.setCookies(this.getHost(), cookies);
+            if (System.currentTimeMillis() - this.currAcc.getCookiesTimeStamp("") <= trust_cookie_age) {
+                /* We trust these cookies --> Do not check them */
+                return;
+            }
+            this.br.getPage(DOMAIN + "?logincheck");
+            if ("true".equals(PluginJSonUtils.getJsonValue(this.br, "loggedin"))) {
+                /* Cookies valid? --> Save them again to renew the last-saved timestamp. */
+                this.currAcc.saveCookies(this.br.getCookies(this.br.getHost()), "");
+                return;
+            }
+            /* Cookies not valid anymore --> Perform full login */
+        }
         br.postPage(DOMAIN + "?login", "pass=" + Encoding.urlEncode(this.currAcc.getPass()) + "&user=" + Encoding.urlEncode(this.currAcc.getUser()));
+        if (br.getCookie(br.getURL(), "xf_user") == null) {
+            throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
+        }
+        this.currAcc.saveCookies(this.br.getCookies(this.br.getHost()), "");
     }
 
     /** Login + errorhandling */
-    private void loginSafe() throws IOException, PluginException {
-        login();
+    private void loginSafe(final boolean force) throws IOException, PluginException {
+        login(force);
         updatestatuscode();
         handleAPIErrors(this.br);
-    }
-
-    private String getXML(final String key) {
-        return br.getRegex("<" + key + ">([^<>\"]*?)</" + key + ">").getMatch(0);
     }
 
     private void tempUnavailableHoster(long timeout) throws PluginException {
@@ -481,11 +630,15 @@ public class HighWayMe extends UseNet {
         handleAPIErrors(this.br);
     }
 
-    /** Performs full logins on errorcode 9 up to ERRORHANDLING_MAXLOGINS-times, hopefully avoiding login/cookie problems. */
-    private void handleLoginIssues() throws IOException {
+    /**
+     * Performs full logins on errorcode 9 up to ERRORHANDLING_MAXLOGINS-times, hopefully avoiding login/cookie problems.
+     *
+     * @throws PluginException
+     */
+    private void handleLoginIssues() throws IOException, PluginException {
         updatestatuscode();
         if (this.statuscode == 9) {
-            this.login();
+            this.login(true);
             updatestatuscode();
         }
     }
@@ -688,13 +841,15 @@ public class HighWayMe extends UseNet {
     }
 
     @Override
-    public int getMaxSimultanDownload(DownloadLink link, Account account) {
+    public int getMaxSimultanDownload(final DownloadLink link, final Account account) {
         if (account != null) {
             if (isUsenetLink(link)) {
                 return 5;
             } else {
                 if (link == null) {
                     return account.getMaxSimultanDownloads();
+                } else if (link.getDownloadURL().matches(TYPE_DIRECT)) {
+                    return 5;
                 } else {
                     final String currentHost = correctHost(link.getHost());
                     synchronized (UPDATELOCK) {
@@ -704,13 +859,17 @@ public class HighWayMe extends UseNet {
                     }
                 }
             }
+        } else if (link != null && link.getDownloadURL().matches(TYPE_DIRECT)) {
+            return 5;
         }
-        return 0;
+        return 1;
     }
 
+    /** According to High-Way staff, Usenet SSL is unavailable since 2017-08-01 */
     @Override
     public List<UsenetServer> getAvailableUsenetServer() {
         final List<UsenetServer> ret = new ArrayList<UsenetServer>();
+        ret.addAll(UsenetServer.createServerList("reader.high-way.me", false, 119));
         ret.addAll(UsenetServer.createServerList("reader.high-way.me", true, 563));
         return ret;
     }

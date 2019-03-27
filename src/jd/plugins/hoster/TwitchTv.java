@@ -13,9 +13,10 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
+import java.io.IOException;
+import java.net.URLDecoder;
 import java.text.DecimalFormat;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
@@ -23,7 +24,9 @@ import java.util.Calendar;
 import java.util.Date;
 import java.util.GregorianCalendar;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map.Entry;
+import java.util.Random;
 
 import jd.PluginWrapper;
 import jd.config.ConfigContainer;
@@ -34,10 +37,12 @@ import jd.controlling.downloadcontroller.SingleDownloadController;
 import jd.http.Browser;
 import jd.http.Cookie;
 import jd.http.Cookies;
+import jd.http.Request;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.parser.html.Form;
+import jd.parser.html.InputField;
 import jd.plugins.Account;
 import jd.plugins.Account.AccountType;
 import jd.plugins.AccountInfo;
@@ -48,18 +53,21 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.PluginJSonUtils;
+import jd.plugins.download.raf.FileBytesMap;
 import jd.utils.locale.JDL;
 
 import org.appwork.utils.StringUtils;
+import org.appwork.utils.logging2.LogSource;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
 import org.jdownloader.controlling.ffmpeg.FFmpegMetaData;
 import org.jdownloader.controlling.ffmpeg.json.Stream;
 import org.jdownloader.controlling.ffmpeg.json.StreamInfo;
 import org.jdownloader.downloader.hls.HLSDownloader;
 import org.jdownloader.downloader.hls.M3U8Playlist;
+import org.jdownloader.downloader.hls.M3U8Playlist.M3U8Segment;
 
 @HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "twitch.tv" }, urls = { "http://twitchdecrypted\\.tv/\\d+" })
 public class TwitchTv extends PluginForHost {
-
     public TwitchTv(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium("https://secure.twitch.tv/products/turbo_year/ticket");
@@ -82,18 +90,23 @@ public class TwitchTv extends PluginForHost {
     private final static String CUSTOM_FILENAME_3         = "CUSTOM_FILENAME_3";
     private final static String CUSTOM_FILENAME_4         = "CUSTOM_FILENAME_4";
     private final static String PARTNUMBERFORMAT          = "PARTNUMBERFORMAT";
-
     private static final int    ACCOUNT_FREE_MAXDOWNLOADS = 20;
-
     private String              dllink                    = null;
 
-    private Browser             ajax                      = null;
-
-    private void ajaxSubmitForm(final Form form) throws Exception {
-        ajax = br.cloneBrowser();
-        ajax.getHeaders().put("Accept", "application/json, text/javascript, */*; q=0.01");
-        ajax.getHeaders().put("X-Requested-With", "XMLHttpRequest");
-        ajax.submitForm(form);
+    private Browser ajaxSubmitForm(final Form form) throws Exception {
+        final Browser ret = br.cloneBrowser();
+        ret.setAllowedResponseCodes(new int[] { 400 });
+        final Request request = ret.createFormRequest(form);
+        request.getHeaders().put("Accept", "application/json, text/javascript, */*; q=0.01");
+        request.getHeaders().put("X-Requested-With", "XMLHttpRequest");
+        for (InputField inputField : form.getInputFields()) {
+            if ("authenticity_token".equals(inputField.getProperty("id", null))) {
+                request.getHeaders().put("X-CSRF-Token", Encoding.htmlDecode(URLDecoder.decode(inputField.getValue(), "UTF-8")));
+                break;
+            }
+        }
+        ret.getPage(request);
+        return ret;
     }
 
     @Override
@@ -124,20 +137,17 @@ public class TwitchTv extends PluginForHost {
                 br.getHeaders().put("X-Requested-With", "ShockwaveFlash/22.0.0.192");
                 br.getHeaders().put("Referer", downloadLink.getContentUrl());
                 final HLSDownloader downloader = new HLSDownloader(downloadLink, br, downloadLink.getStringProperty("m3u", null));
-                final StreamInfo streamInfo = downloader.getProbe();
+                StreamInfo streamInfo = applyMissingVideoStreamWorkaround(downloader, downloadLink);
+                if (streamInfo == null) {
+                    streamInfo = downloader.getProbe();
+                }
                 if (downloadLink.getBooleanProperty("encrypted")) {
                     throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Encrypted HLS is not supported");
                 }
                 if (streamInfo == null) {
                     throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
                 }
-                final M3U8Playlist m3u8PlayList = downloader.getM3U8Playlist();
-                final long estimatedSize = m3u8PlayList.getEstimatedSize();
-                if (downloadLink.getKnownDownloadSize() == -1) {
-                    downloadLink.setDownloadSize(estimatedSize);
-                } else {
-                    downloadLink.setDownloadSize(Math.max(downloadLink.getKnownDownloadSize(), estimatedSize));
-                }
+                estimateSize(downloader, downloadLink);
                 String extension = ".m4a";
                 for (Stream s : streamInfo.getStreams()) {
                     if ("video".equalsIgnoreCase(s.getCodec_type())) {
@@ -233,16 +243,11 @@ public class TwitchTv extends PluginForHost {
         dl.startDownload();
     }
 
-    private final void doHLS(final DownloadLink downloadLink) throws Exception {
-        checkFFmpeg(downloadLink, "Download a HLS Stream");
-        if (downloadLink.getBooleanProperty("encrypted")) {
-            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Encrypted HLS is not supported");
-        }
-        // requestFileInformation(downloadLink);
-        if (getPluginConfig().getBooleanProperty("meta", true) == false) {
-            dl = new HLSDownloader(downloadLink, br, dllink);
-        } else {
-            final FFmpegMetaData ffMpegMetaData = new FFmpegMetaData();
+    private HLSDownloader getHLSDownloader(final DownloadLink downloadLink, Browser br, final String m3u8Url) throws Exception {
+        final FFmpegMetaData ffMpegMetaData;
+        final SubConfiguration config = getPluginConfig();
+        if (config.getBooleanProperty("meta", true)) {
+            ffMpegMetaData = new FFmpegMetaData();
             ffMpegMetaData.setTitle(downloadLink.getStringProperty("plainfilename", null));
             ffMpegMetaData.setArtist(downloadLink.getStringProperty("channel", null));
             final String originaldate = downloadLink.getStringProperty("originaldate", null);
@@ -255,18 +260,208 @@ public class TwitchTv extends PluginForHost {
                 }
             }
             ffMpegMetaData.setComment(downloadLink.getContentUrl());
-            dl = new HLSDownloader(downloadLink, br, dllink) {
-                @Override
-                protected boolean isMapMetaDataEnabled() {
-                    return true;
-                }
-
-                @Override
-                protected FFmpegMetaData getFFmpegMetaData() {
-                    return ffMpegMetaData;
-                }
-            };
+        } else {
+            ffMpegMetaData = null;
         }
+        return new HLSDownloader(downloadLink, br, m3u8Url) {
+            final boolean isTwitchOptimized = Boolean.TRUE.equals(config.getBooleanProperty("expspeed", false));
+
+            @Override
+            protected boolean isMapMetaDataEnabled() {
+                return ffMpegMetaData != null && !ffMpegMetaData.isEmpty();
+            }
+
+            @Override
+            protected FFmpegMetaData getFFmpegMetaData() {
+                return ffMpegMetaData;
+            }
+
+            @Override
+            protected boolean onSegmentConnectException(URLConnectionAdapter connection, IOException e, final FileBytesMap fileBytesMap, int retry, LogSource logger) throws Exception {
+                if (isTwitchOptimized && connection != null && connection.getResponseCode() == 400) {
+                    config.setProperty("expspeed", false);
+                }
+                return super.onSegmentConnectException(connection, e, fileBytesMap, retry, logger);
+            }
+
+            @Override
+            protected List<M3U8Playlist> getM3U8Playlists() throws Exception {
+                final List<M3U8Playlist> ret = super.getM3U8Playlists();
+                for (final M3U8Playlist playList : ret) {
+                    for (int index = playList.size() - 1; index >= 0; index--) {
+                        final M3U8Segment segment = playList.getSegment(index);
+                        if (segment != null && StringUtils.endsWithCaseInsensitive(segment.getUrl(), "end_offset=-1")) {
+                            playList.removeSegment(index);
+                        }
+                    }
+                }
+                return ret;
+            }
+
+            /*
+             * TODO: move logic to getM3U8Playlists
+             */
+            protected String optimizeM3U8Playlist(String m3u8Playlist) {
+                if (m3u8Playlist != null && isTwitchOptimized) {
+                    final StringBuilder sb = new StringBuilder();
+                    long lastSegmentDuration = 0;
+                    String lastSegment = null;
+                    long lastSegmentStart = -1;
+                    long lastSegmentEnd = -1;
+                    long lastMergedSegmentDuration = 0;
+                    final long maxSegmentSize = 10000000l;// server-side limit
+                    for (final String line : Regex.getLines(m3u8Playlist)) {
+                        if (line.matches("^https?://.+") || !line.trim().startsWith("#")) {
+                            final String segment = new Regex(line, "^(.*?)(\\?|$)").getMatch(0);
+                            final String segmentStart = new Regex(line, "\\?.*?start_offset=(-?\\d+)").getMatch(0);
+                            final String segmentEnd = new Regex(line, "\\?.*?end_offset=(-?\\d+)").getMatch(0);
+                            if ("-1".equals(segmentEnd)) {
+                                continue;
+                            }
+                            if (lastSegment != null && !lastSegment.equals(segment) || segmentStart == null || segmentEnd == null || lastSegmentEnd != Long.parseLong(segmentStart) - 1 || Long.parseLong(segmentEnd) - lastSegmentStart > maxSegmentSize) {
+                                if (lastSegment != null) {
+                                    if (sb.length() > 0) {
+                                        sb.append("\n");
+                                    }
+                                    sb.append("#EXTINF:");
+                                    sb.append(M3U8Segment.toExtInfDuration(lastMergedSegmentDuration));
+                                    lastMergedSegmentDuration = 0;
+                                    sb.append(",\n");
+                                    sb.append(lastSegment + "?start_offset=" + lastSegmentStart + "&end_offset=" + lastSegmentEnd);
+                                    lastSegment = null;
+                                }
+                            }
+                            if (segment != null && segmentStart != null && segmentEnd != null) {
+                                if (lastSegment == null) {
+                                    lastSegment = segment;
+                                    lastSegmentStart = Long.parseLong(segmentStart);
+                                    lastSegmentEnd = Long.parseLong(segmentEnd);
+                                    lastMergedSegmentDuration = lastSegmentDuration;
+                                } else {
+                                    lastSegmentEnd = Long.parseLong(segmentEnd);
+                                    lastMergedSegmentDuration += lastSegmentDuration;
+                                }
+                            } else {
+                                if (sb.length() > 0) {
+                                    sb.append("\n");
+                                }
+                                sb.append("#EXTINF:");
+                                sb.append(M3U8Segment.toExtInfDuration(lastSegmentDuration));
+                                lastSegmentDuration = 0;
+                                sb.append(",\n");
+                                sb.append(line);
+                            }
+                        } else {
+                            if (line.startsWith("#EXT-X-ENDLIST")) {
+                                if (lastSegment != null) {
+                                    if (sb.length() > 0) {
+                                        sb.append("\n");
+                                    }
+                                    sb.append("#EXTINF:");
+                                    sb.append(M3U8Segment.toExtInfDuration(lastMergedSegmentDuration));
+                                    lastMergedSegmentDuration = 0;
+                                    sb.append(",\n");
+                                    sb.append(lastSegment + "?start_offset=" + lastSegmentStart + "&end_offset=" + lastSegmentEnd);
+                                    lastSegment = null;
+                                }
+                                if (sb.length() > 0) {
+                                    sb.append("\n");
+                                }
+                                sb.append(line);
+                            } else if (line.startsWith("#EXTINF:")) {
+                                final String duration = new Regex(line, "#EXTINF:(\\d+(\\.\\d+)?)").getMatch(0);
+                                if (duration != null) {
+                                    if (duration.contains(".")) {
+                                        lastSegmentDuration = Long.parseLong(duration.replace(".", ""));
+                                    } else {
+                                        lastSegmentDuration = Long.parseLong(duration) * 1000;
+                                    }
+                                }
+                            } else {
+                                if (sb.length() > 0) {
+                                    sb.append("\n");
+                                }
+                                sb.append(line);
+                            }
+                        }
+                    }
+                    if (lastSegment != null) {
+                        if (sb.length() > 0) {
+                            sb.append("\n");
+                        }
+                        sb.append("#EXTINF:");
+                        sb.append(M3U8Segment.toExtInfDuration(lastMergedSegmentDuration));
+                        lastMergedSegmentDuration = 0;
+                        sb.append(",\n");
+                        sb.append(lastSegment + "?start_offset=" + lastSegmentStart + "&end_offset=" + lastSegmentEnd);
+                        lastSegment = null;
+                    }
+                    return sb.toString();
+                }
+                return m3u8Playlist;
+            };
+        };
+    }
+
+    private void estimateSize(HLSDownloader dl, DownloadLink downloadLink) {
+        if (!downloadLink.hasProperty(twitchEstimatedSize)) {
+            downloadLink.setProperty(twitchEstimatedSize, Boolean.TRUE);
+            final int hlsBandwidth = downloadLink.getIntegerProperty("hlsBandwidth", -1);
+            if (hlsBandwidth > 0) {
+                for (M3U8Playlist playList : dl.getPlayLists()) {
+                    playList.setAverageBandwidth(hlsBandwidth);
+                }
+            }
+            final long estimatedSize = dl.getEstimatedSize();
+            if (downloadLink.getKnownDownloadSize() == -1) {
+                downloadLink.setDownloadSize(estimatedSize);
+            } else {
+                downloadLink.setDownloadSize(Math.max(downloadLink.getKnownDownloadSize(), estimatedSize));
+            }
+        }
+    }
+
+    private StreamInfo applyMissingVideoStreamWorkaround(HLSDownloader dl, DownloadLink downloadLink) throws Exception {
+        final Object apply = downloadLink.getProperty(applyMissingVideoStreamWorkaround);
+        if (apply == null) {
+            StreamInfo streamInfo = dl.getProbe();
+            if (streamInfo != null) {
+                if (streamInfo.getVideoStreams().size() == 0) {
+                    if (dl.getPlayLists().size() == 1) {
+                        logger.info("Apply workaround for first chunk missing video stream!");
+                        final M3U8Segment removed = dl.getPlayLists().get(0).removeSegment(0);
+                        streamInfo = dl.getProbe();
+                        if (streamInfo != null) {
+                            if (streamInfo.getVideoStreams().size() == 0) {
+                                dl.getPlayLists().get(0).addSegment(0, removed);
+                                logger.info("Workaround failed");
+                            } else {
+                                downloadLink.setProperty(applyMissingVideoStreamWorkaround, Boolean.TRUE);
+                                logger.info("Workaround successfull");
+                            }
+                        }
+                    }
+                } else {
+                    downloadLink.setProperty(applyMissingVideoStreamWorkaround, Boolean.FALSE);
+                }
+            }
+            return streamInfo;
+        } else if (Boolean.TRUE.equals(apply)) {
+            logger.info("Apply workaround for first chunk missing video stream!");
+            dl.getPlayLists().get(0).removeSegment(0);
+        }
+        return null;
+    }
+
+    private final void doHLS(final DownloadLink downloadLink) throws Exception {
+        checkFFmpeg(downloadLink, "Download a HLS Stream");
+        if (downloadLink.getBooleanProperty("encrypted")) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Encrypted HLS is not supported");
+        }
+        final HLSDownloader dl = getHLSDownloader(downloadLink, br, dllink);
+        this.dl = dl;
+        estimateSize(dl, downloadLink);
+        applyMissingVideoStreamWorkaround(dl, downloadLink);
         dl.startDownload();
     }
 
@@ -306,7 +501,6 @@ public class TwitchTv extends PluginForHost {
     @SuppressWarnings("deprecation")
     public static String getFormattedFilename(final DownloadLink downloadLink) throws ParseException {
         String videoName = downloadLink.getStringProperty("plainfilename", null);
-
         final SubConfiguration cfg = SubConfiguration.getConfig("twitch.tv");
         String formattedFilename = downloadLink.getStringProperty("m3u", null) != null ? cfg.getStringProperty(CUSTOM_FILENAME_4, defaultCustomFilenameHls) : cfg.getStringProperty(CUSTOM_FILENAME_3, defaultCustomFilenameWeb);
         if (formattedFilename == null || formattedFilename.equals("")) {
@@ -319,10 +513,9 @@ public class TwitchTv extends PluginForHost {
         if (partnumberformat == null || partnumberformat.equals("")) {
             partnumberformat = "00";
         }
-
         final DecimalFormat df = new DecimalFormat(partnumberformat);
         final String date = downloadLink.getStringProperty("originaldate", null);
-        final String channelName = downloadLink.getStringProperty("channel", null);
+        final String channelName = downloadLink.getStringProperty("channel", "");
         final int partNumber = downloadLink.getIntegerProperty("partnumber", -1);
         final String quality = downloadLink.getStringProperty("quality", "");
         final int videoQuality = downloadLink.getIntegerProperty("videoQuality", -1);
@@ -330,7 +523,6 @@ public class TwitchTv extends PluginForHost {
         final int audioBitrate = downloadLink.getIntegerProperty("audioBitrate", -1);
         final String audioCodec = downloadLink.getStringProperty("audioCodec", "");
         final String extension = downloadLink.getStringProperty("extension", ".flv");
-
         String formattedDate = null;
         if (date != null) {
             final String userDefinedDateFormat = cfg.getStringProperty(CUSTOM_DATE_2, "dd.MM.yyyy_HH-mm-ss");
@@ -340,7 +532,6 @@ public class TwitchTv extends PluginForHost {
             Date dateStr = formatter.parse(input);
             formattedDate = formatter.format(dateStr);
             Date theDate = formatter.parse(formattedDate);
-
             formatter = new SimpleDateFormat(userDefinedDateFormat);
             formattedDate = formatter.format(theDate);
         }
@@ -355,7 +546,6 @@ public class TwitchTv extends PluginForHost {
         } else {
             formattedFilename = formattedFilename.replace("*partnumber*", df.format(partNumber));
         }
-
         formattedFilename = formattedFilename.replace("*quality*", quality);
         formattedFilename = formattedFilename.replace("*channelname*", channelName);
         final String videoQualityString;
@@ -397,7 +587,7 @@ public class TwitchTv extends PluginForHost {
     private static Object       ctrlLock    = new Object();
 
     @SuppressWarnings("unchecked")
-    public void login(final Browser br, final Account account, final boolean force) throws Exception {
+    public void login(Browser br, final Account account, final boolean force) throws Exception {
         synchronized (accountLock) {
             try {
                 // Load cookies
@@ -407,7 +597,8 @@ public class TwitchTv extends PluginForHost {
                 if (acmatch) {
                     acmatch = Encoding.urlEncode(account.getPass()).equals(account.getStringProperty("pass", Encoding.urlEncode(account.getPass())));
                 }
-                if (acmatch && ret != null && ret instanceof HashMap<?, ?> && !force) {
+                boolean login = true;
+                if (acmatch && ret != null && ret instanceof HashMap<?, ?>) {
                     final HashMap<String, String> cookies = (HashMap<String, String>) ret;
                     if (account.isValid()) {
                         for (final Entry<String, String> cookieEntry : cookies.entrySet()) {
@@ -415,48 +606,87 @@ public class TwitchTv extends PluginForHost {
                             final String value = cookieEntry.getValue();
                             br.setCookie(MAINPAGE, key, value);
                         }
-                        return;
+                        br.setFollowRedirects(true);
+                        br.getPage("https://www.twitch.tv");
+                        final Form logout = br.getFormbyAction("/logout");
+                        if (logout != null) {
+                            login = false;
+                        } else if (force) {
+                            br.clearCookies(getHost());
+                        } else {
+                            return;
+                        }
                     }
                 }
-                br.setFollowRedirects(true);
-                // they don't allow requests to home page to handshake with https.. very poor.
-                br.getPage("https://www.twitch.tv/user/login_popup");
-                // two iframes. one signup, one login.
-                final String[] iframes = br.getRegex("<iframe [^>]*src\\s*=\\s*(\"|')(.*?)\\1").getColumn(1);
-                if (iframes == null) {
-                    throwError();
-                }
-                for (String iframe : iframes) {
-                    iframe = Encoding.htmlOnlyDecode(iframe);
-                    if (StringUtils.containsIgnoreCase(iframe, "/authentications/new") || StringUtils.containsIgnoreCase(iframe, "username=")) {
-                        br.getPage(iframe);
-                        break;
-                    }
-                }
-                // form time!
-                final Form f = br.getFormbyProperty("id", "loginForm");
-                if (f == null) {
-                    throwError();
-                }
-                // NOTE: form can contain recaptchav2, even though js is loaded on the auth, the div isn't present only in new user iframe
-                // <div class="g-recaptcha" data-sitekey="6Ld65QcTAAAAAMBbAE8dkJq4Wi4CsJy7flvKhYqX"></div>
-                f.put("username", Encoding.urlEncode(account.getUser()));
-                f.put("password", Encoding.urlEncode(account.getPass()));
-                // json now!
-                ajaxSubmitForm(f);
-                // correct will redirect, with no cookies until following redirect; incorrect has error message && no cookies.
-                final String redirect = PluginJSonUtils.getJsonValue(ajax, "redirect");
-                if (redirect != null) {
-                    // not with json headers
-                    br.getPage(redirect);
-                } else {
-                    // this will be errors...
-                    // {"message":"Incorrect username or password.","captcha":"false","errors":["Incorrect username or password."]}
-                    // if (br.getCookie(MAINPAGE, "persistent") == null) {
-                    if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
-                    } else {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!\r\nQuick help:\r\nYou're sure that the username and password you entered are correct?\r\nIf your password contains special characters, change it (remove them) and try again!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                if (login) {
+                    br.setFollowRedirects(true);
+                    // they don't allow requests to home page to handshake with https.. very poor.
+                    boolean recaptcha = false;
+                    int round = 0;
+                    while (true) {
+                        if (++round > 5) {
+                            throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_TEMP_DISABLE);
+                        }
+                        br.setRequest(null);
+                        br.getPage("https://www.twitch.tv/user/login_popup");
+                        // two iframes. one signup, one login.
+                        final String[] iframes = br.getRegex("<iframe [^>]*src\\s*=\\s*(\"|')(.*?)\\1").getColumn(1);
+                        if (iframes == null) {
+                            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                        }
+                        for (String iframe : iframes) {
+                            iframe = Encoding.htmlOnlyDecode(iframe);
+                            if (StringUtils.containsIgnoreCase(iframe, "/authentications/new") || StringUtils.containsIgnoreCase(iframe, "username=")) {
+                                br.getPage(iframe);
+                                break;
+                            }
+                        }
+                        // form time!
+                        final Form f = br.getFormbyProperty("id", "loginForm");
+                        if (f == null) {
+                            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                        }
+                        if (recaptcha) {
+                            final DownloadLink dummyLink = new DownloadLink(this, "Account Login", getHost(), getHost(), true);
+                            final DownloadLink odl = this.getDownloadLink();
+                            this.setDownloadLink(dummyLink);
+                            final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br, "6Ld65QcTAAAAAMBbAE8dkJq4Wi4CsJy7flvKhYqX").getToken();
+                            if (odl != null) {
+                                this.setDownloadLink(odl);
+                            }
+                            f.put("captcha", Encoding.urlEncode(recaptchaV2Response));
+                        }
+                        f.put("username", Encoding.urlEncode(account.getUser()));
+                        f.put("password", Encoding.urlEncode(account.getPass()));
+                        f.put("redirect_path", Encoding.urlEncode("https://www.twitch.tv/"));
+                        f.put("time_to_submit", (4 + new Random().nextInt(4)) + "." + new Random().nextInt(9) + "" + new Random().nextInt(9) + "" + new Random().nextInt(9));
+                        // json now!
+                        final Browser ajax = ajaxSubmitForm(f);
+                        // correct will redirect, with no cookies until following redirect; incorrect has error message && no cookies.
+                        String redirect = PluginJSonUtils.getJsonValue(ajax, "redirect");
+                        if (redirect == null) {
+                            redirect = PluginJSonUtils.getJsonValue(ajax, "redirect_path");
+                        }
+                        if (redirect != null) {
+                            // not with json headers
+                            ajax.getPage(redirect);
+                            br = ajax;
+                            break;
+                        } else {
+                            final String captcha = PluginJSonUtils.getJsonValue(ajax, "captcha");
+                            final String message = PluginJSonUtils.getJsonValue(ajax, "message");
+                            if ("Please complete the CAPTCHA correctly.".equals(message) || "true".equals(captcha)) {
+                                recaptcha = true;
+                                continue;
+                            }
+                            if ("Incorrect username or password.".equals(message) || "Benutzername oder Passwort fehlerhaft.".equals(message)) {
+                                if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
+                                    throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                                } else {
+                                    throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!\r\nQuick help:\r\nYou're sure that the username and password you entered are correct?\r\nIf your password contains special characters, change it (remove them) and try again!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                                }
+                            }
+                        }
                     }
                 }
                 // Save cookies
@@ -475,23 +705,10 @@ public class TwitchTv extends PluginForHost {
         }
     }
 
-    private static void throwError() throws PluginException {
-        if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
-            throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nPlugin defekt, bitte den JDownloader Support kontaktieren!", PluginException.VALUE_ID_PREMIUM_DISABLE);
-        } else {
-            throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nPlugin broken, please contact the JDownloader Support!", PluginException.VALUE_ID_PREMIUM_DISABLE);
-        }
-    }
-
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         final AccountInfo ai = new AccountInfo();
-        try {
-            login(br, account, true);
-        } catch (PluginException e) {
-            account.setValid(false);
-            throw e;
-        }
+        login(br, account, true);
         ai.setUnlimitedTraffic();
         account.setType(AccountType.FREE);
         account.setMaxSimultanDownloads(ACCOUNT_FREE_MAXDOWNLOADS);
@@ -576,8 +793,15 @@ public class TwitchTv extends PluginForHost {
     public void reset() {
     }
 
+    private final String twitchEstimatedSize               = "twitchEstimatedSize";
+    private final String applyMissingVideoStreamWorkaround = "applyMissingVideoStreamWorkaround";
+
     @Override
     public void resetDownloadlink(DownloadLink link) {
+        if (link != null) {
+            link.removeProperty(twitchEstimatedSize);
+            link.removeProperty(applyMissingVideoStreamWorkaround);
+        }
     }
 
     @Override

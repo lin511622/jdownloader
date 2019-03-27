@@ -21,11 +21,9 @@ import org.jdownloader.gui.views.components.packagetable.LinkTreeUtils;
 import org.jdownloader.images.NewTheme;
 
 public class OpenInBrowserAction extends CustomizableTableContextAppAction<CrawledPackage, CrawledLink> {
-
     private static final long serialVersionUID = 7911375550836173693L;
 
     public OpenInBrowserAction() {
-
         setIconKey(IconKey.ICON_BROWSE);
         setName(_GUI.T.gui_table_contextmenu_browselink());
     }
@@ -47,7 +45,6 @@ public class OpenInBrowserAction extends CustomizableTableContextAppAction<Crawl
             setEnabled(false);
             return;
         }
-
         for (final CrawledLink cl : links) {
             if (cl.getDownloadLink().getView().getDisplayUrl() != null) {
                 setEnabled(true);
@@ -70,7 +67,12 @@ public class OpenInBrowserAction extends CustomizableTableContextAppAction<Crawl
                 final Set<String> urls = LinkTreeUtils.getURLs(lselection, true);
                 if (urls.size() < 5) {
                     for (String url : urls) {
-                        CrossSystem.openURLOrShowMessage(url);
+                        try {
+                            Thread.sleep(500);
+                        } catch (InterruptedException e) {
+                            return;
+                        }
+                        CrossSystem.openURL(url);
                     }
                     return;
                 }
@@ -83,7 +85,7 @@ public class OpenInBrowserAction extends CustomizableTableContextAppAction<Crawl
                         total = urls.size();
                         current = 0;
                         for (String url : urls) {
-                            CrossSystem.openURLOrShowMessage(url);
+                            CrossSystem.openURL(url);
                             current++;
                             Thread.sleep(1000);
                         }
@@ -108,7 +110,6 @@ public class OpenInBrowserAction extends CustomizableTableContextAppAction<Crawl
                         return null;
                     }
                 }, 0, _GUI.T.OpenInBrowserAction_actionPerformed_open_in_browser__multi(), _GUI.T.OpenInBrowserAction_actionPerformed_open_in_browser__multi_msg(urls.size()), NewTheme.I().getIcon(IconKey.ICON_BROWSE, 32), null, null);
-
                 try {
                     Dialog.getInstance().showDialog(pg);
                 } catch (DialogClosedException e) {
@@ -118,6 +119,5 @@ public class OpenInBrowserAction extends CustomizableTableContextAppAction<Crawl
                 }
             }
         }.start();
-
     }
 }

@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -28,9 +27,8 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "opensubtitles.org" }, urls = { "http://(www\\.)?opensubtitles\\.org/[a-z]{2}/subtitles/\\d+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "opensubtitles.org" }, urls = { "https?://(www\\.)?opensubtitles\\.org/[a-z]{2}/subtitles/\\d+" })
 public class OpenSubtitlesOrg extends PluginForHost {
-
     public OpenSubtitlesOrg(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -41,7 +39,7 @@ public class OpenSubtitlesOrg extends PluginForHost {
     }
 
     public void correctDownloadLink(DownloadLink link) {
-        link.setUrlDownload("http://www.opensubtitles.org/en/subtitles/" + new Regex(link.getDownloadURL(), "(\\d+)$").getMatch(0));
+        link.setUrlDownload("https://www.opensubtitles.org/en/subtitles/" + new Regex(link.getDownloadURL(), "(\\d+)$").getMatch(0));
     }
 
     @Override
@@ -50,7 +48,7 @@ public class OpenSubtitlesOrg extends PluginForHost {
         br.setFollowRedirects(true);
         br.setCookie("http://opensubtitles.org/", "weblang", "en");
         br.getPage(link.getDownloadURL());
-        if (br.getURL().equals("http://www.opensubtitles.org/en") || br.containsHTML(">These subtitles were <b>disabled</b>")) {
+        if (br.getURL().equals("http://www.opensubtitles.org/en") || br.getURL().equals("https://www.opensubtitles.org/en") || br.containsHTML(">These subtitles were <b>disabled</b>")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         final String filename = br.getRegex("/en/download/sub/\\d+\"><span itemprop=\"name\">([^<>\"]*?)</span>").getMatch(0);
@@ -66,7 +64,7 @@ public class OpenSubtitlesOrg extends PluginForHost {
         requestFileInformation(downloadLink);
         // Resume and chunks disabled, not needed for such small files & can't
         // test
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, "http://dl.opensubtitles.org/en/download/sub/" + new Regex(downloadLink.getDownloadURL(), "(\\d+)$").getMatch(0), false, 1);
+        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, "https://dl.opensubtitles.org/en/download/sub/" + new Regex(downloadLink.getDownloadURL(), "(\\d+)$").getMatch(0), false, 1);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -86,5 +84,4 @@ public class OpenSubtitlesOrg extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

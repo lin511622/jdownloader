@@ -8,6 +8,7 @@ import java.util.regex.Pattern;
 import jd.controlling.proxy.ProxyController;
 import jd.controlling.reconnect.ReconnectConfig;
 import jd.http.Browser;
+import jd.http.NoGateWayException;
 import jd.http.ProxySelectorInterface;
 import jd.http.StaticProxySelector;
 
@@ -24,7 +25,6 @@ import org.jdownloader.settings.staticreferences.CFG_RECONNECT;
  *
  */
 public class BalancedWebIPCheck implements IPCheckProvider {
-
     private static final java.util.List<String> SERVICES = new ArrayList<String>();
     static {
         SERVICES.add("http://ipcheck4.jdownloader.org");
@@ -37,11 +37,8 @@ public class BalancedWebIPCheck implements IPCheckProvider {
     /**
      * All registered ip check urls
      */
-
-    private final Browser                       br;
-
+    protected final Browser                     br;
     private final Pattern                       pattern;
-
     private final Object                        LOCK     = new Object();
 
     public BalancedWebIPCheck() {
@@ -71,6 +68,7 @@ public class BalancedWebIPCheck implements IPCheckProvider {
             final LogSource logger = LogController.getFastPluginLogger("BalancedWebIPCheck");
             logger.setAllowTimeoutFlush(false);
             br.setLogger(logger);
+            NoGateWayException noGateWayException = null;
             for (String service : SERVICES) {
                 try {
                     /* call website and check for ip */
@@ -82,14 +80,19 @@ public class BalancedWebIPCheck implements IPCheckProvider {
                             return IP.getInstance(matcher.group(1));
                         }
                     }
-                } catch (final Throwable e2) {
-                    logger.log(e2);
+                } catch (final NoGateWayException e) {
+                    noGateWayException = e;
+                } catch (final Throwable e) {
+                    logger.log(e);
                 } finally {
                     try {
                         br.disconnect();
                     } catch (final Throwable e) {
                     }
                 }
+            }
+            if (noGateWayException != null) {
+                logger.log(noGateWayException);
             }
             logger.severe("All balanced Services failed");
             logger.close();
@@ -103,5 +106,4 @@ public class BalancedWebIPCheck implements IPCheckProvider {
     public int getIpCheckInterval() {
         return 5;
     }
-
 }

@@ -13,116 +13,64 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 
+import org.appwork.utils.StringUtils;
+import org.jdownloader.plugins.components.antiDDoSForDecrypt;
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
 import jd.PluginWrapper;
+import jd.controlling.AccountController;
 import jd.controlling.ProgressController;
 import jd.controlling.linkcrawler.LinkCrawler;
+import jd.http.Browser;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.parser.html.HTMLParser;
+import jd.plugins.Account;
 import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
-import jd.plugins.PluginForDecrypt;
+import jd.plugins.PluginForHost;
+import jd.utils.JDUtilities;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "artstation.com" }, urls = { "https?://(?:www\\.)?artstation\\.com/(?:artist|artwork)/[^/]+" })
-public class ArtstationCom extends PluginForDecrypt {
-
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "artstation.com" }, urls = { "https?://(?:www\\.)?artstation\\.com/((?:artist|artwork)/[^/]+|(?!about|marketplace|jobs|contests|blogs|users)[^/]+)" })
+public class ArtstationCom extends antiDDoSForDecrypt {
     public ArtstationCom(PluginWrapper wrapper) {
         super(wrapper);
     }
 
-    private static final String TYPE_ARTIST = "https?://(?:www\\.)?artstation\\.com/artist/[^/]+";
-    private static final String TYPE_ALBUM  = "https?://(?:www\\.)?artstation\\.com/artwork/[A-Z0-9]+";
+    private static final String TYPE_ARTIST = "(?i)https?://(?:www\\.)?artstation\\.com/artist/[^/]+";
+    private static final String TYPE_ALBUM  = "(?i)https?://(?:www\\.)?artstation\\.com/artwork/[a-zA-Z0-9]+";
 
     @SuppressWarnings({ "unchecked", "rawtypes" })
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
         final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         final String parameter = param.toString().replace("http:", "https:");
-        br.getPage(parameter);
+        final PluginForHost plugin = JDUtilities.getPluginForHost(this.getHost());
+        final Account aa = AccountController.getInstance().getValidAccount(plugin);
+        if (aa != null) {
+            /* Login whenever possible - this may unlock some otherwise hidden user content. */
+            jd.plugins.hoster.ArtstationCom.login(this.br, aa, false);
+        }
+        getPage(parameter);
         if (br.getHttpConnection().getResponseCode() == 404) {
             decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
         }
         final FilePackage fp = FilePackage.getInstance();
         fp.setProperty(LinkCrawler.PACKAGE_ALLOW_INHERITANCE, true);
-        if (parameter.matches(TYPE_ARTIST)) {
-            final String username = parameter.substring(parameter.lastIndexOf("/"));
-            jd.plugins.hoster.ArtstationCom.setHeaders(this.br);
-            this.br.getPage("https://www.artstation.com/users/" + username + ".json");
-            final LinkedHashMap<String, Object> json = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
-            final String full_name = (String) json.get("full_name");
-            final String projectTitle = (String) json.get("title");
-            final short entries_per_page = 50;
-            int entries_total = (int) JavaScriptEngineFactory.toLong(json.get("projects_count"), 0);
-            int offset = 0;
-            int page = 1;
-            do {
-                this.br.getPage("/users/" + username + "/projects.json?randomize=false&page=" + page);
-                final LinkedHashMap<String, Object> pageJson = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
-                final ArrayList<Object> ressourcelist = (ArrayList) pageJson.get("data");
-                for (final Object resource : ressourcelist) {
-                    final LinkedHashMap<String, Object> imageJson = (LinkedHashMap<String, Object>) resource;
-                    final String title = (String) imageJson.get("title");
-                    final String id = (String) imageJson.get("hash_id");
-                    final String description = (String) imageJson.get("description");
-                    if (inValidate(id)) {
-                        return null;
-                    }
-                    final String url_content = "https://artstation.com/artwork/" + id;
-                    final DownloadLink dl = createDownloadlink(url_content);
-                    String filename;
-                    if (!inValidate(title)) {
-                        filename = full_name + "_" + id + "_" + title + ".jpg";
-                    } else {
-                        filename = full_name + "_" + id + ".jpg";
-                    }
-                    filename = encodeUnicode(filename);
-                    dl.setContentUrl(url_content);
-                    if (description != null) {
-                        dl.setComment(description);
-                    }
-                    dl.setLinkID(id);
-                    dl.setName(filename);
-                    dl.setProperty("full_name", full_name);
-                    dl.setAvailable(true);
-                    fp.add(dl);
-                    decryptedLinks.add(dl);
-                    distribute(dl);
-                    offset++;
-                }
-                if (ressourcelist.size() < entries_per_page) {
-                    /* Fail safe */
-                    break;
-                }
-                page++;
-            } while (decryptedLinks.size() < entries_total);
-
-            String packageName = "";
-            if (!inValidate(full_name)) {
-                packageName = full_name;
-            }
-            if (decryptedLinks.size() > 1) {
-                if (!inValidate(projectTitle)) {
-                    packageName = packageName + " " + projectTitle;
-                }
-            }
-            fp.setName(packageName);
-        } else {
+        if (parameter.matches(TYPE_ALBUM)) {
             final String project_id = new Regex(parameter, "([A-Za-z0-9]+)$").getMatch(0);
             if (inValidate(project_id)) {
                 return decryptedLinks;
             }
             jd.plugins.hoster.ArtstationCom.setHeaders(this.br);
-            this.br.getPage("https://www.artstation.com/projects/" + project_id + ".json");
+            getPage("https://www.artstation.com/projects/" + project_id + ".json");
             final LinkedHashMap<String, Object> json = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
             final ArrayList<Object> resource_data_list = (ArrayList<Object>) json.get("assets");
             final String full_name = (String) JavaScriptEngineFactory.walkJson(json, "user/full_name");
@@ -138,14 +86,35 @@ public class ArtstationCom extends PluginForDecrypt {
                     final String[] results = HTMLParser.getHttpLinks(playerEmbedded, null);
                     if (results != null) {
                         for (final String result : results) {
-                            final DownloadLink dl = this.createDownloadlink(result);
-                            fp.add(dl);
-                            decryptedLinks.add(dl);
+                            String assetURL = result;
+                            if (result.endsWith(fid) && StringUtils.containsIgnoreCase(playerEmbedded, "<iframe")) {
+                                final Browser br2 = br.cloneBrowser();
+                                getPage(br2, result);
+                                String pageDetail = br2.toString();
+                                if (StringUtils.containsIgnoreCase(url, "/marmosets/") && br2.containsHTML("\"asset_type\":\"marmoset\"") && br2.containsHTML("\"attachment_content_type\":\"application/octet-stream\"")) {
+                                    // Handle Marmoset 3D content
+                                    String assetURLRoot = br2.getRegex("\"(https?://[^\"]+original/)").getMatch(0).toString().replace("/images/", "/attachments/");
+                                    String assetFileName = br2.getRegex("\"attachment_file_name\":\"([^\"]+)\"").getMatch(0).toString();
+                                    String assetFileTimeStamp = br2.getRegex("\"attachment_updated_at\":([0-9]+)").getMatch(0).toString();
+                                    assetURL = assetURLRoot + assetFileName + "?" + assetFileTimeStamp;
+                                } else if (br2.containsHTML("\"asset_type\":\"pano\"")) {
+                                    // Handle 3D panorama images
+                                    assetURL = br2.getRegex("\"[a-z]+_image_url\":\"([^\"]+)\"").getMatch(0);
+                                }
+                            }
+                            if (assetURL != null) {
+                                final DownloadLink dl2 = this.createDownloadlink(assetURL);
+                                fp.add(dl2);
+                                decryptedLinks.add(dl2);
+                            }
                         }
                     }
                 }
                 if (fid.equals("-1") || url == null || Boolean.FALSE.equals(hasImage)) {
                     continue;
+                }
+                if (isAbort()) {
+                    break;
                 }
                 String filename = null;
                 if (!inValidate(imageTitle)) {
@@ -189,24 +158,73 @@ public class ArtstationCom extends PluginForDecrypt {
                 }
             }
             fp.setName(packageName);
+        } else if (parameter.matches(TYPE_ARTIST) || true) {
+            final String username = parameter.substring(parameter.lastIndexOf("/") + 1);
+            jd.plugins.hoster.ArtstationCom.setHeaders(this.br);
+            getPage("https://www.artstation.com/users/" + username + ".json");
+            if (br.getRequest().getHttpConnection().getResponseCode() == 404) {
+                return decryptedLinks;
+            }
+            final LinkedHashMap<String, Object> json = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
+            final String full_name = (String) json.get("full_name");
+            final String projectTitle = (String) json.get("title");
+            final short entries_per_page = 50;
+            int entries_total = (int) JavaScriptEngineFactory.toLong(json.get("projects_count"), 0);
+            int offset = 0;
+            int page = 1;
+            do {
+                getPage("/users/" + username + "/projects.json?randomize=false&page=" + page);
+                final LinkedHashMap<String, Object> pageJson = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
+                final ArrayList<Object> ressourcelist = (ArrayList) pageJson.get("data");
+                for (final Object resource : ressourcelist) {
+                    final LinkedHashMap<String, Object> imageJson = (LinkedHashMap<String, Object>) resource;
+                    final String title = (String) imageJson.get("title");
+                    final String id = (String) imageJson.get("hash_id");
+                    final String description = (String) imageJson.get("description");
+                    if (inValidate(id)) {
+                        return null;
+                    }
+                    final String url_content = "https://artstation.com/artwork/" + id;
+                    final DownloadLink dl = createDownloadlink(url_content);
+                    String filename;
+                    if (!inValidate(title)) {
+                        filename = full_name + "_" + id + "_" + title + ".jpg";
+                    } else {
+                        filename = full_name + "_" + id + ".jpg";
+                    }
+                    filename = encodeUnicode(filename);
+                    dl.setContentUrl(url_content);
+                    if (description != null) {
+                        dl.setComment(description);
+                    }
+                    dl.setLinkID(id);
+                    dl.setName(filename);
+                    dl.setProperty("full_name", full_name);
+                    fp.add(dl);
+                    decryptedLinks.add(dl);
+                    distribute(dl);
+                    offset++;
+                    if (isAbort()) {
+                        break;
+                    }
+                }
+                if (ressourcelist.size() < entries_per_page) {
+                    /* Fail safe */
+                    break;
+                }
+                page++;
+            } while (decryptedLinks.size() < entries_total);
+            String packageName = "";
+            if (!inValidate(full_name)) {
+                packageName = full_name;
+            }
+            if (decryptedLinks.size() > 1) {
+                if (!inValidate(projectTitle)) {
+                    packageName = packageName + " " + projectTitle;
+                }
+            }
+            fp.setName(packageName);
         }
         return decryptedLinks;
     }
-
-    /**
-     * Validates string to series of conditions, null, whitespace, or "". This saves effort factor within if/for/while statements
-     *
-     * @param s
-     *            Imported String to match against.
-     * @return <b>true</b> on valid rule match. <b>false</b> on invalid rule match.
-     * @author raztoki
-     */
-    public static boolean inValidate(final String s) {
-        if (s == null || s.matches("\\s+") || s.equals("")) {
-            return true;
-        } else {
-            return false;
-        }
-    }
-
 }

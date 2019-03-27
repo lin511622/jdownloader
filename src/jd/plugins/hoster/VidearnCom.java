@@ -13,12 +13,12 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.IOException;
+import org.jdownloader.plugins.components.antiDDoSForHost;
 
 import jd.PluginWrapper;
+import jd.http.Browser;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.plugins.DownloadLink;
@@ -26,11 +26,9 @@ import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
-import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "pornxs.com" }, urls = { "http://(www\\.)?pornxsdecrypted\\.com/.+" }) 
-public class VidearnCom extends PluginForHost {
-
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "pornxs.com" }, urls = { "https?://(?:www\\.)?pornxsdecrypted\\.com/.+|https?://pornxs\\.com/\\d+" })
+public class VidearnCom extends antiDDoSForHost {
     public VidearnCom(final PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -70,33 +68,42 @@ public class VidearnCom extends PluginForHost {
 
     @SuppressWarnings("deprecation")
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws IOException, InterruptedException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
         setBrowserExclusive();
-        /* Check offline via decrypter */
-        if (downloadLink.getBooleanProperty("offline", false)) {
-            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-        }
-        br.getPage(downloadLink.getDownloadURL());
-        if (br.getHttpConnection().getResponseCode() == 404) {
+        getPage(downloadLink.getPluginPatternMatcher());
+        if (isOffline(this.br)) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         String filename = br.getRegex("property=\"og:title\" content=\"([^<>\"]*?)\"").getMatch(0);
         if (filename == null) {
+            if (!br.containsHTML("class=\"video__movie\"")) {
+                /* Not a video e.g. https://pornxs.com/2257 */
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         downloadLink.setName(Encoding.htmlDecode(filename.trim()) + ".mp4");
         return AvailableStatus.TRUE;
     }
 
+    public static boolean isOffline(final Browser br) {
+        return br.getHttpConnection().getResponseCode() == 404;
+    }
+
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception {
         requestFileInformation(downloadLink);
-
-        final String finallink = br.getRegex("config\\-final\\-url=\"(http[^<>\"]*?)\"").getMatch(0);
+        String finallink = br.getRegex("config\\-final\\-url=\"(http[^<>\"]*?)\"").getMatch(0);
         if (finallink == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            finallink = br.getRegex("file\\s*:\\s*('|\")(http.*?)\\1").getMatch(1);
+            if (finallink == null) {
+                finallink = Encoding.htmlDecode(br.getRegex("<source src=\"(.*?)\"").getMatch(0));
+            }
+            if (finallink == null) {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            }
         }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, finallink, true, 0);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, finallink, true, 0);
         if (dl.getConnection().getContentType() != null && dl.getConnection().getContentType().contains("text")) {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);

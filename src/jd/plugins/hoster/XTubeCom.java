@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -33,11 +32,9 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.utils.locale.JDL;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "xtube.com" }, urls = { "http://(www\\.)?xtube\\.com/(video-watch/|(watch|play_re)\\.php\\?v=)[A-Za-z0-9_\\-]+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "xtube.com" }, urls = { "https?://(www\\.)?xtube\\.com/(video-watch/|(watch|play_re)\\.php\\?v=)[A-Za-z0-9_\\-]+" })
 public class XTubeCom extends PluginForHost {
-
     private String              DLLINK   = null;
-
     private static final String MAINPAGE = "http://www.xtube.com";
 
     public XTubeCom(PluginWrapper wrapper) {
@@ -90,14 +87,14 @@ public class XTubeCom extends PluginForHost {
         br.setCookie(MAINPAGE, "cookie_warning", "S");
         br.setFollowRedirects(true);
         br.getPage(downloadLink.getDownloadURL());
-        if (br.getURL().contains("msg=Invalid+Video+ID") || br.containsHTML(">Video not available<|>This video has been removed from XTube") || this.br.getHttpConnection().getResponseCode() == 404) {
+        if (br.getURL().contains("msg=Invalid+Video+ID") || br.containsHTML(">Video not available<|img/removed_video|>This video has been removed from XTube") || this.br.getHttpConnection().getResponseCode() == 404) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         String filename = null;
         if (br.getURL().contains("play.php?preview_id=")) {
             filename = br.getRegex("class=\"sectionNoStyleHeader\">([^<>\"]*?)</div>").getMatch(0);
         } else {
-            filename = br.getRegex("<h1>(.*?)</h1>").getMatch(0);
+            filename = br.getRegex("<h1>\\s*(.*?)\\s*</h1>").getMatch(0);
             // For DVD preview links
             if (filename == null) {
                 filename = br.getRegex("id=\"videoDetails\">[\t\n\r ]+<p class=\"title\">([^<>\"]*?)</p>").getMatch(0);
@@ -121,13 +118,20 @@ public class XTubeCom extends PluginForHost {
             if (fileID == null) {
                 fileID = br.getRegex("contentId\" value=\"([^\"]+)\"").getMatch(0);
             }
+            if ("undefined".equals(ownerName)) {
+                final String contentOwnerId = br.getRegex("contentOwnerId\" value=\"([^\"]+)\"").getMatch(0);
+                if (contentOwnerId != null) {
+                    ownerName = contentOwnerId;
+                }
+            }
             if (fileID == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-            br.postPage("http://www.xtube.com/find_video.php", "user%5Fid=" + Encoding.urlEncode(ownerName) + "&clip%5Fid=&video%5Fid=" + Encoding.urlEncode(fileID));
-            DLLINK = br.getRegex("\\&filename=(http.*?)($|\r|\n| )").getMatch(0);
+            final Browser brc = br.cloneBrowser();
+            brc.postPage("http://www.xtube.com/find_video.php", "user%5Fid=" + Encoding.urlEncode(ownerName) + "&clip%5Fid=&video%5Fid=" + Encoding.urlEncode(fileID));
+            DLLINK = brc.getRegex("\\&filename=(http.*?)($|\r|\n| )").getMatch(0);
             if (DLLINK == null) {
-                DLLINK = br.getRegex("\\&filename=(%2Fvideos.*?hash.+)").getMatch(0);
+                DLLINK = brc.getRegex("\\&filename=(%2Fvideos.*?hash.+)").getMatch(0);
             }
         }
         if (filename == null || DLLINK == null || DLLINK.length() > 500) {
@@ -137,6 +141,7 @@ public class XTubeCom extends PluginForHost {
         if (DLLINK.contains("/notfound")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
+        DLLINK = (Encoding.htmlDecode(DLLINK));
         filename = filename.trim();
         downloadLink.setFinalFileName(filename + ".mp4");
         br.setDebug(true);

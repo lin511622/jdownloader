@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.util.LinkedHashMap;
@@ -33,26 +32,62 @@ import jd.plugins.components.PluginJSonUtils;
 
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "puls4.com" }, urls = { "https?://(?:www\\.)?puls4\\.com/[^/]+/videos.*" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "puls4.com" }, urls = { "https?://(?:www\\.)?puls4\\.com/.*" })
 public class Puls4Com extends PluginForHost {
-
     public Puls4Com(PluginWrapper wrapper) {
         super(wrapper);
     }
 
-    /* Nice API, usually only available for mobile devices. */
+    /* Nice (old 2016) API, usually only available for mobile devices. */
     private static final boolean use_mobile_api    = true;
     /* Connection stuff */
     private static final boolean free_resume       = true;
     private static final int     free_maxchunks    = 0;
     private static final int     free_maxdownloads = -1;
-
     private String               dllink            = null;
     private boolean              server_issue      = false;
 
     @Override
     public String getAGBLink() {
         return "http://www.puls4.com/cms_content/agb";
+    }
+
+    private Browser prepBR(final Browser br) {
+        br.getHeaders().put("User-Agent", "Mozilla/5.0 (Linux; U; Android 2.2.1; en-us; Nexus One Build/FRG83) AppleWebKit/533.1 (KHTML, like Gecko) Version/4.0 Mobile");
+        return br;
+    }
+
+    @Override
+    public boolean isValidURL(String URL) {
+        try {
+            final Browser br = new Browser();
+            br.setCookiesExclusive(true);
+            br.setFollowRedirects(true);
+            prepBR(br);
+            final String urlpart = new Regex(URL, "puls4\\.com/(.+)").getMatch(0);
+            String mobileID = new Regex(URL, "(\\d{5,})$").getMatch(0);
+            if (mobileID == null) {
+                br.getPage("https://www." + this.getHost() + "/api/json-fe/page/" + urlpart);
+                br.getRequest().setHtmlCode(br.toString().replace("\\", ""));
+                mobileID = this.br.getRegex("/video-grid/(\\d+)").getMatch(0);
+                if (mobileID == null) {
+                    return br.containsHTML("playerVideo");
+                } else {
+                    return true;
+                }
+            }
+            br.getHeaders().put("Accept", "application/json, text/javascript, */*; q=0.01");
+            br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
+            br.getPage("https://www.puls4.com/api/video/single/" + mobileID + "?version=v4");
+            if (br.getHttpConnection().getResponseCode() == 404 || "[]".equals(br.toString())) {
+                return false;
+            } else {
+                return true;
+            }
+        } catch (final Throwable e) {
+            logger.log(e);
+        }
+        return false;
     }
 
     @SuppressWarnings({ "deprecation", "unchecked" })
@@ -63,9 +98,10 @@ public class Puls4Com extends PluginForHost {
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         String filename = null;
+        String date = null;
         final String urlpart = new Regex(downloadLink.getDownloadURL(), "puls4\\.com/(.+)").getMatch(0);
         if (use_mobile_api) {
-            br.getHeaders().put("User-Agent", "Mozilla/5.0 (Linux; U; Android 2.2.1; en-us; Nexus One Build/FRG83) AppleWebKit/533.1 (KHTML, like Gecko) Version/4.0 Mobile");
+            prepBR(this.br);
             /* 2016-09-08: Webpage has changed. */
             String mobileID = new Regex(downloadLink.getDownloadURL(), "(\\d{5,})$").getMatch(0);
             if (mobileID == null) {
@@ -87,13 +123,12 @@ public class Puls4Com extends PluginForHost {
             /* 2016-09-09: Changed from "m.puls4.com" to "www.puls4.com" */
             br.getPage("http://www.puls4.com/api/video/single/" + mobileID + "?version=v4");
             /* Offline or geo blocked video */
-            if (br.getHttpConnection().getResponseCode() == 404) {
+            if (br.getHttpConnection().getResponseCode() == 404 || this.br.toString().length() <= 10) {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
-            final LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
-
+            final LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(this.br.toString());
+            date = (String) entries.get("broadcast_date");
             filename = (String) entries.get("title");
-
             /* Get highest quality downloadlink */
             final LinkedHashMap<String, Object> files = (LinkedHashMap<String, Object>) entries.get("files");
             if (files == null) {
@@ -124,6 +159,9 @@ public class Puls4Com extends PluginForHost {
         if (filename == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
+        if (date != null && !date.equals("")) {
+            filename = date + "_puls4_" + filename;
+        }
         filename = Encoding.htmlDecode(filename);
         filename = filename.trim();
         filename = encodeUnicode(filename);
@@ -133,13 +171,9 @@ public class Puls4Com extends PluginForHost {
         } else {
             downloadLink.setFinalFileName(filename);
             dllink = dllink.replace("\\", "");
-            dllink = Encoding.htmlDecode(dllink);
             String ext = getFileNameExtensionFromString(dllink, ".mp4");
             filename += ext;
             downloadLink.setFinalFileName(filename);
-            final Browser br2 = br.cloneBrowser();
-            // In case the link redirects to the finallink
-            br2.setFollowRedirects(true);
             URLConnectionAdapter con = null;
             try {
                 con = br.openHeadConnection(dllink);

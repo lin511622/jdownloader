@@ -2,6 +2,7 @@ package org.jdownloader.api.plugins;
 
 import java.lang.reflect.Type;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -31,12 +32,11 @@ import org.jdownloader.settings.advanced.AdvancedConfigEntry;
 
 public class PluginConfigAdapter {
     private static final String   OLD_CONFIG_PREFIX = "deprecated";
-
-    private final LazyPlugin      lazyPlugin;
+    private final LazyPlugin<?>   lazyPlugin;
     private PluginConfigInterface config;
     private ConfigContainer       oldConfig;
 
-    public PluginConfigAdapter(LazyPlugin lazyPlugin) throws ClassNotFoundException {
+    public PluginConfigAdapter(LazyPlugin<?> lazyPlugin) throws ClassNotFoundException {
         this.lazyPlugin = lazyPlugin;
         if (this.lazyPlugin == null) {
             throw new ClassNotFoundException();
@@ -48,6 +48,18 @@ public class PluginConfigAdapter {
             this.lazyPlugin = HostPluginController.getInstance().get(displayName);
         } else if (interfaceName.contains("jd.plugins.decrypter")) {
             this.lazyPlugin = CrawlerPluginController.getInstance().get(displayName);
+        } else if (interfaceName.startsWith("org.jdownloader.plugins.components")) {
+            LazyPlugin<?> lazyPlugin = HostPluginController.getInstance().get(displayName);
+            if (lazyPlugin != null && StringUtils.equals(((LazyHostPlugin) lazyPlugin).getConfigInterface(), interfaceName)) {
+                this.lazyPlugin = lazyPlugin;
+            } else {
+                lazyPlugin = CrawlerPluginController.getInstance().get(displayName);
+                if (lazyPlugin != null && StringUtils.equals(((LazyCrawlerPlugin) lazyPlugin).getConfigInterface(), interfaceName)) {
+                    this.lazyPlugin = lazyPlugin;
+                } else {
+                    this.lazyPlugin = null;
+                }
+            }
         } else {
             this.lazyPlugin = null;
         }
@@ -110,59 +122,104 @@ public class PluginConfigAdapter {
     }
 
     public Object getValue(String key) throws BadParameterException {
-        init();
-        if (this.isOldConfig()) {
-            if (this.oldConfig != null && this.oldConfig.getEntries().size() > 0) {
-                for (ConfigEntry entry : this.oldConfig.getEntries()) {
-                    if (entry.getPropertyName() != null && entry.getPropertyName().equals(key)) {
-                        return entry.getPropertyInstance().getProperty(key);
+        if (!StringUtils.isEmpty(key)) {
+            init();
+            if (this.isOldConfig()) {
+                if (this.oldConfig != null && this.oldConfig.getEntries().size() > 0) {
+                    for (ConfigEntry entry : this.oldConfig.getEntries()) {
+                        if (entry.getPropertyName() != null && entry.getPropertyName().equals(key)) {
+                            return entry.getPropertyInstance().getProperty(key);
+                        }
                     }
                 }
+            } else if (config != null) {
+                final KeyHandler<Object> kh = this.config._getStorageHandler().getKeyHandler(key);
+                if (kh != null) {
+                    return kh.getValue();
+                }
             }
-        } else if (config != null) {
-            KeyHandler<Object> kh = this.config._getStorageHandler().getKeyHandler(key);
-            return kh.getValue();
         }
         throw new BadParameterException("no matching config entry");
     }
 
     public Object getDefaultValue(String key) throws BadParameterException {
-        init();
-        if (this.isOldConfig()) {
-            if (this.oldConfig != null && this.oldConfig.getEntries().size() > 0) {
-                for (ConfigEntry entry : this.oldConfig.getEntries()) {
-                    if (entry.getPropertyName() != null && entry.getPropertyName().equals(key)) {
-                        return entry.getDefaultValue();
-                    }
-                }
-            }
-        } else if (config != null) {
-            KeyHandler<Object> kh = this.config._getStorageHandler().getKeyHandler(key);
-            return kh.getDefaultValue();
-        }
-
-        throw new BadParameterException("no matching config entry");
-    }
-
-    public boolean setValue(String key, Object value) {
-        init();
-        if (!StringUtils.isEmpty(key) && isOldConfig()) {
-            if (this.oldConfig != null && this.oldConfig.getEntries().size() > 0) {
-                for (ConfigEntry entry : this.oldConfig.getEntries()) {
-                    if (entry.getPropertyName() != null && entry.getPropertyName().equals(key)) {
-                        entry.getPropertyInstance().setProperty(key, value);
-                        return true;
+        if (!StringUtils.isEmpty(key)) {
+            init();
+            if (this.isOldConfig()) {
+                if (this.oldConfig != null && this.oldConfig.getEntries().size() > 0) {
+                    for (ConfigEntry entry : this.oldConfig.getEntries()) {
+                        if (entry.getPropertyName() != null && entry.getPropertyName().equals(key)) {
+                            return entry.getDefaultValue();
+                        }
                     }
                 }
             } else if (config != null) {
                 final KeyHandler<Object> kh = this.config._getStorageHandler().getKeyHandler(key);
-                Type rc = kh.getRawType();
-                String json = JSonStorage.serializeToJson(value);
-                TypeRef<Object> type = new TypeRef<Object>(rc) {
-                };
-                Object v = JSonStorage.stringToObject(json, type, null);
-                kh.setValue(v);
-                return true;
+                if (kh != null) {
+                    return kh.getDefaultValue();
+                }
+            }
+        }
+        throw new BadParameterException("no matching config entry:" + key);
+    }
+
+    public boolean setValue(String key, Object value) {
+        if (!StringUtils.isEmpty(key)) {
+            init();
+            if (isOldConfig()) {
+                if (this.oldConfig != null && this.oldConfig.getEntries().size() > 0) {
+                    for (ConfigEntry entry : this.oldConfig.getEntries()) {
+                        if (entry.getPropertyName() != null && entry.getPropertyName().equals(key)) {
+                            final AbstractType type = getAbstractTypeFromConfigType(entry.getType());
+                            if (type != null) {
+                                switch (type) {
+                                case ENUM:
+                                    // Special Handling -> enum Value(String) to index
+                                    final Object[] values = entry.getList();
+                                    if (values != null) {
+                                        final int index = Arrays.asList(values).indexOf(value);
+                                        if (index != -1) {
+                                            entry.getPropertyInstance().setProperty(key, index);
+                                            return true;
+                                        }
+                                    }
+                                    break;
+                                case LONG:
+                                    if (value instanceof Number || value instanceof String) {
+                                        if (value instanceof String) {
+                                            value = Long.parseLong(value.toString());
+                                        }
+                                        long num = ((Number) value).longValue();
+                                        if (num < entry.getStart()) {
+                                            num = entry.getStart();
+                                        } else if (num > entry.getEnd()) {
+                                            num = entry.getEnd();
+                                        }
+                                        entry.getPropertyInstance().setProperty(key, num);
+                                    } else {
+                                        entry.getPropertyInstance().setProperty(key, entry.getDefaultValue());
+                                    }
+                                    return true;
+                                default:
+                                    entry.getPropertyInstance().setProperty(key, value);
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+                    }
+                }
+            } else if (config != null) {
+                final KeyHandler<Object> kh = this.config._getStorageHandler().getKeyHandler(key);
+                if (kh != null) {
+                    final Type rc = kh.getRawType();
+                    final String json = JSonStorage.serializeToJson(value);
+                    final TypeRef<Object> type = new TypeRef<Object>(rc) {
+                    };
+                    final Object v = JSonStorage.stringToObject(json, type, null);
+                    kh.setValue(v);
+                    return true;
+                }
             }
         }
         return false;
@@ -221,6 +278,32 @@ public class PluginConfigAdapter {
         return storable;
     }
 
+    private String getEnumDefault(ConfigEntry entry) {
+        Object index = entry.getDefaultValue();
+        if (index == null || !(index instanceof Number)) {
+            index = 0;
+        }
+        final Object[] values = entry.getList();
+        if (values != null && values.length > ((Number) index).intValue()) {
+            return String.valueOf(values[((Number) index).intValue()]);
+        } else {
+            return null;
+        }
+    }
+
+    private String getEnumValue(ConfigEntry entry) {
+        final Object index = entry.getPropertyInstance().getProperty(entry.getPropertyName());
+        if (index == null || !(index instanceof Number)) {
+            return getEnumDefault(entry);
+        }
+        final Object[] values = entry.getList();
+        if (values != null && values.length > ((Number) index).intValue()) {
+            return String.valueOf(values[((Number) index).intValue()]);
+        } else {
+            return null;
+        }
+    }
+
     public PluginConfigEntryAPIStorable createAPIStorable(ConfigEntry entry, AdvancedConfigQueryStorable query) {
         final AbstractType type = getAbstractTypeFromConfigType(entry.getType());
         if (type != null) {
@@ -238,7 +321,7 @@ public class PluginConfigAdapter {
                     storable.setValue(entry.getPropertyInstance().getBooleanProperty(entry.getPropertyName()));
                     break;
                 case INT:
-                    storable.setValue(entry.getPropertyInstance().getIntegerProperty(entry.getPropertyName()));
+                    storable.setValue(entry.getPropertyInstance().getIntegerProperty(entry.getPropertyName(), -1));
                     break;
                 case LONG:
                     storable.setValue(entry.getPropertyInstance().getLongProperty(entry.getPropertyName(), -1l));
@@ -246,12 +329,23 @@ public class PluginConfigAdapter {
                 case STRING:
                     storable.setValue(entry.getPropertyInstance().getStringProperty(entry.getPropertyName()));
                     break;
+                case ENUM:
+                    storable.setValue(getEnumValue(entry));
+                    break;
                 default:
                     storable.setValue(entry.getPropertyInstance().getProperty(entry.getPropertyName()));
+                    break;
                 }
             }
             if (query.isDefaultValues()) {
-                storable.setDefaultValue(entry.getDefaultValue());
+                switch (type) {
+                case ENUM:
+                    storable.setDefaultValue(getEnumDefault(entry));
+                    break;
+                default:
+                    storable.setDefaultValue(entry.getDefaultValue());
+                    break;
+                }
             }
             if (query.isEnumInfo()) {
                 final Object[] list = entry.getList();
@@ -265,7 +359,6 @@ public class PluginConfigAdapter {
             }
             return storable;
         }
-
         return null;
     }
 
@@ -276,11 +369,14 @@ public class PluginConfigAdapter {
     private AbstractType getAbstractTypeFromConfigType(final int configContainerType) {
         if (configContainerType == ConfigContainer.TYPE_CHECKBOX) {
             return AbstractType.BOOLEAN;
-        } else if (configContainerType == ConfigContainer.TYPE_COMBOBOX || configContainerType == ConfigContainer.TYPE_SPINNER || configContainerType == ConfigContainer.TYPE_COMBOBOX_INDEX || configContainerType == ConfigContainer.TYPE_RADIOFIELD) {
-            return AbstractType.OBJECT_LIST;
+        } else if (configContainerType == ConfigContainer.TYPE_COMBOBOX_INDEX) {
+            return AbstractType.ENUM;
+        } else if (configContainerType == ConfigContainer.TYPE_SPINNER) {
+            return AbstractType.LONG;
         } else if (configContainerType == ConfigContainer.TYPE_PASSWORDFIELD || configContainerType == ConfigContainer.TYPE_TEXTFIELD || configContainerType == ConfigContainer.TYPE_TEXTAREA) {
             return AbstractType.STRING;
+        } else {
+            return null;
         }
-        return null;
     }
 }

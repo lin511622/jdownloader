@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
@@ -26,9 +25,8 @@ import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.PluginForDecrypt;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "peeplink.in" }, urls = { "http://(www\\.)?peeplink\\.in/[a-z0-9]+" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "peeplink.in", "alfalink.info" }, urls = { "https?://(www\\.)?peeplink\\.in/[a-z0-9]+", "https?://(www\\.)?alfalink\\.info/[a-z0-9]+" })
 public class PrrpLinkIn extends PluginForDecrypt {
-
     public PrrpLinkIn(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -37,7 +35,7 @@ public class PrrpLinkIn extends PluginForDecrypt {
         ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         final String parameter = param.toString();
         br.getPage(parameter);
-        final String redirect = br.getRedirectLocation();
+        String redirect = br.getRedirectLocation();
         if (redirect != null) {
             br.getPage(redirect);
         }
@@ -57,10 +55,14 @@ public class PrrpLinkIn extends PluginForDecrypt {
             return decryptedLinks;
         }
         if (br.containsHTML(">Shoot</a></li>")) {
-            br.postPage("http://peeplink.in/qaptcha/php/Qaptcha.jquery.php", "action=qaptcha");
+            br.postPage("/qaptcha/php/Qaptcha.jquery.php", "action=qaptcha");
             br.postPage(parameter, "iQapTcha=");
+            redirect = br.getRedirectLocation();
+            if (redirect != null) {
+                br.getPage(redirect);
+            }
         }
-        String finallink = br.getRegex("<article>(.*?)</article>").getMatch(0);
+        String finallink = br.getRegex("<article.*?>(.*?)</article").getMatch(0);
         if (finallink != null) {
             final String[] finallinks = HTMLParser.getHttpLinks(finallink, "");
             if (finallinks != null && finallinks.length != 0) {
@@ -76,8 +78,6 @@ public class PrrpLinkIn extends PluginForDecrypt {
             logger.info("Out of date: " + parameter);
             return null;
         }
-
         return decryptedLinks;
     }
-
 }

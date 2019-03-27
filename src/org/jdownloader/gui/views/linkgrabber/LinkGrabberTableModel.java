@@ -3,8 +3,14 @@ package org.jdownloader.gui.views.linkgrabber;
 import java.util.Iterator;
 import java.util.List;
 
+import jd.controlling.linkcollector.LinkCollector;
+import jd.controlling.linkcrawler.CrawledLink;
+import jd.controlling.linkcrawler.CrawledPackage;
+import jd.controlling.packagecontroller.AbstractNode;
+
 import org.appwork.storage.config.JsonConfig;
 import org.appwork.swing.exttable.ExtColumn;
+import org.appwork.utils.Application;
 import org.appwork.utils.swing.EDTRunner;
 import org.jdownloader.gui.views.components.packagetable.PackageControllerTableModel;
 import org.jdownloader.gui.views.components.packagetable.PackageControllerTableModelData;
@@ -13,6 +19,7 @@ import org.jdownloader.gui.views.components.packagetable.columns.CommentColumn;
 import org.jdownloader.gui.views.components.packagetable.columns.DownloadPasswordColumn;
 import org.jdownloader.gui.views.components.packagetable.columns.FileTypeColumn;
 import org.jdownloader.gui.views.components.packagetable.columns.HasCaptchaColumn;
+import org.jdownloader.gui.views.components.packagetable.columns.LinkIDColumn;
 import org.jdownloader.gui.views.downloads.columns.AddedDateColumn;
 import org.jdownloader.gui.views.downloads.columns.AvailabilityColumn;
 import org.jdownloader.gui.views.downloads.columns.EnabledDisabledColumn;
@@ -28,13 +35,7 @@ import org.jdownloader.gui.views.linkgrabber.columns.VariantColumn;
 import org.jdownloader.myjdownloader.client.json.AvailableLinkState;
 import org.jdownloader.settings.staticreferences.CFG_GUI;
 
-import jd.controlling.linkcollector.LinkCollector;
-import jd.controlling.linkcrawler.CrawledLink;
-import jd.controlling.linkcrawler.CrawledPackage;
-import jd.controlling.packagecontroller.AbstractNode;
-
 public class LinkGrabberTableModel extends PackageControllerTableModel<CrawledPackage, CrawledLink> {
-
     private static final long                  serialVersionUID = -198189279671615981L;
     private static final LinkGrabberTableModel INSTANCE         = new LinkGrabberTableModel();
 
@@ -64,7 +65,6 @@ public class LinkGrabberTableModel extends PackageControllerTableModel<CrawledPa
     @Override
     protected int[] getScrollPositionFromConfig() {
         return CFG_GUI.CFG.getLinkgrabberListScrollPosition();
-
     }
 
     public java.util.List<AbstractNode> sort(final java.util.List<AbstractNode> data, ExtColumn<AbstractNode> column) {
@@ -104,7 +104,6 @@ public class LinkGrabberTableModel extends PackageControllerTableModel<CrawledPa
             public boolean isDefaultVisible() {
                 return true;
             }
-
         });
         // this.addColumn(new AddedDateColumn());
         this.addColumn(priorityColumn = new PriorityColumn());
@@ -114,6 +113,9 @@ public class LinkGrabberTableModel extends PackageControllerTableModel<CrawledPa
                 return false;
             }
         });
+        if (!Application.isJared(null)) {
+            this.addColumn(new LinkIDColumn());
+        }
         this.addColumn(new AddedDateColumn());
         this.addColumn(new ChecksumColumn());
         this.addColumn(new FileTypeColumn());
@@ -122,7 +124,6 @@ public class LinkGrabberTableModel extends PackageControllerTableModel<CrawledPa
 
     protected void setVariantsSupport(final boolean vs) {
         new EDTRunner() {
-
             @Override
             protected void runInEDT() {
                 setVariantsColumnVisible(vs);
@@ -137,7 +138,6 @@ public class LinkGrabberTableModel extends PackageControllerTableModel<CrawledPa
             org.appwork.utils.logging2.extmanager.LoggerFactory.getDefaultLogger().log(e);
         }
         this.getTable().updateColumns();
-
     }
 
     public void setVariantsColumnVisible(boolean b) {
@@ -153,5 +153,4 @@ public class LinkGrabberTableModel extends PackageControllerTableModel<CrawledPa
             this.setColumnVisible(priorityColumn, b);
         }
     }
-
 }

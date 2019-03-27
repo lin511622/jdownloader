@@ -1,7 +1,18 @@
 package org.jdownloader.jna.windows;
 
+import java.util.HashMap;
+
+import com.sun.jna.Pointer;
+import com.sun.jna.win32.W32APIFunctionMapper;
+import com.sun.jna.win32.W32APITypeMapper;
+
 public interface User32 extends com.sun.jna.platform.win32.User32 {
-    public User32 INSTANCE = (User32) com.sun.jna.Native.loadLibrary("user32", User32.class);
+    public User32 INSTANCE = (User32) com.sun.jna.Native.loadLibrary("user32", User32.class, new HashMap<Object, Object>() {
+                               {
+                                   put(OPTION_TYPE_MAPPER, W32APITypeMapper.UNICODE);
+                                   put(OPTION_FUNCTION_MAPPER, W32APIFunctionMapper.UNICODE);
+                               }
+                           });
 
     /**
      * Requires win 2000+
@@ -18,8 +29,8 @@ public interface User32 extends com.sun.jna.platform.win32.User32 {
      * @return
      */
     boolean CloseWindow(HWND hWnd);
-    // https://msdn.microsoft.com/de-de/library/windows/desktop/ms633548(v=vs.85).aspx
 
+    // https://msdn.microsoft.com/de-de/library/windows/desktop/ms633548(v=vs.85).aspx
     // Displays the window in its current size and position. This value is similar to SW_SHOW, except that the window is not activated.
     public static final int SHOW_SW_SHOWNA            = 8;
     // Maximizes the specified window.
@@ -44,4 +55,7 @@ public interface User32 extends com.sun.jna.platform.win32.User32 {
     boolean ShowWindow(HWND hWnd, int state);
 
     void AnimateWindow(HWND hwnd, long time, long animation);
+
+    boolean SystemParametersInfo(int uiAction, int uiParam, Pointer pvParam, // Pointer or int
+            int fWinIni);
 }

@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.net.URL;
@@ -27,8 +26,6 @@ import javax.crypto.IllegalBlockSizeException;
 import javax.crypto.NoSuchPaddingException;
 import javax.crypto.spec.SecretKeySpec;
 import javax.xml.bind.DatatypeConverter;
-
-import org.jdownloader.scripting.JavaScriptEngineFactory;
 
 import jd.PluginWrapper;
 import jd.config.Property;
@@ -45,9 +42,10 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "pornsharing.com" }, urls = { "http://(?:www\\.)?pornsharing\\.com/[A-Za-z0-9\\-_]+v\\d+" })
-public class PornSharingCom extends PluginForHost {
+import org.jdownloader.scripting.JavaScriptEngineFactory;
 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "pornsharing.com" }, urls = { "https?://(?:www\\.)?pornsharing\\.com/[A-Za-z0-9\\-_]+v\\d+" })
+public class PornSharingCom extends PluginForHost {
     public PornSharingCom(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -61,7 +59,6 @@ public class PornSharingCom extends PluginForHost {
 
     /* Tags: TubeContext@Player */
     /* Sites using the same player: pornsharing.com, [definebabes.com, definebabe.com, definefetish.com] */
-
     @SuppressWarnings({ "unchecked", "deprecation" })
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
@@ -73,25 +70,30 @@ public class PornSharingCom extends PluginForHost {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         String filename = br.getRegex("<title>([^<>\"]*?)</title>").getMatch(0);
+        String source = br.getRegex("<source src=\"([^<>\"]*?)\"").getMatch(0);
         dllink = checkDirectLink(downloadLink, "directlink");
         if (dllink == null) {
             br.getPage("http://pornsharing.com/videoplayer/nvplaylist_ps_beta.php?hq=1&autoplay=0&id=" + lid);
-            final String decrypted = decryptRC4HexString("TubeContext@Player", br.toString().trim());
-            final LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(decrypted);
-            final LinkedHashMap<String, Object> videos = (LinkedHashMap<String, Object>) entries.get("videos");
-            /* Usually only 480 + 320 is available */
-            final String[] qualities = { "1080p", "720p", "480p", "360", "320p", "240p", "180p" };
-            for (final String currentqual : qualities) {
-                final LinkedHashMap<String, Object> quality_info = (LinkedHashMap<String, Object>) videos.get("_" + currentqual);
-                if (quality_info != null) {
-                    dllink = (String) quality_info.get("fileUrl");
-                    break;
+            if (!br._getURL().toString().contains("errors/404")) {
+                final String decrypted = decryptRC4HexString("TubeContext@Player", br.toString().trim());
+                final LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(decrypted);
+                final LinkedHashMap<String, Object> videos = (LinkedHashMap<String, Object>) entries.get("videos");
+                /* Usually only 480 + 320 is available */
+                final String[] qualities = { "1080p", "720p", "480p", "360", "320p", "240p", "180p" };
+                for (final String currentqual : qualities) {
+                    final LinkedHashMap<String, Object> quality_info = (LinkedHashMap<String, Object>) videos.get("_" + currentqual);
+                    if (quality_info != null) {
+                        dllink = (String) quality_info.get("fileUrl");
+                        break;
+                    }
                 }
+                if (dllink == null) {
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                }
+                dllink = Encoding.htmlDecode(dllink);
+            } else {
+                dllink = source;
             }
-            if (dllink == null) {
-                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-            }
-            dllink = Encoding.htmlDecode(dllink);
         }
         if (filename == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -145,11 +147,9 @@ public class PornSharingCom extends PluginForHost {
      */
     private static String decryptRC4HexString(final String plainTextKey, final String hexStringCiphertext) throws Exception {
         String ret = "";
-
         try {
             Cipher rc4 = Cipher.getInstance("RC4");
             rc4.init(Cipher.DECRYPT_MODE, new SecretKeySpec(plainTextKey.getBytes(), "RC4"));
-
             ret = new String(rc4.doFinal(DatatypeConverter.parseHexBinary(hexStringCiphertext)));
         } catch (NoSuchAlgorithmException e) {
             e.printStackTrace();
@@ -166,7 +166,6 @@ public class PornSharingCom extends PluginForHost {
         } catch (BadPaddingException e) {
             e.printStackTrace();
         }
-
         return ret;
     }
 

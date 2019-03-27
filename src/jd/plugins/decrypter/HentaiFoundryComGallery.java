@@ -13,16 +13,15 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
-
-import org.jdownloader.controlling.filter.CompiledFiletypeFilter;
+import java.util.regex.Pattern;
 
 import jd.PluginWrapper;
 import jd.controlling.AccountController;
 import jd.controlling.ProgressController;
+import jd.http.Request;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.plugins.Account;
@@ -35,9 +34,10 @@ import jd.plugins.PluginForDecrypt;
 import jd.plugins.PluginForHost;
 import jd.utils.JDUtilities;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "hentai-foundry.com" }, urls = { "http://www\\.hentai\\-foundry\\.com/pictures/user/[A-Za-z0-9\\-_]+(/\\d+)?" })
-public class HentaiFoundryComGallery extends PluginForDecrypt {
+import org.jdownloader.controlling.filter.CompiledFiletypeFilter;
 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "hentai-foundry.com" }, urls = { "https?://(?:www\\.)?hentai-foundry\\.com/pictures/user/[A-Za-z0-9\\-_]+(?:/scraps)?(?:/\\d+)?|https?://(?:www\\.)?hentai-foundry\\.com/user/[A-Za-z0-9\\-_]+/(profile|faves/pictures)" })
+public class HentaiFoundryComGallery extends PluginForDecrypt {
     public HentaiFoundryComGallery(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -48,15 +48,22 @@ public class HentaiFoundryComGallery extends PluginForDecrypt {
         br.setReadTimeout(3 * 60 * 1000);
         br.setFollowRedirects(true);
         String parameter = param.toString();
-        if (parameter.matches("http://www\\.hentai\\-foundry\\.com/pictures/user/[A-Za-z0-9\\-_]+/\\d+")) {
-            decryptedLinks.add(createDownloadlink(parameter.replace("hentai-foundry.com/", "hentai-foundrydecrypted.com/")));
+        if (new Regex(parameter, Pattern.compile(".+/user/[A-Za-z0-9\\-_]+/profile", Pattern.CASE_INSENSITIVE)).matches()) {
+            final String userID = new Regex(parameter, Pattern.compile(".+/user/([A-Za-z0-9\\-_]+)", Pattern.CASE_INSENSITIVE)).getMatch(0);
+            decryptedLinks.add(createDownloadlink("http://www.hentai-foundry.com/pictures/user/" + userID));
+            decryptedLinks.add(createDownloadlink("http://www.hentai-foundry.com/pictures/user/" + userID + "/scraps"));
+            decryptedLinks.add(createDownloadlink("http://www.hentai-foundry.com/stories/user/" + userID));
+            return decryptedLinks;
+        }
+        if (new Regex(parameter, Pattern.compile(".+/pictures/user/[A-Za-z0-9\\-_]+/\\d+", Pattern.CASE_INSENSITIVE)).matches()) {
+            decryptedLinks.add(createDownloadlink(parameter));
             return decryptedLinks;
         }
         br.getPage(parameter + "?enterAgree=1&size=0");
-        if (this.br.getHttpConnection().getResponseCode() == 404) {
+        if (br.getHttpConnection().getResponseCode() == 404) {
             decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
-        } else if (this.br.containsHTML("class=\"empty\"")) {
+        } else if (br.containsHTML("class=\"empty\"")) {
             /* User has not uploaded any content */
             decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
@@ -64,6 +71,8 @@ public class HentaiFoundryComGallery extends PluginForDecrypt {
         final String fpName = new Regex(parameter, "/user/(.+)").getMatch(0);
         int page = 1;
         String next = null;
+        final FilePackage fp = FilePackage.getInstance();
+        fp.setName(Encoding.htmlDecode(fpName.trim()));
         do {
             if (this.isAbort()) {
                 logger.info("Decryption aborted by user: " + parameter);
@@ -73,48 +82,51 @@ public class HentaiFoundryComGallery extends PluginForDecrypt {
             if (page > 1) {
                 br.getPage(next);
             }
-            String[] links = br.getRegex("<td class=\\'thumb_square\\'(.*?)\\s+</td>").getColumn(0);
+            String[] links = br.getRegex("<[^<>]+class='thumb_square'.*?</").getColumn(-1);
             if (links == null || links.length == 0) {
                 return null;
             }
             for (String link : links) {
-                String title = new Regex(link, "thumbTitle\"><[^<>]*?>([^<>]*?)<").getMatch(0);
+                String title = new Regex(link, "thumbTitle\"><[^<>]*?>([^<>]+)<").getMatch(0);
                 final String url = new Regex(link, "\"(/pictures/user/[A-Za-z0-9\\-_]+/\\d+[^<>\"]*?)\"").getMatch(0);
-                if (title == null || url == null) {
+                if (url == null) {
                     logger.warning("Decrypter broken for link: " + parameter);
                     logger.info("link: " + link);
                     logger.info("title: " + title + "url: " + url);
                     return null;
                 }
-                title = Encoding.htmlDecode(title).trim();
-                title = encodeUnicode(title);
-                final DownloadLink dl = createDownloadlink("http://www.hentai-foundrydecrypted.com" + url);
+                final String pic_id = jd.plugins.hoster.HentaiFoundryCom.getFID(url);
+                if (title != null) {
+                    title = pic_id + "_" + Encoding.htmlDecode(title).trim();
+                    title = encodeUnicode(title);
+                } else {
+                    title = pic_id;
+                }
+                final DownloadLink dl = createDownloadlink(Request.getLocation(url, br.getRequest()));
                 dl.setName(title);
                 dl.setMimeHint(CompiledFiletypeFilter.ImageExtensions.BMP);
                 dl.setAvailable(true);
                 decryptedLinks.add(dl);
+                fp.add(dl);
+                distribute(dl);
             }
-            next = br.getRegex("class=\"next\"><a href=\"(/pictures/user/[A-Za-z0-9\\-_]+/page/\\d+)\"").getMatch(0);
+            next = br.getRegex("class=\"next\"><a href=\"(/pictures/user/.*?/page/\\d+)\">Next").getMatch(0);
             page++;
         } while (next != null);
-
-        FilePackage fp = FilePackage.getInstance();
-        fp.setName(Encoding.htmlDecode(fpName.trim()));
-        fp.addLinks(decryptedLinks);
         return decryptedLinks;
     }
 
     /** Log in the account of the hostplugin */
     @SuppressWarnings("deprecation")
     private boolean getUserLogin(final boolean force) throws Exception {
-        final PluginForHost hostPlugin = JDUtilities.getPluginForHost("hentai-foundry.com");
+        final PluginForHost hostPlugin = JDUtilities.getPluginForHost(this.getHost());
         final Account aa = AccountController.getInstance().getValidAccount(hostPlugin);
         if (aa == null) {
             logger.warning("There is no account available, continuing without logging in (if possible)");
             return false;
         }
         try {
-            jd.plugins.hoster.HentaiFoundryCom.login(this.br, aa, force);
+            jd.plugins.hoster.HentaiFoundryCom.login(br, aa, force);
         } catch (final PluginException e) {
             logger.warning("Login failed - continuing without login");
             aa.setValid(false);
@@ -123,5 +135,4 @@ public class HentaiFoundryComGallery extends PluginForDecrypt {
         logger.info("Logged in successfully");
         return true;
     }
-
 }

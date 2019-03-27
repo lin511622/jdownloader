@@ -72,6 +72,9 @@ public interface ExtractionTranslation extends TranslateInterface {
     @Default(lngs = { "en" }, values = { "Queued for extracting" })
     String plugins_optional_extraction_status_queued();
 
+    @Default(lngs = { "en" }, values = { "Paused - waiting for other crc check to finish" })
+    String plugins_optional_extraction_status_pausedForOtherCrc();
+
     @Default(lngs = { "en" }, values = { "Delete Archive Files after suc. extraction?" })
     String settings_remove_after_extract();
 
@@ -148,7 +151,7 @@ public interface ExtractionTranslation extends TranslateInterface {
     String ValidateArchiveAction_ValidateArchiveAction(String name);
 
     @Default(lngs = { "en" }, values = { "Cannot extract %s1. Archive is incomplete!" })
-    String cannot_extract_incopmplete(String name);
+    String cannot_extract_incomplete(String name);
 
     @Default(lngs = { "en" }, values = { "Archive %s1" })
     String dummyarchivedialog_title(String name);

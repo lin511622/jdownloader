@@ -29,24 +29,6 @@ import javax.sound.sampled.LineEvent.Type;
 import javax.sound.sampled.LineListener;
 import javax.swing.JTextPane;
 
-import jd.controlling.AccountController;
-import jd.controlling.TaskQueue;
-import jd.controlling.accountchecker.AccountChecker;
-import jd.controlling.accountchecker.AccountChecker.AccountCheckJob;
-import jd.controlling.downloadcontroller.DownloadController;
-import jd.controlling.downloadcontroller.DownloadWatchDog;
-import jd.controlling.downloadcontroller.SingleDownloadController;
-import jd.controlling.linkcollector.LinkCollector;
-import jd.controlling.linkcrawler.CrawledLink;
-import jd.controlling.linkcrawler.CrawledPackage;
-import jd.controlling.reconnect.Reconnecter;
-import jd.http.Browser;
-import jd.plugins.Account;
-import jd.plugins.DownloadLink;
-import jd.plugins.FilePackage;
-import net.sourceforge.htmlunit.corejs.javascript.Function;
-import net.sourceforge.htmlunit.corejs.javascript.ScriptableObject;
-
 import org.appwork.storage.JSonStorage;
 import org.appwork.storage.config.JsonConfig;
 import org.appwork.storage.jackson.JacksonMapper;
@@ -66,6 +48,7 @@ import org.appwork.utils.os.CrossSystem.OSFamily;
 import org.appwork.utils.processes.ProcessBuilderFactory;
 import org.appwork.utils.processes.ProcessOutput;
 import org.appwork.utils.reflection.Clazz;
+import org.appwork.utils.speedmeter.SpeedMeterInterface.Resolution;
 import org.appwork.utils.swing.dialog.ConfirmDialog;
 import org.appwork.utils.swing.dialog.Dialog;
 import org.jdownloader.api.RemoteAPIController;
@@ -82,6 +65,24 @@ import org.jdownloader.images.AbstractIcon;
 import org.jdownloader.logging.LogController;
 import org.jdownloader.settings.SoundSettings;
 import org.jdownloader.settings.staticreferences.CFG_GENERAL;
+
+import jd.controlling.AccountController;
+import jd.controlling.TaskQueue;
+import jd.controlling.accountchecker.AccountChecker;
+import jd.controlling.accountchecker.AccountChecker.AccountCheckJob;
+import jd.controlling.downloadcontroller.DownloadController;
+import jd.controlling.downloadcontroller.DownloadWatchDog;
+import jd.controlling.downloadcontroller.SingleDownloadController;
+import jd.controlling.linkcollector.LinkCollector;
+import jd.controlling.linkcrawler.CrawledLink;
+import jd.controlling.linkcrawler.CrawledPackage;
+import jd.controlling.reconnect.Reconnecter;
+import jd.http.Browser;
+import jd.plugins.Account;
+import jd.plugins.DownloadLink;
+import jd.plugins.FilePackage;
+import net.sourceforge.htmlunit.corejs.javascript.Function;
+import net.sourceforge.htmlunit.corejs.javascript.ScriptableObject;
 
 public class ScriptEnvironment {
     private static HashMap<String, Object>                       GLOBAL_PROPERTIES = new HashMap<String, Object>();
@@ -122,37 +123,66 @@ public class ScriptEnvironment {
         return;
     }
 
-    static void askForPermission(final String string) throws EnvironmentException {
+    @ScriptAPI(description = "disable permission checks")
+    public static void disablePermissionChecks() {
         final ScriptThread env = getScriptThread();
-        final String md5 = Hash.getMD5(env.getScript().getScript());
-        ConfirmDialog d = new ConfirmDialog(0 | Dialog.STYLE_SHOW_DO_NOT_DISPLAY_AGAIN | UIOManager.LOGIC_DONT_SHOW_AGAIN_IGNORES_CANCEL, T.T.permission_title(), T.T.permission_msg(env.getScript().getName(), env.getScript().getEventTrigger().getLabel(), string), new AbstractIcon(IconKey.ICON_SERVER, 32), T.T.allow(), T.T.deny()) {
-            @Override
-            public String getDontShowAgainKey() {
-                return "ASK_FOR_PERMISSION_" + md5 + "_" + string;
-            }
+        if (env != null) {
+            env.setCheckPermissions(false);
+        }
+    }
 
-            @Override
-            protected int getPreferredWidth() {
-                return 600;
-            }
+    @ScriptAPI(description = "is current script run in synchronous mode?")
+    public static boolean isSynchronous() {
+        final ScriptThread env = getScriptThread();
+        return env != null && env.isSynchronous();
+    }
 
-            @Override
-            public boolean isRemoteAPIEnabled() {
-                return true;
-            }
+    @ScriptAPI(description = "enable permission checks")
+    public static void enablePermissionChecks() {
+        final ScriptThread env = getScriptThread();
+        if (env != null) {
+            env.setCheckPermissions(true);
+        }
+    }
 
-            public void windowClosing(final WindowEvent arg0) {
-                setReturnmask(false);
-                this.dispose();
+    static synchronized void askForPermission(final String string) throws EnvironmentException {
+        final ScriptThread env = getScriptThread();
+        if (env.isCheckPermissions()) {
+            final String md5 = Hash.getMD5(env.getScript().getScript());
+            if (!env.isPermissionSet(md5)) {
+                ConfirmDialog d = new ConfirmDialog(0 | Dialog.STYLE_SHOW_DO_NOT_DISPLAY_AGAIN | UIOManager.LOGIC_DONT_SHOW_AGAIN_IGNORES_CANCEL, T.T.permission_title(), T.T.permission_msg(env.getScript().getName(), env.getScript().getEventTrigger().getLabel(), string), new AbstractIcon(IconKey.ICON_SERVER, 32), T.T.allow(), T.T.deny()) {
+                    @Override
+                    public String getDontShowAgainKey() {
+                        return "ASK_FOR_PERMISSION_" + md5 + "_" + string;
+                    }
+
+                    @Override
+                    protected int getPreferredWidth() {
+                        return 600;
+                    }
+
+                    @Override
+                    public boolean isRemoteAPIEnabled() {
+                        return true;
+                    }
+
+                    public void windowClosing(final WindowEvent arg0) {
+                        setReturnmask(false);
+                        this.dispose();
+                    }
+                };
+                d.setDoNotShowAgainSelected(true);
+                // Integer ret = JSonStorage.getPlainStorage("Dialogs").get(d.getDontShowAgainKey(), -1);
+                // if (ret != null && ret > 0) {
+                // return;
+                // }
+                if (d.show().getCloseReason() != CloseReason.OK) {
+                    throw new EnvironmentException("Security Warning: User Denied Access to " + string);
+                }
+                if (d.isDontShowAgainSelected()) {
+                    env.setPermissionSet(md5);
+                }
             }
-        };
-        d.setDoNotShowAgainSelected(true);
-        // Integer ret = JSonStorage.getPlainStorage("Dialogs").get(d.getDontShowAgainKey(), -1);
-        // if (ret != null && ret > 0) {
-        // return;
-        // }
-        if (d.show().getCloseReason() != CloseReason.OK) {
-            throw new EnvironmentException("Security Warning: User Denied Access to " + string);
         }
     }
 
@@ -215,11 +245,7 @@ public class ScriptEnvironment {
             ProcessBuilder pb = ProcessBuilderFactory.create(commands);
             pb.redirectErrorStream(true);
             ProcessOutput ret = ProcessBuilderFactory.runCommand(pb);
-            if (CrossSystem.getOSFamily() == OSFamily.WINDOWS) {
-                return new String(new String(ret.getStdOutData(), "cp850").getBytes("UTF-8"), "UTF-8");
-            } else {
-                return ret.getStdOutString("UTF-8");
-            }
+            return ret.getStdOutString();
         } catch (Throwable e) {
             throw new EnvironmentException(e);
         }
@@ -457,15 +483,34 @@ public class ScriptEnvironment {
         }
     }
 
-    @ScriptAPI(description = "Get ab Environment Object")
+    @ScriptAPI(description = "Gets the value of the specified environment variable", parameters = { "environment variable" })
+    public static String getEnv(final String variable) throws EnvironmentException {
+        try {
+            return System.getenv(variable);
+        } catch (SecurityException e) {
+            throw new EnvironmentException(e);
+        }
+    }
+
+    @ScriptAPI(description = "Get an Environment Object")
     public static EnvironmentSandbox getEnvironment() throws EnvironmentException {
         return new EnvironmentSandbox();
     }
 
-    @ScriptAPI(description = "Get ab Environment Object")
+    @ScriptAPI(description = "Get an Environment Object")
     public static BrowserSandBox getBrowser() throws EnvironmentException {
         askForPermission("load resources from the internet");
         return new BrowserSandBox();
+    }
+
+    @ScriptAPI(description = "Open a website or path in your default browser/file explorer", parameters = { "URL" }, example = "openURL(\"http://jdownloader.org\");")
+    public static void openURL(String url) throws EnvironmentException {
+        askForPermission("open resource in your default browser/file explorer");
+        try {
+            CrossSystem.openURL(url);
+        } catch (Throwable e) {
+            throw new EnvironmentException(e);
+        }
     }
 
     @ScriptAPI(description = "Loads a website (Method: GET) and returns the source code", parameters = { "URL" }, example = "var myhtmlSourceString=getPage(\"http://jdownloader.org\");")
@@ -632,7 +677,7 @@ public class ScriptEnvironment {
 
     @ScriptAPI(description = "Get current average Download Speed in bytes/second")
     public static long getAverageSpeed() {
-        return DownloadWatchDog.getInstance().getDownloadSpeedManager().getSpeedMeter().getSpeedMeter();
+        return DownloadWatchDog.getInstance().getDownloadSpeedManager().getSpeedMeter().getValue(Resolution.SECONDS);
     }
 
     @ScriptAPI(description = "Stop Downloads")
@@ -930,20 +975,24 @@ public class ScriptEnvironment {
 
     private static final HashMap<File, AtomicInteger> LOCKS = new HashMap<File, AtomicInteger>();
 
-    private static synchronized Object requestLock(File name) {
-        AtomicInteger lock = LOCKS.get(name);
-        if (lock == null) {
-            lock = new AtomicInteger(0);
-            LOCKS.put(name, lock);
+    private static Object requestLock(File name) {
+        synchronized (LOCKS) {
+            final AtomicInteger existingLock = LOCKS.get(name);
+            if (existingLock == null) {
+                final AtomicInteger newLock = new AtomicInteger(1);
+                LOCKS.put(name, newLock);
+                return newLock;
+            } else {
+                existingLock.incrementAndGet();
+                return existingLock;
+            }
         }
-        lock.incrementAndGet();
-        return lock;
     }
 
-    private static synchronized void unLock(File name) {
-        AtomicInteger lock = LOCKS.get(name);
-        if (lock != null) {
-            if (lock.decrementAndGet() == 0) {
+    private static void unLock(File name) {
+        synchronized (LOCKS) {
+            final AtomicInteger existingLock = LOCKS.get(name);
+            if (existingLock != null && existingLock.decrementAndGet() == 0) {
                 LOCKS.remove(name);
             }
         }

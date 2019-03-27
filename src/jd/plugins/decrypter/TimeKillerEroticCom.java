@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
@@ -24,24 +23,25 @@ import jd.controlling.ProgressController;
 import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
+import jd.plugins.LinkStatus;
+import jd.plugins.PluginException;
 import jd.plugins.PluginForDecrypt;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "timekiller-erotic.com" }, urls = { "http://(www\\.)?timekiller\\-erotic\\.com/(Video/\\d+/.*?|PornHub/\\d+/[a-z0-9\\-_]+)\\.html" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "timekiller-erotic.com" }, urls = { "http://(www\\.)?timekiller\\-erotic\\.com/(Video/\\d+/.*?|PornHub/\\d+/[a-z0-9\\-_]+)\\.html" })
 public class TimeKillerEroticCom extends PluginForDecrypt {
-
     public TimeKillerEroticCom(PluginWrapper wrapper) {
         super(wrapper);
     }
 
     /* DEV NOTES */
     /* Porn_plugin */
-
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
         ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         br.setFollowRedirects(false);
         String parameter = param.toString();
         br.getPage(parameter);
         if (parameter.matches("http://(www\\.)?timekiller\\-erotic\\.com/PornHub/\\d+/[a-z0-9\\-_]+\\.html")) {
+            final String viewkey = br.getRegex("/pornhubplayer.php\\?video=([a-z0-9]+)\"").getMatch(0);
             final String continueLink = br.getRegex("\"(http://(www\\.)?lesbians666\\.com/player/pornhubplayer\\.php\\?video=[a-z0-9]+)\"").getMatch(0);
             if (continueLink == null) {
                 logger.warning("Decrypter broken for link: " + parameter);
@@ -53,8 +53,12 @@ public class TimeKillerEroticCom extends PluginForDecrypt {
                 pornHubLink = br.getRegex("\"(http://(www\\.)?pornhub\\.com/embed/[a-z0-9]+)\"").getMatch(0);
             }
             if (pornHubLink == null) {
-                logger.warning("Decrypter broken for link: " + parameter);
-                return null;
+                if (viewkey != null) {
+                    pornHubLink = "https://www.pornhub.com/view_video.php?viewkey=" + viewkey;
+                } else {
+                    logger.warning("Decrypter broken for link: " + parameter);
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                }
             }
             decryptedLinks.add(createDownloadlink(pornHubLink));
         } else {
@@ -97,7 +101,6 @@ public class TimeKillerEroticCom extends PluginForDecrypt {
                 dl.setFinalFileName(filename + ".flv");
                 decryptedLinks.add(dl);
                 return decryptedLinks;
-
             }
             externID = br.getRegex("var urlAddress = \"(http://.*?)\"").getMatch(0);
             if (externID != null) {
@@ -169,6 +172,17 @@ public class TimeKillerEroticCom extends PluginForDecrypt {
                 decryptedLinks.add(dl);
                 return decryptedLinks;
             }
+            // pornrabbit.com
+            externID = br.getRegex("<embed src=\"(https?://embed.pornrabbit.com/player.swf\\?movie_id=\\d+)\"").getMatch(0);
+            if (externID != null) {
+                br.setFollowRedirects(true);
+                br.getPage(externID);
+                if (br.containsHTML(">Page Not Found<")) {
+                    decryptedLinks.add(createOfflinelink(parameter));
+                    return decryptedLinks;
+                }
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT); // Collect reports and fix / change to /video/\\d+/
+            }
             externID = br.getRegex("redtube\\.com/player/\"><param name=\"FlashVars\" value=\"id=(\\d+)\\&").getMatch(0);
             if (externID == null) {
                 externID = br.getRegex("embed\\.redtube\\.com/player/\\?id=(\\d+)\\&").getMatch(0);
@@ -192,6 +206,9 @@ public class TimeKillerEroticCom extends PluginForDecrypt {
             }
             // drtuber.com embed v3
             externID = br.getRegex("(http://(www\\.)?drtuber\\.com/player/config_embed3\\.php\\?vkey=[a-z0-9]+)").getMatch(0);
+            if (externID == null) {
+                externID = br.getRegex("(https?://(www\\.)?drtuber\\.com/embed/\\d+)").getMatch(0);
+            }
             if (externID != null) {
                 decryptedLinks.add(createDownloadlink(externID));
                 return decryptedLinks;
@@ -199,22 +216,23 @@ public class TimeKillerEroticCom extends PluginForDecrypt {
             // pornhub handling number 2
             externID = br.getRegex("name=\"FlashVars\" value=\"options=(http://(www\\.)?pornhub\\.com/embed_player(_v\\d+)?\\.php\\?id=\\d+)\"").getMatch(0);
             if (externID != null) {
+                br.setFollowRedirects(true);
                 br.getPage(externID);
                 if (br.containsHTML("<link_url>N/A</link_url>")) {
-                    logger.info("Link offline: " + parameter);
+                    decryptedLinks.add(createOfflinelink(parameter));
                     return decryptedLinks;
                 }
-                externID = br.getRegex("<link_url>(http://[^<>\"]*?)</link_url>").getMatch(0);
+                externID = br.getRegex("<link_url>(http[^<>\"]*?)</link_url>").getMatch(0);
                 if (externID == null) {
                     logger.warning("Decrypter broken for link: " + parameter);
-                    return null;
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
                 decryptedLinks.add(createDownloadlink(externID));
                 return decryptedLinks;
             }
             if (externID == null) {
                 logger.warning("Decrypter broken for link: " + parameter);
-                return null;
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
         }
         return decryptedLinks;
@@ -224,5 +242,4 @@ public class TimeKillerEroticCom extends PluginForDecrypt {
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

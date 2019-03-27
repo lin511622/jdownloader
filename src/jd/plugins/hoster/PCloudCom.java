@@ -22,7 +22,6 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map.Entry;
 import java.util.Random;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import jd.PluginWrapper;
 import jd.config.ConfigContainer;
@@ -93,7 +92,7 @@ public class PCloudCom extends PluginForHost {
     private int                  statuscode                                      = 0;
 
     /* don't touch the following! */
-    private static AtomicInteger maxPrem                                         = new AtomicInteger(1);
+
     private static Object        LOCK                                            = new Object();
     private String               account_auth                                    = null;
 
@@ -322,25 +321,19 @@ public class PCloudCom extends PluginForHost {
             account.setValid(false);
             throw e;
         }
-        if ("true".equals(PluginJSonUtils.getJsonValue(br, "premium"))) {
-            if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
-                throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nNicht unterstützter Accounttyp!\r\nFalls du denkst diese Meldung sei falsch die Unterstützung dieses Account-Typs sich\r\ndeiner Meinung nach aus irgendeinem Grund lohnt,\r\nkontaktiere uns über das support Forum.", PluginException.VALUE_ID_PREMIUM_DISABLE);
-            } else {
-                throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUnsupported account type!\r\nIf you think this message is incorrect or it makes sense to add support for this account type\r\ncontact us via our support forum.", PluginException.VALUE_ID_PREMIUM_DISABLE);
-            }
-        }
+        final String premium = PluginJSonUtils.getJsonValue(br, "premium");
         ai.setUnlimitedTraffic();
-        maxPrem.set(ACCOUNT_FREE_MAXDOWNLOADS);
-        try {
-            account.setType(AccountType.FREE);
-            /* free accounts cannot have captcha */
-            account.setMaxSimultanDownloads(maxPrem.get());
+        if ("true".equals(premium)) {
+            ai.setStatus("Registered premium user");
+            account.setType(AccountType.PREMIUM);
+            account.setMaxSimultanDownloads(20);
             account.setConcurrentUsePossible(true);
-        } catch (final Throwable e) {
-            /* not available in old Stable 0.9.581 */
+        } else {
+            ai.setStatus("Registered (free) user");
+            account.setType(AccountType.FREE);
+            account.setMaxSimultanDownloads(1);
+            account.setConcurrentUsePossible(true);
         }
-        ai.setStatus("Registered (free) user");
-        account.setValid(true);
         return ai;
     }
 
@@ -485,12 +478,6 @@ public class PCloudCom extends PluginForHost {
 
     private String getFID(final DownloadLink dl) {
         return dl.getStringProperty("plain_fileid", null);
-    }
-
-    @Override
-    public int getMaxSimultanPremiumDownloadNum() {
-        /* workaround for free/premium issue on stable 09581 */
-        return maxPrem.get();
     }
 
     private String getAPISafe(final String accesslink) throws IOException, PluginException {

@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.File;
@@ -33,18 +32,15 @@ import jd.plugins.components.DailyMotionVariant;
 
 import org.jdownloader.controlling.ffmpeg.FFMpegProgress;
 import org.jdownloader.controlling.ffmpeg.FFmpeg;
-import org.jdownloader.controlling.ffmpeg.FFprobe;
 import org.jdownloader.controlling.ffmpeg.json.StreamInfo;
 import org.jdownloader.controlling.linkcrawler.LinkVariant;
 import org.jdownloader.gui.translate._GUI;
 import org.jdownloader.translate._JDT;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "dailymotion.com" }, urls = { "http://dailymotiondecrypted\\.com/video/\\w+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "dailymotion.com" }, urls = { "https?://dailymotiondecrypted\\.com/video/\\w+" })
 public class DailyMotionComV2 extends DailyMotionCom {
-
     public DailyMotionComV2(PluginWrapper wrapper) {
         super(wrapper);
-
     }
 
     // @Override
@@ -53,7 +49,6 @@ public class DailyMotionComV2 extends DailyMotionCom {
     //
     //
     // }
-
     public List<? extends LinkVariant> getVariantsByLink(DownloadLink downloadLink) {
         if (downloadLink.isGenericVariantSupport()) {
             return super.getVariantsByLink(downloadLink);
@@ -82,14 +77,11 @@ public class DailyMotionComV2 extends DailyMotionCom {
                 }
                 checkFFmpeg(downloadLink, _JDT.T.plugin_for_host_reason_for_ffmpeg_demux());
                 super.downloadDirect(downloadLink);
-
                 final FFMpegProgress set = new FFMpegProgress();
                 try {
                     downloadLink.addPluginProgress(set);
                     File file = new File(downloadLink.getFileOutput());
-
-                    FFmpeg ffmpeg = getFFmpeg(downloadLink);
-
+                    FFmpeg ffmpeg = getFFmpeg(br.cloneBrowser(), downloadLink);
                     File finalFile = downloadLink.getDownloadLinkController().getFileOutput(false, true);
                     if ("aac".equals(var.getConvertTo())) {
                         if (!ffmpeg.demuxAAC(set, finalFile.getAbsolutePath(), file.getAbsolutePath())) {
@@ -113,7 +105,6 @@ public class DailyMotionComV2 extends DailyMotionCom {
                 }
             }
         }
-
     }
 
     @Override
@@ -132,14 +123,13 @@ public class DailyMotionComV2 extends DailyMotionCom {
     }
 
     @Override
-    public AvailableStatus requestFileInformation(DownloadLink downloadLink) throws IOException, PluginException, ParseException {
+    public AvailableStatus requestFileInformation(DownloadLink downloadLink) throws Exception {
         // checkFFmpeg(downloadLink, _GUI.T.YoutubeDash_handleDownload_youtube_demux());
         return super.requestFileInformation(downloadLink);
     }
 
     @Override
     public void addConfigElementHDS(ConfigEntry hq) {
-
     }
 
     protected boolean checkDirectLink(final DownloadLink downloadLink) throws PluginException {
@@ -148,17 +138,14 @@ public class DailyMotionComV2 extends DailyMotionCom {
             try {
                 URLConnectionAdapter con = null;
                 try {
-
                     con = br.openGetConnection(dllink);
                     if (con.getResponseCode() == 302) {
                         br.followConnection();
                         dllink = br.getRedirectLocation().replace("#cell=core&comment=", "");
                         br.getHeaders().put("Referer", dllink);
                         con = br.openGetConnection(dllink);
-
                     }
-
-                    if (con.getResponseCode() == 410 || con.getContentType().contains("html")) {
+                    if (con.getResponseCode() != 200 || con.getContentType().contains("html")) {
                         return false;
                     }
                     downloadLink.setDownloadSize(con.getLongContentLength());
@@ -167,22 +154,19 @@ public class DailyMotionComV2 extends DailyMotionCom {
                         if (var != null && var.getConvertTo() != null) {
                             if (downloadLink.getProperty("FFP_BITRATE") == null) {
                                 checkFFProbe(downloadLink, _JDT.T.plugin_for_host_reason_for_ffmpeg_demux());
-                                StreamInfo streamInfo = new FFprobe(br.cloneBrowser()).getStreamInfo(dllink);
+                                StreamInfo streamInfo = getFFProbe(br.cloneBrowser(), downloadLink).getStreamInfo(dllink);
                                 downloadLink.setProperty("FFP_BITRATE", streamInfo.getFormat().getBit_rate());
                                 downloadLink.setProperty("FFP_DURATION", streamInfo.getFormat().getDuration());
                                 downloadLink.setProperty("FFP_V_HEIGHT", streamInfo.getStreams().get(0).getHeight());
                                 downloadLink.setProperty("FFP_V_WIDTH", streamInfo.getStreams().get(0).getWidth());
                                 if (streamInfo.getStreams().size() > 1) {
                                     downloadLink.setProperty("FFP_A_CODEC", streamInfo.getStreams().get(1).getCodec_name());
-
                                     downloadLink.setProperty("FFP_A_BITRATE", streamInfo.getStreams().get(1).getBit_rate());
                                 } else {
                                     // no Audio
                                 }
-
                             }
                             if (downloadLink.getProperty("FFP_A_BITRATE") != null) {
-
                                 if (var.getConvertTo().equals("aac")) {
                                     var.setDisplayName("AAC Audio " + (Integer.parseInt(downloadLink.getStringProperty("FFP_A_BITRATE")) / 1024) + "kbit/s");
                                 } else {
@@ -190,14 +174,11 @@ public class DailyMotionComV2 extends DailyMotionCom {
                                 }
                                 var.setqName((Integer.parseInt(downloadLink.getStringProperty("FFP_A_BITRATE")) / 1024) + "kbits");
                                 setActiveVariantByLink(downloadLink, var);
-
                             } else {
                                 throw new NoAudioException();
                             }
-
                         }
                     }
-
                     // LinkVariant v = getActiveVariantByLink(downloadLink);
                     // ((DailyMotionVariant)v).setqName(qName);
                 } finally {
@@ -212,14 +193,12 @@ public class DailyMotionComV2 extends DailyMotionCom {
                 getLogger().log(e);
                 return false;
             }
-
             return true;
         }
         return false;
     }
 
     public class NoAudioException extends PluginException {
-
         /**
          *
          */
@@ -228,7 +207,6 @@ public class DailyMotionComV2 extends DailyMotionCom {
         public NoAudioException() {
             super(LinkStatus.ERROR_FILE_NOT_FOUND, "No Audio Stream available");
         }
-
     }
 
     public static void setActiveVariant(DownloadLink downloadLink, DailyMotionVariant dmv) {
@@ -265,5 +243,4 @@ public class DailyMotionComV2 extends DailyMotionCom {
             super.setActiveVariantByLink(downloadLink, variant);
         }
     }
-
 }

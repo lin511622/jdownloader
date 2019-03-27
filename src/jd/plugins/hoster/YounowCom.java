@@ -27,6 +27,7 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
+import org.jdownloader.controlling.ffmpeg.json.StreamInfo;
 import org.jdownloader.downloader.hls.HLSDownloader;
 import org.jdownloader.plugins.components.hls.HlsContainer;
 import org.jdownloader.scripting.JavaScriptEngineFactory;
@@ -80,6 +81,7 @@ public class YounowCom extends PluginForHost {
             return AvailableStatus.TRUE;
         }
         if (errorcode > 0) {
+            /* E.g. 263 = "errorMsg":"Replay no longer exists" */
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
 
@@ -116,6 +118,12 @@ public class YounowCom extends PluginForHost {
         }
         if (hls_master != null && !hls_master.equals("")) {
             br.getPage(hls_master);
+            if (this.br.getHttpConnection().getResponseCode() == 403) {
+                /* At this stage the stream might have been deleted from the server. */
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 60 * 60 * 1000l);
+            } else if (this.br.getHttpConnection().getResponseCode() == 404) {
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 404", 60 * 60 * 1000l);
+            }
             final String url_hls;
             if (this.br.containsHTML("0.ts")) {
                 /* Okay seems like there is no master so we already had the correct url */
@@ -126,10 +134,16 @@ public class YounowCom extends PluginForHost {
                 if (hlsbest == null) {
                     throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
-                url_hls = hlsbest.downloadurl;
+                url_hls = hlsbest.getDownloadurl();
             }
             checkFFmpeg(downloadLink, "Download a HLS Stream");
-            dl = new HLSDownloader(downloadLink, br, url_hls);
+
+            final HLSDownloader downloader = new HLSDownloader(downloadLink, br, url_hls);
+            final StreamInfo streamInfo = downloader.getProbe();
+            if (streamInfo == null) {
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "HLS Server error - stream might be offline", 60 * 60 * 1000l);
+            }
+            dl = downloader;
             dl.startDownload();
         } else {
             try {

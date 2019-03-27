@@ -16,8 +16,6 @@
 
 package jd.plugins.hoster;
 
-import java.io.IOException;
-
 import org.appwork.utils.formatter.SizeFormatter;
 
 import jd.PluginWrapper;
@@ -33,7 +31,7 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "borncash.org" }, urls = { "http://(www\\.)?borncash\\.org/(load/|download/\\?a=|dw/\\?a=)\\d+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "borncash.org" }, urls = { "http://(www\\.)?(?:borncash\\.org|vipbill\\.ru)/(load/|download/\\?a=|dw/\\?a=)\\d+" })
 public class BornCashOrg extends PluginForHost {
 
     public BornCashOrg(PluginWrapper wrapper) {
@@ -50,23 +48,36 @@ public class BornCashOrg extends PluginForHost {
     }
 
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         br.getPage(link.getDownloadURL() + "&lang=en");
-        if (br.containsHTML("borncash\\.org/dw/del") || br.containsHTML("redirectfiles\\.ru/error/")) {
+        if (br.containsHTML("(?:borncash\\.org|vipbill\\.ru)/dw/del") || br.containsHTML("redirectfiles\\.ru/error/")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        }
+        // meta redirect
+        if (br.containsHTML("<meta http-equiv=")) {
+            final String redirect = getMetaRedirect();
+            if (redirect == null) {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            }
+            br.getPage(redirect);
         }
         final String filename = br.getRegex("file\"><b>([^<>]+)</b>").getMatch(0);
         final String filesize = br.getRegex("file\"><b>[^<>]+</b>\\s*\\(([\\d\\.]+\\s*[KMG]B)\\)<").getMatch(0);
-        if (filename == null ) {
+        if (filename == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         link.setName(Encoding.htmlDecode(filename.trim()));
-        if (filesize != null) { 
-        	link.setDownloadSize(SizeFormatter.getSize(filesize));
+        if (filesize != null) {
+            link.setDownloadSize(SizeFormatter.getSize(filesize));
         }
         return AvailableStatus.TRUE;
+    }
+
+    private String getMetaRedirect() {
+        final String result = br.getRegex("<meta http-equiv=('|\")refresh\\1\\s*content=(\"|')\\d+\\s*;\\s*url=(.*?)\\2").getMatch(2);
+        return result;
     }
 
     @Override
@@ -74,26 +85,28 @@ public class BornCashOrg extends PluginForHost {
         requestFileInformation(downloadLink);
         String dllink = checkDirectLink(downloadLink, "directlink");
         if (dllink == null) {
-            br.postPage(br.getURL(), "form_1=");
-            // br.postPage(br.getURL(), "form_3=");
-            br.postPage(br.getURL(), "off_free=");
+            br.postPage(br.getURL(), "form_2=");
+            dllink = getMetaRedirect();
+            if (dllink != null) {
+                br.getPage(dllink);
+            }
             int wait = 60;
             final String waittime = br.getRegex("sec=(\\d+);").getMatch(0);
             if (waittime != null) {
                 wait = Integer.parseInt(waittime);
             }
-            dllink = br.getRegex("\"(http://(www\\.)?borncash\\.org/dw/zagruska\\.php\\?url=http://[^<>\"]*?)\"").getMatch(0);
+            dllink = br.getRegex("\"((?:https?:)?//(www\\.)?(?:borncash\\.org|vipbill\\.ru)/dw/zagruska\\.php\\?url=(?:https?:)?//[^<>\"]*?)\"").getMatch(0);
             if (dllink == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-            // sleep(wait * 1001l, downloadLink);
+            sleep(wait * 1001l, downloadLink);
             br.getPage(dllink);
-            dllink = br.getRegex("HTTP\\-EQUIV=\\'Refresh\\' CONTENT=\\'\\d+; URL=(http://[^<>\"]*?)\\'>").getMatch(0);
+            dllink = getMetaRedirect();
             if (dllink == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
         }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, false, 1);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, false, 1);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             if (br.containsHTML("Скачивать файлы без VIP доступа Вы можете не чаще")) {

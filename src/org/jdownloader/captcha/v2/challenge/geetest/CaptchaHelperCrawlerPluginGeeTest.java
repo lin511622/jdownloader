@@ -3,6 +3,7 @@ package org.jdownloader.captcha.v2.challenge.geetest;
 import jd.controlling.captcha.SkipException;
 import jd.controlling.downloadcontroller.SingleDownloadController;
 import jd.controlling.linkcollector.LinkCollector;
+import jd.controlling.linkcollector.LinkCollector.JobLinkCrawler;
 import jd.controlling.linkcrawler.CrawledLink;
 import jd.controlling.linkcrawler.LinkCrawler;
 import jd.controlling.linkcrawler.LinkCrawlerThread;
@@ -24,10 +25,8 @@ import org.jdownloader.captcha.v2.solver.browser.BrowserViewport;
 import org.jdownloader.captcha.v2.solver.browser.BrowserWindow;
 
 public class CaptchaHelperCrawlerPluginGeeTest extends AbstractCaptchaHelperGeeTest<PluginForDecrypt> {
-
     public CaptchaHelperCrawlerPluginGeeTest(PluginForDecrypt plugin, Browser br, String siteKey) {
         super(plugin, br, siteKey);
-
     }
 
     public CaptchaHelperCrawlerPluginGeeTest(PluginForDecrypt plugin, Browser br) {
@@ -45,21 +44,17 @@ public class CaptchaHelperCrawlerPluginGeeTest extends AbstractCaptchaHelperGeeT
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "AreYouAHuman API Key can not be found");
             }
         }
-
         final LinkCrawler currentCrawler = getPlugin().getCrawler();
         final CrawledLink currentOrigin = getPlugin().getCurrentLink().getOriginLink();
-
         GeeTestChallenge c = new GeeTestChallenge(apiKey, getPlugin()) {
-
             @Override
             public BrowserViewport getBrowserViewport(BrowserWindow screenResource, java.awt.Rectangle elementBounds) {
                 return null;
             }
-
         };
-        c.setTimeout(getPlugin().getCaptchaTimeout());
+        c.setTimeout(getPlugin().getChallengeTimeout(c));
         getPlugin().invalidateLastChallengeResponse();
-        final BlacklistEntry blackListEntry = CaptchaBlackList.getInstance().matches(c);
+        final BlacklistEntry<?> blackListEntry = CaptchaBlackList.getInstance().matches(c);
         if (blackListEntry != null) {
             logger.warning("Cancel. Blacklist Matching");
             throw new CaptchaException(blackListEntry);
@@ -67,10 +62,10 @@ public class CaptchaHelperCrawlerPluginGeeTest extends AbstractCaptchaHelperGeeT
         try {
             ChallengeResponseController.getInstance().handle(c);
             if (!c.isSolved()) {
-                throw new DecrypterException(DecrypterException.CAPTCHA);
+                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
             }
             if (!c.isCaptchaResponseValid()) {
-                throw new DecrypterException(DecrypterException.CAPTCHA);
+                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
             }
             return c.getResult().getValue();
         } catch (InterruptedException e) {
@@ -90,10 +85,22 @@ public class CaptchaHelperCrawlerPluginGeeTest extends AbstractCaptchaHelperGeeT
                 break;
             case REFRESH:
                 break;
+            case TIMEOUT:
+                plugin.onCaptchaTimeout(plugin.getCurrentLink(), c);
+                // TIMEOUT may fallthrough to SINGLE
+            case SINGLE:
+                break;
             case STOP_CURRENT_ACTION:
                 if (Thread.currentThread() instanceof LinkCrawlerThread) {
-                    LinkCollector.getInstance().abort();
-                    // Just to be sure
+                    final LinkCrawler linkCrawler = ((LinkCrawlerThread) Thread.currentThread()).getCurrentLinkCrawler();
+                    if (linkCrawler instanceof JobLinkCrawler) {
+                        final JobLinkCrawler jobLinkCrawler = ((JobLinkCrawler) linkCrawler);
+                        logger.info("Abort JobLinkCrawler:" + jobLinkCrawler.getUniqueAlltimeID().toString());
+                        jobLinkCrawler.abort();
+                    } else {
+                        logger.info("Abort global LinkCollector");
+                        LinkCollector.getInstance().abort();
+                    }
                     CaptchaBlackList.getInstance().add(new BlockAllCrawlerCaptchasEntry(getPlugin().getCrawler()));
                 }
                 break;
@@ -103,5 +110,4 @@ public class CaptchaHelperCrawlerPluginGeeTest extends AbstractCaptchaHelperGeeT
             throw new CaptchaException(e.getSkipRequest());
         }
     }
-
 }

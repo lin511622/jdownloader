@@ -13,10 +13,9 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.File;
+import java.io.IOException;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -55,17 +54,17 @@ import jd.plugins.PluginException;
 import jd.utils.locale.JDL;
 
 import org.appwork.utils.StringUtils;
+import org.appwork.utils.encoding.URLEncode;
 import org.appwork.utils.formatter.SizeFormatter;
 import org.appwork.utils.net.HTTPHeader;
 import org.appwork.utils.os.CrossSystem;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
 import org.jdownloader.gui.translate._GUI;
 import org.jdownloader.plugins.components.antiDDoSForHost;
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "share-online.biz" }, urls = { "https?://(www\\.)?(share\\-online\\.biz|egoshare\\.com)/(download\\.php\\?id\\=|dl/)[\\w]+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "share-online.biz" }, urls = { "https?://(www\\.)?(share\\-online\\.biz|egoshare\\.com)/(download\\.php\\?id\\=|dl/)[\\w]+" })
 public class ShareOnlineBiz extends antiDDoSForHost {
-
     private static final String                                     COOKIE_HOST                             = "http://share-online.biz";
     private static WeakHashMap<Account, HashMap<String, String>>    ACCOUNTINFOS                            = new WeakHashMap<Account, HashMap<String, String>>();
     private static WeakHashMap<Account, CopyOnWriteArrayList<Long>> THREADFAILURES                          = new WeakHashMap<Account, CopyOnWriteArrayList<Long>>();
@@ -73,27 +72,25 @@ public class ShareOnlineBiz extends antiDDoSForHost {
     private static HashMap<Long, Long>                              noFreeSlot                              = new HashMap<Long, Long>();
     private static HashMap<Long, Long>                              overloadedServer                        = new HashMap<Long, Long>();
     private long                                                    server                                  = -1;
-    private long                                                    waitNoFreeSlot                          = 10 * 60 * 1000l;
+    private long                                                    waitNoFreeSlot                          = 5 * 60 * 1000l;
     private long                                                    waitOverloadedServer                    = 5 * 60 * 1000l;
-
     /* Connection stuff */
     private static final boolean                                    free_resume                             = false;
     private static final int                                        free_maxchunks                          = 1;
     private static final int                                        free_maxdownloads                       = 1;
     private static final boolean                                    account_premium_resume                  = true;
-    private static final int                                        account_premium_maxchunks               = 0;
     private static final int                                        account_premium_maxdownloads            = 10;
     private static final int                                        account_premium_vipspecial_maxdownloads = 2;
     private static final int                                        account_premium_penalty_maxdownloads    = 2;
-
     private boolean                                                 hideID                                  = true;
-    private static AtomicInteger                                    maxChunksnew                            = new AtomicInteger(-2);
+    private static AtomicInteger                                    maxChunksnew                            = new AtomicInteger(0);
     private char[]                                                  FILENAMEREPLACES                        = new char[] { '_', '&', 'ü' };
     private final String                                            SHARED_IP_WORKAROUND                    = "SHARED_IP_WORKAROUND";
+    private final String                                            UNLIMIT_CHUNKS                          = "UNLIMIT_CHUNKS";
     private final String                                            TRAFFIC_WORKAROUND                      = "TRAFFIC_WORKAROUND";
     private final String                                            PREFER_HTTPS                            = "PREFER_HTTPS";
-
-    private static AtomicInteger                                    maxPrem                                 = new AtomicInteger(1);
+    private final String                                            TRAFFIC_LIMIT                           = "TRAFFIC_LIMIT";
+    private final String[]                                          trafficLimits                           = new String[] { "100", "99", "98", "97", "96", "95", "90", "80", "70", "60", "50", "40", "30", "20", "10" };
 
     public ShareOnlineBiz(PluginWrapper wrapper) {
         super(wrapper);
@@ -139,7 +136,7 @@ public class ShareOnlineBiz extends antiDDoSForHost {
                 br.setKeepResponseContentBytes(true);
                 // because Request.setHTML(String) it nullifies byte array it will cause NPE here. .. do not call antiddos methods and hope
                 // it will work.
-                postPage(br, userProtocol() + "://api.share-online.biz/cgi-bin?q=checklinks&md5=1", sb.toString());
+                postPage(br, userProtocolApi() + "://api.share-online.biz/cgi-bin?q=checklinks&md5=1", sb.toString());
                 final byte[] responseBytes = br.getRequest().getResponseBytes();
                 final String infosUTF8[][] = new Regex(new String(responseBytes, "UTF-8"), Pattern.compile("(.*?);\\s*?(OK)\\s*?;(.*?)\\s*?;(\\d+);([0-9a-fA-F]{32})")).getMatches();
                 final String infosISO88591[][] = new Regex(new String(responseBytes, "ISO-8859-1"), Pattern.compile("(.*?);\\s*?(OK)\\s*?;(.*?)\\s*?;(\\d+);([0-9a-fA-F]{32})")).getMatches();
@@ -222,6 +219,10 @@ public class ShareOnlineBiz extends antiDDoSForHost {
         }
     }
 
+    private String userProtocolApi() {
+        return "https";
+    }
+
     private boolean userPrefersHttps() {
         return getPluginConfig().getBooleanProperty(PREFER_HTTPS, false);
     }
@@ -246,10 +247,12 @@ public class ShareOnlineBiz extends antiDDoSForHost {
     private void setConfigElements() {
         getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), SHARED_IP_WORKAROUND, _GUI.T.gui_plugin_settings_share_online_shared_ip_workaround()).setDefaultValue(false));
         getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), TRAFFIC_WORKAROUND, _GUI.T.gui_plugin_settings_share_online_traffic_workaround()).setDefaultValue(false));
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), UNLIMIT_CHUNKS, "Disable connection limit(2) per download? (Warning: may cause (temporarily) IP bans!)").setDefaultValue(false));
         /**
          * https downloads are speed-limited serverside
          */
         getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), PREFER_HTTPS, _GUI.T.gui_plugin_settings_share_online_traffic_premium_prefer_https()).setDefaultValue(false));
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_COMBOBOX_INDEX, getPluginConfig(), TRAFFIC_LIMIT, trafficLimits, JDL.L("", "Traffic max. Limit in GiB")).setDefaultValue(0));
     }
 
     private void errorHandling(Browser br, DownloadLink downloadLink, Account acc, HashMap<String, String> usedPremiumInfos) throws PluginException {
@@ -262,9 +265,7 @@ public class ShareOnlineBiz extends antiDDoSForHost {
             // Transfer-Encoding: chunked
             // Connection: keep-alive....
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server Error. Try again later...", 10 * 60 * 1000l);
-
         }
-
         /* file is offline */
         if (br.containsHTML("The requested file is not available")) {
             if (br.containsHTML("The server was not able to find the desired file")) {
@@ -354,8 +355,8 @@ public class ShareOnlineBiz extends antiDDoSForHost {
         }
         if (url.contains("failure/chunks")) {
             /* max chunks reached */
-            String maxCN = new Regex(url, "failure/chunks/(\\d+)").getMatch(0);
-            if (maxCN != null) {
+            final String maxCN = new Regex(url, "failure/chunks/(\\d+)").getMatch(0);
+            if (maxCN != null && acc != null) {
                 maxChunksnew.set(-Integer.parseInt(maxCN));
             }
             downloadLink.setChunksProgress(null);
@@ -378,7 +379,7 @@ public class ShareOnlineBiz extends antiDDoSForHost {
             try {
                 final Browser br2 = new Browser();
                 final String id = this.getID(downloadLink);
-                getPage(br2, userProtocol() + "://api.share-online.biz/api/account.php?act=fileError&fid=" + id);
+                getPage(br2, userProtocolApi() + "://api.share-online.biz/api/account.php?act=fileError&fid=" + id);
             } catch (Throwable e) {
             }
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
@@ -452,29 +453,20 @@ public class ShareOnlineBiz extends antiDDoSForHost {
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         final AccountInfo ai = new AccountInfo();
         /* reset maxPrem workaround on every fetchaccount info */
-        maxPrem.set(1);
         setBrowserExclusive();
-        HashMap<String, String> infos = null;
-        try {
-            infos = loginAPI(account, true);
-        } catch (final PluginException e) {
-            account.setValid(false);
-            throw e;
-        }
+        final HashMap<String, String> infos = loginAPI(account, true);
         if (isFree(account)) {
-            maxPrem.set(free_maxdownloads);
             try {
                 account.setType(AccountType.FREE);
-                account.setMaxSimultanDownloads(maxPrem.get());
+                account.setMaxSimultanDownloads(free_maxdownloads);
                 account.setConcurrentUsePossible(false);
             } catch (final Throwable e) {
                 /* not available in old Stable 0.9.581 */
             }
         } else {
-            maxPrem.set(account_premium_maxdownloads);
             try {
                 account.setType(AccountType.PREMIUM);
-                account.setMaxSimultanDownloads(maxPrem.get());
+                account.setMaxSimultanDownloads(account_premium_maxdownloads);
                 account.setConcurrentUsePossible(true);
             } catch (final Throwable e) {
                 /* not available in old Stable 0.9.581 */
@@ -487,25 +479,40 @@ public class ShareOnlineBiz extends antiDDoSForHost {
             } else {
                 ai.setValidUntil(-1);
             }
+            ai.setSpecialTraffic(userTrafficWorkaround());
             if (!StringUtils.equalsIgnoreCase(infos.get("group"), "VIP")) {
                 /* VIP do not have traffic usage available via api */
-                final long maxDay = 100 * 1024 * 1024 * 1024l;// 100 GB per day
+                final int chosenTrafficLimit = getPluginConfig().getIntegerProperty(TRAFFIC_LIMIT, 0);
+                String trafficmaxlimit = null;
+                try {
+                    trafficmaxlimit = trafficLimits[chosenTrafficLimit];
+                } catch (final Throwable e) {
+                    logger.log(e);
+                    trafficmaxlimit = trafficLimits[0];
+                }
+                final int maxTraffic = Integer.parseInt(trafficmaxlimit);
+                final long maxDay = maxTraffic * 1024 * 1024 * 1024l;// 100 GiB per day
                 final String trafficDay = infos.get("traffic_1d");
                 final String trafficDayData[] = trafficDay.split(";");
                 final long usedDay = Long.parseLong(trafficDayData[0].trim());
-                final long freeDay = maxDay - usedDay;
-                logger.info("Real daily traffic left: " + freeDay + ", account: " + account.getStringProperty("group", null));
+                final long pending;
+                if (infos.containsKey("traffic_pending") && infos.get("traffic_pending").matches("^\\d+$")) {
+                    pending = Long.parseLong(infos.get("traffic_pending"));
+                } else {
+                    pending = 0;
+                }
+                final long freeDay = maxDay - usedDay - pending;
+                logger.info("Daily traffic left: " + freeDay + "|Daily:" + usedDay + "|Pending:" + pending + "|Account: " + account.getStringProperty("group", null));
                 ai.setTrafficMax(maxDay);
                 if (freeDay > 1024 * 1024) {
                     ai.setTrafficLeft(freeDay);
                 } else {
                     // Penalty-Premium needs TrafficLeft > 0 (TrafficWorkaround, throttled accounts)
-                    ai.setTrafficLeft(1024 * 1024);
-                }
-                if (userTrafficWorkaround()) {
-                    ai.setSpecialTraffic(true);
-                } else {
-                    ai.setSpecialTraffic(false);
+                    if (userTrafficWorkaround()) {
+                        ai.setTrafficLeft(1024 * 1024);
+                    } else {
+                        ai.setTrafficLeft(Math.max(0, freeDay));
+                    }
                 }
             }
         }
@@ -520,7 +527,6 @@ public class ShareOnlineBiz extends antiDDoSForHost {
         account.setProperty("group", group);
         final int maxDownloads = getMaxSimultanDownload(null, account);
         ai.setStatus(infos.get("group") + ":maxDownloads(current)=" + maxDownloads);
-
         return ai;
     }
 
@@ -550,9 +556,19 @@ public class ShareOnlineBiz extends antiDDoSForHost {
                 br.setFollowRedirects(true);
                 getPage("http://www.share-online.biz/");
                 postPage("https://www.share-online.biz/user/login", "l_rememberme=1&user=" + Encoding.urlEncode(account.getUser()) + "&pass=" + Encoding.urlEncode(account.getPass()));
+                if (br.containsHTML("This account is disabled, please contact support")) {
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, "This account is disabled, please contact support", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                }
                 /* English language is needed for free download! */
                 getPage("http://www.share-online.biz/lang/set/english");
+                final URLConnectionAdapter con = br.getRequest().getHttpConnection();
+                if (con.getResponseCode() == 502 || con.getResponseCode() == 504) {
+                    throw new IOException(con.getResponseCode() + " " + con.getResponseMessage());
+                }
                 if (br.getCookie(COOKIE_HOST, "storage") == null) {
+                    if (br.containsHTML("MAINTENANCE") || br.containsHTML(">Share-Online - Server Maintenance<|>MAINTENANCE</h1>") || br.containsHTML("<title>Share-Online - Not available</title>")) {
+                        throw new PluginException(LinkStatus.ERROR_PREMIUM, JDL.L("plugins.hoster.shareonlinebiz.errors.maintenance", "Server maintenance"), PluginException.VALUE_ID_PREMIUM_TEMP_DISABLE);
+                    }
                     if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen? Versuche folgendes:\r\n1. Falls dein Passwort Sonderzeichen enthält, ändere es (entferne diese) und versuche es erneut!\r\n2. Gib deine Zugangsdaten per Hand (ohne kopieren/einfügen) ein.", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     } else {
@@ -589,18 +605,24 @@ public class ShareOnlineBiz extends antiDDoSForHost {
         if (response == null || response.length() == 0) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        String infos[] = Regex.getLines(response);
-        HashMap<String, String> ret = new HashMap<String, String>();
-        for (String info : infos) {
-            String data[] = info.split(separator);
-            if (data.length == 1) {
-                ret.put(data[0].trim(), null);
-            } else if (data.length == 2) {
-                ret.put(data[0].trim(), data[1].trim());
-            } else {
-                logger.warning("GetInfos failed, browser content:\n");
-                logger.warning(br.toString());
-                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        final String infos[] = Regex.getLines(response);
+        final HashMap<String, String> ret = new HashMap<String, String>();
+        for (final String info : infos) {
+            final String data[] = new Regex(info, "(.*?)" + Pattern.quote(separator) + "(.*)").getRow(0);
+            if (data != null) {
+                if (data.length == 1) {
+                    ret.put(data[0].trim(), null);
+                } else if (data.length == 2) {
+                    if (StringUtils.isEmpty(data[1])) {
+                        ret.put(data[0].trim(), null);
+                    } else {
+                        ret.put(data[0].trim(), data[1].trim());
+                    }
+                } else {
+                    logger.warning("GetInfos failed, browser content:\n");
+                    logger.warning(br.toString());
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                }
             }
         }
         return ret;
@@ -609,12 +631,6 @@ public class ShareOnlineBiz extends antiDDoSForHost {
     @Override
     public int getMaxSimultanFreeDownloadNum() {
         return free_maxdownloads;
-    }
-
-    @Override
-    public int getMaxSimultanPremiumDownloadNum() {
-        /* workaround for free/premium issue on stable 09581 */
-        return maxPrem.get();
     }
 
     private final long THREADFAILURESTIMEOUT = 5 * 60 * 1000l;
@@ -671,7 +687,6 @@ public class ShareOnlineBiz extends antiDDoSForHost {
         } else {
             try {
                 SwingUtilities.invokeAndWait(new Runnable() {
-
                     @Override
                     public void run() {
                         try {
@@ -742,7 +757,7 @@ public class ShareOnlineBiz extends antiDDoSForHost {
                              */
                             downloadLink.getLinkStatus().setRetryCount(0);
                         }
-                        throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server overloaded", waitNoFreeSlot);
+                        throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server overloaded", waitOverloadedServer);
                     } else {
                         overloadedServer.remove(server);
                     }
@@ -766,7 +781,7 @@ public class ShareOnlineBiz extends antiDDoSForHost {
             throw new PluginException(LinkStatus.ERROR_FATAL, "Proxy error");
         }
         errorHandling(br, downloadLink, null, null);
-        if (!br.containsHTML(">>> continue for free <<<")) {
+        if (!br.containsHTML(">>> continue for free <<<") && !br.containsHTML(">>> kostenlos weiter <<<")) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         String ID = getID(downloadLink);
@@ -785,12 +800,7 @@ public class ShareOnlineBiz extends antiDDoSForHost {
         String dlINFO = br.getRegex("var dl=\"(.*?)\"").getMatch(0);
         String url = Encoding.Base64Decode(dlINFO);
         if (captcha) {
-
             /* recaptcha handling */
-            final Recaptcha rc = new Recaptcha(br, this);
-            rc.setId("6LdatrsSAAAAAHZrB70txiV5p-8Iv8BtVxlTtjKX");
-
-            rc.load();
             long last = -1;
             int imax = 15;
             final long sessionTimeout = startWait + 300 * 1000l;
@@ -802,17 +812,15 @@ public class ShareOnlineBiz extends antiDDoSForHost {
                      */
                     throw new PluginException(LinkStatus.ERROR_CAPTCHA);
                 }
+                final CaptchaHelperHostPluginRecaptchaV2 rc = new CaptchaHelperHostPluginRecaptchaV2(this, br, "6LdnPkIUAAAAABqC_ITR9-LTJKSdyR_Etj1Sf-Xi");
+                final String recaptchaV2Response = rc.getToken();
+                if (recaptchaV2Response == null) {
+                    throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                }
                 getLogger().info("Captcha Try " + (20 - imax));
                 if (System.currentTimeMillis() - last < 2000) {
                     // antiddos
                     sleep(2000 - (System.currentTimeMillis() - last), downloadLink);
-                }
-                File cf = rc.downloadCaptcha(getLocalCaptchaFile());
-                String c = getCaptchaCode("recaptcha", cf, downloadLink);
-
-                if (StringUtils.isEmpty(c)) {
-                    rc.reload();
-                    continue;
                 }
                 if (wait != null) {
                     long gotWait = Integer.parseInt(wait) * 500l;
@@ -822,11 +830,9 @@ public class ShareOnlineBiz extends antiDDoSForHost {
                         this.sleep(gotWait, downloadLink);
                     }
                 }
-
-                postPage("/dl/" + ID + "/free/captcha/" + System.currentTimeMillis(), "dl_free=1&recaptcha_response_field=" + Encoding.urlEncode(c) + "&recaptcha_challenge_field=" + rc.getChallenge());
+                postPage("/dl/" + ID + "/free/captcha/" + System.currentTimeMillis(), "dl_free=1&recaptcha_response_field=" + Encoding.urlEncode(recaptchaV2Response));
                 url = br.getRegex("([a-zA-Z0-9/=]+)").getMatch(0);
                 if ("0".equals(url)) {
-                    rc.reload();
                     continue;
                 } else {
                     break;
@@ -932,7 +938,7 @@ public class ShareOnlineBiz extends antiDDoSForHost {
             // loadAPIWorkAround(br);
             br.setFollowRedirects(true);
             br.setKeepResponseContentBytes(true);
-            getPage(userProtocol() + "://api.share-online.biz/cgi-bin?q=linkdata&username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()) + "&lid=" + linkID);
+            getPage(userProtocolApi() + "://api.share-online.biz/cgi-bin?q=linkdata&username=" + URLEncode.encodeURIComponent(account.getUser()) + "&password=" + URLEncode.encodeURIComponent(account.getPass()) + "&lid=" + linkID);
             final byte[] responseBytes = br.getRequest().getResponseBytes();
             final String responseUTF8 = new String(responseBytes, "UTF-8");
             final String responseISO88591 = new String(responseBytes, "ISO-8859-1");
@@ -1015,11 +1021,12 @@ public class ShareOnlineBiz extends antiDDoSForHost {
             logger.info("used url: " + dlURL);
             br.setDebug(true);
             br.setCookie(dlURL, "version", String.valueOf(getVersion()));
-            int maxchunks = account_premium_maxchunks;
-            maxchunks = maxChunksnew.get();
+            int maxchunks = maxChunksnew.get();
             if ("Penalty-Premium".equalsIgnoreCase(account.getStringProperty("group", null))) {
                 logger.info("Account is in penalty, limiting max chunks to 1");
                 maxchunks = 1;
+            } else if (maxchunks == 0) {
+                maxchunks = getMaxChunks(account);
             }
             dl = jd.plugins.BrowserAdapter.openDownload(br, link, dlURL, account_premium_resume, maxchunks);
             if (dl.getConnection().isContentDisposition() || (dl.getConnection().getContentType() != null && dl.getConnection().getContentType().contains("octet-stream"))) {
@@ -1029,6 +1036,16 @@ public class ShareOnlineBiz extends antiDDoSForHost {
                 errorHandling(br, link, account, infos);
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
+        }
+    }
+
+    public int getMaxChunks(Account account) {
+        if (account == null || AccountType.FREE.equals(account.getType())) {
+            return 1;
+        } else if (getPluginConfig().getBooleanProperty(UNLIMIT_CHUNKS, false)) {
+            return 0;
+        } else {
+            return -2;
         }
     }
 
@@ -1047,9 +1064,16 @@ public class ShareOnlineBiz extends antiDDoSForHost {
                     br.setFollowRedirects(true);
                     final String page;
                     try {
-                        page = apiGetPage(userProtocol() + "://api.share-online.biz/cgi-bin?q=userdetails&aux=traffic&username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
+                        if (userTrafficWorkaround()) {
+                            page = apiGetPage(userProtocolApi() + "://api.share-online.biz/cgi-bin?q=userdetails&aux=traffic&username=" + URLEncode.encodeURIComponent(account.getUser()) + "&password=" + URLEncode.encodeURIComponent(account.getPass()));
+                        } else {
+                            page = apiGetPage(userProtocolApi() + "://api.share-online.biz/cgi-bin?q=userdetails&aux=traffic&traffic=pending&username=" + URLEncode.encodeURIComponent(account.getUser()) + "&password=" + URLEncode.encodeURIComponent(account.getPass()));
+                        }
                     } finally {
                         br.setFollowRedirects(follow);
+                    }
+                    if (StringUtils.contains(page, "** INVALID USER DATA **")) {
+                        throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
                     }
                     infos = getInfos(page, "=");
                     ACCOUNTINFOS.put(account, infos);
@@ -1082,11 +1106,17 @@ public class ShareOnlineBiz extends antiDDoSForHost {
                     try {
                         /* Login via site is needed for free account download. */
                         this.loginSite(account, forceLogin);
-                    } catch (final Throwable e) {
-                        if ("de".equalsIgnoreCase(lang)) {
-                            throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nLoginversuch per Sammler Account schlug fehl - bitte dem JDownloader Support melden!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                    } catch (final PluginException e) {
+                        if (e.getLinkStatus() == LinkStatus.ERROR_PREMIUM && e.getValue() == PluginException.VALUE_ID_PREMIUM_DISABLE) {
+                            if (br.containsHTML("This account is disabled, please contact support")) {
+                                throw e;
+                            } else if ("de".equalsIgnoreCase(lang)) {
+                                throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nLoginversuch per Sammler Account schlug fehl - bitte dem JDownloader Support melden!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                            } else {
+                                throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nFailed to login via free account - please contact the JDownloader support!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                            }
                         } else {
-                            throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nFailed to login via free account - please contact the JDownloader support!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                            throw e;
                         }
                     }
                     // throw new PluginException(LinkStatus.ERROR_PREMIUM,
@@ -1102,7 +1132,6 @@ public class ShareOnlineBiz extends antiDDoSForHost {
                     final Long validUntil = Long.parseLong(infos.get("expire_date"));
                     if (validUntil > 0 && (System.currentTimeMillis() / 1000) > validUntil) {
                         if (account.getAccountInfo() != null) {
-
                             // may be null if the account has been added expired
                             account.getAccountInfo().setExpired(true);
                         }
@@ -1133,7 +1162,6 @@ public class ShareOnlineBiz extends antiDDoSForHost {
         final ScriptEngineManager manager = JavaScriptEngineFactory.getScriptEngineManager(this);
         final ScriptEngine engine = manager.getEngineByName("javascript");
         try {
-
             // // document.getElementById('id').href
             // engine.eval("var document = { getElementById: function (a) { if (!this[a]) { this[a] = new Object(); function href() { return
             // a.href; } this[a].href = href(); } return this[a]; }};");
@@ -1142,10 +1170,8 @@ public class ShareOnlineBiz extends antiDDoSForHost {
             engine.eval("function info(a){a=a.split(\"\").reverse().join(\"\").split(\"a|b\");var b=a[1].split(\"\");a[1]=new Array();var i=0;for(j=0;j<b.length;j++){if(j%3==0&&j!=0){i++}if(typeof(a[1][i])==\"undefined\"){a[1][i]=\"\"}a[1][i]+=b[j]}b=new Array();a[0]=a[0].split(\"\");for(i=0;i<a[1].length;i++){a[1][i]=parseInt(a[1][i].toUpperCase(),16);b[a[1][i]]=parseInt(i)}a[1]=\"\";for(i=0;i<b.length;i++){if(typeof(a[0][b[i]])!=\"undefined\"){a[1]+=a[0][b[i]]}else{a[1]+=\" \"}}return a[1]}");
             engine.eval("var result=info(nfo);");
             result = engine.get("result");
-
         } catch (final Throwable e) {
             throw new Exception("JS Problem in Rev" + getVersion(), e);
-
         }
         return result == null ? null : result.toString();
     }
@@ -1166,8 +1192,7 @@ public class ShareOnlineBiz extends antiDDoSForHost {
         br.setFollowRedirects(true);
         br.setKeepResponseContentBytes(true);
         try {
-            postPage(userProtocol() + "://api.share-online.biz/cgi-bin?q=checklinks&md5=1&snr=1", "links=" + id);
-
+            postPage(userProtocolApi() + "://api.share-online.biz/cgi-bin?q=checklinks&md5=1&snr=1", "links=" + id);
             final byte[] responseBytes = br.getRequest().getResponseBytes();
             if (br.getRequest().getHtmlCode().matches("\\s*")) {
                 // web method failover.
@@ -1179,7 +1204,6 @@ public class ShareOnlineBiz extends antiDDoSForHost {
                 String js = br.getRegex("var dl=[^\r\n]*").getMatch(-1);
                 js = execJS(js);
                 String[] strings = js.split(",");
-
                 if (strings == null || strings.length != 5) {
                     throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
                 }
@@ -1195,7 +1219,6 @@ public class ShareOnlineBiz extends antiDDoSForHost {
                 downloadLink.setMD5Hash(strings[1]);
                 return AvailableStatus.TRUE;
             }
-
             final String infosUTF8[] = new Regex(new String(responseBytes, "UTF-8"), Pattern.compile("(.*?);([^;]+);(.*?)\\s*?;(\\d+);([0-9a-fA-F]{32});(\\d+)")).getRow(0);
             final String infosISO88591[] = new Regex(new String(responseBytes, "ISO-8859-1"), Pattern.compile("(.*?);([^;]+);(.*?)\\s*?;(\\d+);([0-9a-fA-F]{32});(\\d+)")).getRow(0);
             if (infosUTF8 == null || !infosUTF8[1].equalsIgnoreCase("OK")) {

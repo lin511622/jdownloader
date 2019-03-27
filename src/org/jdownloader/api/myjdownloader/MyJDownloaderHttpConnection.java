@@ -5,6 +5,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
+import java.net.SocketException;
+import java.nio.channels.ClosedChannelException;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.util.ArrayList;
@@ -25,13 +27,17 @@ import org.appwork.remoteapi.SessionRemoteAPIRequest;
 import org.appwork.remoteapi.exceptions.ApiInterfaceNotAvailable;
 import org.appwork.remoteapi.exceptions.BasicRemoteAPIException;
 import org.appwork.remoteapi.exceptions.InternalApiException;
+import org.appwork.utils.Exceptions;
 import org.appwork.utils.StringUtils;
 import org.appwork.utils.logging2.LogSource;
 import org.appwork.utils.net.Base64OutputStream;
 import org.appwork.utils.net.ChunkedOutputStream;
 import org.appwork.utils.net.DeChunkingOutputStream;
 import org.appwork.utils.net.HTTPHeader;
+import org.appwork.utils.net.httpconnection.SocketStreamInterface;
+import org.appwork.utils.net.httpserver.EmptyRequestException;
 import org.appwork.utils.net.httpserver.HttpConnection;
+import org.appwork.utils.net.httpserver.HttpConnectionExceptionHandler;
 import org.appwork.utils.net.httpserver.handler.HttpRequestHandler;
 import org.appwork.utils.net.httpserver.requests.GetRequest;
 import org.appwork.utils.net.httpserver.requests.HeadRequest;
@@ -46,17 +52,13 @@ import org.jdownloader.myjdownloader.client.SessionInfo;
 import org.jdownloader.myjdownloader.client.exceptions.MyJDownloaderException;
 
 public class MyJDownloaderHttpConnection extends HttpConnection {
-
     protected final static ArrayList<HttpRequestHandler>                    requestHandler = new ArrayList<HttpRequestHandler>();
     static {
-        requestHandler.add(new OptionsRequestHandler());
-        requestHandler.add(new SessionTokenCheckHandler());
         requestHandler.add(RemoteAPIController.getInstance().getRequestHandler());
     }
     protected final MyJDownloaderAPI                                        api;
-
     private final LogSource                                                 logger;
-
+    private final SocketStreamInterface                                     socketStream;
     private static final HashMap<String, List<MyJDownloaderHttpConnection>> CONNECTIONS    = new HashMap<String, List<MyJDownloaderHttpConnection>>();
     private static final HashMap<String, KeyPair>                           RSAKEYPAIRS    = new HashMap<String, KeyPair>();
 
@@ -105,11 +107,20 @@ public class MyJDownloaderHttpConnection extends HttpConnection {
     public MyJDownloaderHttpConnection(Socket clientConnection, MyJDownloaderAPI api) throws IOException {
         super(null, clientConnection);
         this.api = api;
+        this.socketStream = null;
+        logger = api.getLogger();
+    }
+
+    public MyJDownloaderHttpConnection(SocketStreamInterface socketStream, MyJDownloaderAPI api) throws IOException {
+        super(null, socketStream.getSocket(), socketStream.getInputStream(), socketStream.getOutputStream());
+        this.socketStream = socketStream;
+        this.api = api;
         logger = api.getLogger();
     }
 
     public MyJDownloaderHttpConnection(final Socket clientSocket, final InputStream is, final OutputStream os, MyJDownloaderAPI api) throws IOException {
         super(null, clientSocket, is, os);
+        this.socketStream = null;
         this.api = api;
         logger = api.getLogger();
     }
@@ -165,7 +176,14 @@ public class MyJDownloaderHttpConnection extends HttpConnection {
 
     @Override
     public boolean onException(Throwable e, final HttpRequest request, final HttpResponse response) throws IOException {
-        BasicRemoteAPIException apiException;
+        if (Exceptions.containsInstanceOf(e, SocketException.class, ClosedChannelException.class)) {
+            // socket already closed
+            return true;
+        }
+        if (e instanceof HttpConnectionExceptionHandler) {
+            return ((HttpConnectionExceptionHandler) e).handle(response);
+        }
+        final BasicRemoteAPIException apiException;
         if (!(e instanceof BasicRemoteAPIException)) {
             apiException = new InternalApiException(e);
         } else {
@@ -182,9 +200,15 @@ public class MyJDownloaderHttpConnection extends HttpConnection {
 
     @Override
     protected HttpRequest buildRequest() throws IOException {
-        HttpRequest ret = super.buildRequest();
+        final HttpRequest ret = super.buildRequest();
+        ret.setBridge(MyJDownloaderController.getInstance().getConnectThread());
         /* we do not allow gzip output */
-        accept_encoding = ret.getRequestHeaders().get("Accept-Encoding");
+        final HTTPHeader xAcceptEncoding = ret.getRequestHeaders().get("X-Accept-Encoding");
+        if (xAcceptEncoding != null && (StringUtils.containsIgnoreCase(xAcceptEncoding.getValue(), "gazeisp") || StringUtils.containsIgnoreCase(xAcceptEncoding.getValue(), "gzip_aes"))) {
+            accept_encoding = xAcceptEncoding;
+        } else {
+            accept_encoding = ret.getRequestHeaders().get("Accept-Encoding");
+        }
         ret.getRequestHeaders().remove(HTTPConstants.HEADER_REQUEST_ACCEPT_ENCODING);
         return ret;
     }
@@ -207,6 +231,12 @@ public class MyJDownloaderHttpConnection extends HttpConnection {
         } catch (final Throwable nothing) {
             nothing.printStackTrace();
         }
+        if (socketStream != null) {
+            try {
+                this.socketStream.close();
+            } catch (final Throwable nothing) {
+            }
+        }
         try {
             this.clientSocket.close();
         } catch (final Throwable nothing) {
@@ -215,9 +245,12 @@ public class MyJDownloaderHttpConnection extends HttpConnection {
 
     @Override
     protected String preProcessRequestLine(String requestLine) throws IOException {
-        RequestLineParser parser = RequestLineParser.parse(requestLine.getBytes("UTF-8"));
+        if (StringUtils.isEmpty(requestLine)) {
+            throw new EmptyRequestException();
+        }
+        final RequestLineParser parser = RequestLineParser.parse(requestLine.getBytes("UTF-8"));
         if (parser == null || parser.getSessionToken() == null) {
-            throw new IOException("Invalid my.jdownloader.org request: " + requestLine);
+            throw new InvalidMyJDownloaderRequest();
         }
         requestConnectToken = parser.getSessionToken();
         final String token = getRequestConnectToken();
@@ -279,30 +312,30 @@ public class MyJDownloaderHttpConnection extends HttpConnection {
                 // "application/aesjson-jd; charset=utf-8"));
                 /* set chunked transfer header */
                 response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_TRANSFER_ENCODING, HTTPConstants.HEADER_RESPONSE_TRANSFER_ENCODING_CHUNKED));
-                if (accept_encoding != null && (StringUtils.contains(accept_encoding.getValue(), "gazeisp") || StringUtils.contains(accept_encoding.getValue(), "gzip_aes"))) {
+                if (accept_encoding != null && (StringUtils.containsIgnoreCase(accept_encoding.getValue(), "gazeisp") || StringUtils.containsIgnoreCase(accept_encoding.getValue(), "gzip_aes"))) {
                     /* chunked->gzip->aes */
-                    if (StringUtils.contains(accept_encoding.getValue(), "gazeisp")) {
+                    if (StringUtils.containsIgnoreCase(accept_encoding.getValue(), "gazeisp")) {
                         response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_ENCODING, "gazeisp"));
+                        response.getResponseHeaders().add(new HTTPHeader("X-" + HTTPConstants.HEADER_RESPONSE_CONTENT_ENCODING, "gazeisp"));
                     } else {
                         response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_ENCODING, "gzip_aes"));
+                        response.getResponseHeaders().add(new HTTPHeader("X-" + HTTPConstants.HEADER_RESPONSE_CONTENT_ENCODING, "gzip_aes"));
                     }
-                    this.sendResponseHeaders();
+                    this.openOutputStream();
                     if (useDeChunkingOutputStream) {
                         this.os = new DeChunkingOutputStream(new GZIPOutputStream(new CipherOutputStream(new ChunkedOutputStream(getRawOutputStream(), 16384), cipher)));
                     } else {
                         this.os = new GZIPOutputStream(new CipherOutputStream(new ChunkedOutputStream(getRawOutputStream(), 16384), cipher));
                     }
                 } else {
-                    this.sendResponseHeaders();
+                    this.openOutputStream();
                     this.os = new OutputStream() {
                         private ChunkedOutputStream chunkedOS = new ChunkedOutputStream(new BufferedOutputStream(getRawOutputStream(), 16384));
                         Base64OutputStream          b64os     = new Base64OutputStream(chunkedOS) {
                             // public void close() throws IOException {
                             // };
-
                         };
                         OutputStream                outos     = new CipherOutputStream(b64os, cipher);
-
                         {
                             if (useDeChunkingOutputStream) {
                                 outos = new DeChunkingOutputStream(outos);
@@ -329,7 +362,6 @@ public class MyJDownloaderHttpConnection extends HttpConnection {
                         public void write(byte[] b, int off, int len) throws IOException {
                             outos.write(b, off, len);
                         };
-
                     };
                 }
             } catch (final Throwable e) {
@@ -337,7 +369,7 @@ public class MyJDownloaderHttpConnection extends HttpConnection {
             }
         } else {
             if (sendHeaders) {
-                this.sendResponseHeaders();
+                this.openOutputStream();
             }
             this.os = getRawOutputStream();
         }

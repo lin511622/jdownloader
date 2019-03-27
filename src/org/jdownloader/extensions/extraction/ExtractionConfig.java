@@ -15,15 +15,14 @@ import org.jdownloader.controlling.FileCreationManager;
 import org.jdownloader.settings.IfFileExistsAction;
 
 public interface ExtractionConfig extends ExtensionConfigInterface {
-
-    @DefaultStringArrayValue(value = { "##Lines with XX are comments", "##Skip deep extraction of archives that contain exe files", ".*\\.exe" })
+    @DefaultStringArrayValue(value = { "##Lines with XX are comments", "##Skip deep extraction of archives that contain binary files", ".*\\.exe", ".*\\.msi", ".*\\.bat", ".xbe", ".elf", ".sh" })
     @AboutConfig
     @DescriptionForConfigEntry("A list of regular expressions. Use to avoid deep extracting.")
     String[] getDeepExtractionBlacklistPatterns();
 
     void setDeepExtractionBlacklistPatterns(String[] patterns);
 
-    @DefaultStringArrayValue(value = { "##Lines with ## are comments", "##Example to skip extraction of JPEG files", "##.*\\.jpe?g" })
+    @DefaultStringArrayValue(value = { "##Lines with ## are comments", "## Use / as path seperator", "##Example to skip extraction of sample folder files", "##.*sample/.*", "##Example to skip extraction of JPEG files", "##.*\\.jpe?g" })
     @AboutConfig
     @DescriptionForConfigEntry("A list of regular expressions. Use to avoid extracting certain filetypes.")
     String[] getBlacklistPatterns();
@@ -57,7 +56,6 @@ public interface ExtractionConfig extends ExtensionConfigInterface {
      *
      * @return
      */
-
     @org.appwork.storage.config.annotations.DescriptionForConfigEntry("Only use subfolders if the archive ROOT contains at least *** files")
     @AboutConfig
     @DefaultIntValue(0)
@@ -239,4 +237,17 @@ public interface ExtractionConfig extends ExtensionConfigInterface {
 
     public void setLastWorkingLibID(String libID);
 
+    @AboutConfig
+    @DefaultEnumValue("NORMAL")
+    @DescriptionForConfigEntry("If Enabled, JDownloader will pause/slow down extracting while crc hashing for downloads is done")
+    IO_MODE getIOModeForCrcHashing();
+
+    void setIOModeForCrcHashing(IO_MODE mode);
+
+    @AboutConfig
+    @DefaultEnumValue("NONE")
+    @DescriptionForConfigEntry("FULL=Flush Meta/Data to disk, DATA=Flush Data only to disk, NONE=OS handles flush")
+    public FLUSH_MODE getFlushMode();
+
+    void setFlushMode(FLUSH_MODE mode);
 }

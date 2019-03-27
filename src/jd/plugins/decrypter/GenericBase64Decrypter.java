@@ -13,11 +13,12 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+
+import org.appwork.utils.StringUtils;
 
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
@@ -29,8 +30,6 @@ import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.PluginForDecrypt;
 
-import org.appwork.utils.StringUtils;
-
 /**
  *
  * Decrypts base64 strings<br />
@@ -41,15 +40,18 @@ import org.appwork.utils.StringUtils;
  * @author raztoki
  *
  */
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "yourporntube.com", "gfxxtra.com", "manteb.in", "djurl.com", "hbrowse.com", "free.downloader.my", "saylicadebrid.tk", "binbox.io", "re-direcciona.me", "mediaboom.org", "bookgn.com", "vip-files.net", "url4u.org", "tunesies.com", "xtragfx.com", "psdkeys.com" },
-
-urls = { "https?://(?:www\\.)?yourporntube\\.com/video/\\?id=([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:www\\.)?(?:gfxxtra\\.com|gftxra\\.net)/engine/go\\.php\\?url\\=([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:\\w+\\.)?manteb\\.in/\\?go=([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:\\w+\\.)?djurl\\.com/\\?r=([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:\\w+\\.)?hbrowse\\.com/redirect/([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:\\w+\\.)?free\\.downloader\\.my/gateway\\.php\\?q=([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:\\w+\\.)?saylicadebrid\\.tk/mali\\.php\\?reklamlar=([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:\\w+\\.)?binbox\\.io/o/([a-zA-Z0-9_/\\+\\=\\-%]+)", "http://(?:www\\.)?re-direcciona\\.me/(?:I|r)/([a-zA-Z0-9_/\\+\\=\\-%]+)", "http://(?:www\\.)?mediaboom\\.org/engine/go\\.php\\?url=([a-zA-Z0-9_/\\+\\=\\-%]+)", "http://(?:www\\.)?bookgn\\.com/engine/go\\.php\\?url=([a-zA-Z0-9_/\\+\\=\\-%]+)",
-        "http://(?:www\\.)?vip-files\\.net/download\\.php\\?e=([a-zA-Z0-9_/\\+\\=\\-%]+)", "http://www\\.url4u\\.org/([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:www\\.)?tunesies\\.com/go/([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:www\\.)?xtragfx\\.com/engine/go\\.php\\?url=([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:www\\.)?psdkeys\\.com/engine/go\\.php\\?url=([a-zA-Z0-9_/\\+\\=\\-%]+)" }
-
-)
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "noriskdomain.com", "playercdn.com", "yourporntube.com", "gfxxtra.com", "manteb.in", "djurl.com", "hbrowse.com", "free.downloader.my", "saylicadebrid.tk", "binbox.io", "re-direcciona.me", "mediaboom.org", "bookgn.com", "vip-files.net", "tunesies.com", "xtragfx.com", "psdkeys.com", "asianspankee.com" }, urls = { "https?://(?:www\\.)?noriskdomain\\.com/[a-f0-9]{32}/analyze\\?u=([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:www\\.)?playercdn\\.com/ec/[a-z0-9]+\\.php\\?[^/]*?\\&url=([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:www\\.)?yourporntube\\.com/video/\\?id=([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:www\\.)?(?:gfxxtra\\.com|gftxra\\.net)/engine/go\\.php\\?url\\=([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:\\w+\\.)?manteb\\.in/\\?go=([a-zA-Z0-9_/\\+\\=\\-%]+)",
+        "https?://(?:\\w+\\.)?djurl\\.com/\\?r=([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:\\w+\\.)?hbrowse\\.com/redirect/([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:\\w+\\.)?free\\.downloader\\.my/gateway\\.php\\?q=([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:\\w+\\.)?saylicadebrid\\.tk/mali\\.php\\?reklamlar=([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:\\w+\\.)?binbox\\.io/o/([a-zA-Z0-9_/\\+\\=\\-%]+)", "http://(?:www\\.)?re-direcciona\\.me/(?:I|r)/([a-zA-Z0-9_/\\+\\=\\-%]+)", "http://(?:www\\.)?mediaboom\\.org/engine/go\\.php\\?url=([a-zA-Z0-9_/\\+\\=\\-%]+)", "http://(?:www\\.)?bookgn\\.com/engine/go\\.php\\?url=([a-zA-Z0-9_/\\+\\=\\-%]+)", "http://(?:www\\.)?vip-files\\.net/download\\.php\\?e=([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:www\\.)?tunesies\\.com/go/([a-zA-Z0-9_/\\+\\=\\-%]+)", "https?://(?:www\\.)?xtragfx\\.com/engine/go\\.php\\?url=([a-zA-Z0-9_/\\+\\=\\-%]+)",
+        "https?://(?:www\\.)?psdkeys\\.com/engine/go\\.php\\?url=([a-zA-Z0-9_/\\+\\=\\-%]+)", "http://(?:www\\.)?asianspankee\\.com/.*\\?goto=([a-zA-Z0-9_/\\+\\=\\-%]+)" })
 public class GenericBase64Decrypter extends PluginForDecrypt {
-
-    // "saylicadebrid.tk" no dns
+    @Override
+    public Boolean siteTesterDisabled() {
+        // "saylicadebrid.tk" no dns, still works without!
+        if ("saylicadebrid.tk".equals(getHost())) {
+            return Boolean.TRUE;
+        }
+        return super.siteTesterDisabled();
+    }
 
     public GenericBase64Decrypter(final PluginWrapper wrapper) {
         super(wrapper);
@@ -81,7 +83,8 @@ public class GenericBase64Decrypter extends PluginForDecrypt {
         while (i < 20 && finallink != null && !new Regex(finallink, "(?:ftp|https?)://.+").matches()) {
             i++;
             // cleanup crap after padding. this can break subsequent tries
-            finallink = Encoding.Base64Decode(finallink.replaceFirst("(={1,2})[\\w\\+]+$", "$1"));
+            finallink = finallink.replaceFirst("(={1,2})[/\\w\\+]+$", "$1");
+            finallink = Encoding.Base64Decode(finallink);
             // urldecode
             if (finallink != null && new Regex(finallink, "%[0-9A-Fa-f]{2}").matches()) {
                 finallink = Encoding.urlDecode(finallink, false);
@@ -109,5 +112,4 @@ public class GenericBase64Decrypter extends PluginForDecrypt {
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

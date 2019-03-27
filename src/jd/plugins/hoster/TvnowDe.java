@@ -13,30 +13,37 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.ByteArrayInputStream;
-import java.text.DecimalFormat;
-import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Date;
+import java.io.IOException;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.xpath.XPath;
-import javax.xml.xpath.XPathConstants;
-import javax.xml.xpath.XPathFactory;
+import org.appwork.storage.config.annotations.AboutConfig;
+import org.appwork.storage.config.annotations.DefaultBooleanValue;
+import org.appwork.storage.config.annotations.DefaultEnumValue;
+import org.appwork.storage.config.annotations.LabelInterface;
+import org.appwork.utils.StringUtils;
+import org.appwork.utils.formatter.TimeFormatter;
+import org.jdownloader.downloader.hds.HDSDownloader;
+import org.jdownloader.downloader.hls.HLSDownloader;
+import org.jdownloader.plugins.components.config.MediathekProperties;
+import org.jdownloader.plugins.components.hls.HlsContainer;
+import org.jdownloader.plugins.config.Order;
+import org.jdownloader.plugins.config.PluginConfigInterface;
+import org.jdownloader.plugins.config.PluginJsonConfig;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
 
 import jd.PluginWrapper;
-import jd.config.ConfigContainer;
-import jd.config.ConfigEntry;
 import jd.http.Browser;
-import jd.http.URLConnectionAdapter;
+import jd.http.Cookies;
+import jd.http.requests.PostRequest;
 import jd.parser.Regex;
 import jd.plugins.Account;
+import jd.plugins.Account.AccountType;
+import jd.plugins.AccountInfo;
+import jd.plugins.AccountRequiredException;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.FilePackage;
@@ -44,213 +51,69 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
-import jd.utils.locale.JDL;
+import jd.plugins.components.MediathekHelper;
+import jd.plugins.components.PluginJSonUtils;
+import jd.plugins.hoster.TvnowDe.TvnowConfigInterface.Quality;
 
-import org.appwork.utils.formatter.TimeFormatter;
-import org.jdownloader.downloader.hds.HDSDownloader;
-import org.jdownloader.downloader.hls.HLSDownloader;
-import org.jdownloader.scripting.JavaScriptEngineFactory;
-import org.w3c.dom.Document;
-import org.w3c.dom.Node;
-import org.w3c.dom.NodeList;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "tvnow.de" }, urls = { "https?://(?:www\\.)?(?:nowtv|tvnow)\\.(?:de|ch)/(?:rtl|vox|rtl2|rtlnitro|superrtl|ntv)/[a-z0-9\\-]+/.+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "tvnow.de" }, urls = { "tvnowdecrypted://.+" })
 public class TvnowDe extends PluginForHost {
-
     public TvnowDe(final PluginWrapper wrapper) {
         super(wrapper);
-        setConfigElements();
+        this.enablePremium("https://my.tvnow.de/registrierung");
     }
 
     /* Settings */
-    private final String                  DEFAULTTIMEOUT               = "DEFAULTTIMEOUT";
-
-    /*
-     * http://hds\\.fra\\.[^/]+/hds\\-vod\\-enc/[^/]+/videos/<seriesID (same for all episodes of one
-     * series>/V_\\d+_[A-Z0-9]+_E\\d+_\\d+_h264-mq_<[a-f0-9] usually {30,}>\\.f4v\\.f4m\\?ts=\\d+
-     */
-    private static final String           HDSTYPE_OLD_DETAILED         = "http://hds\\.fra\\.[^/]+/hds\\-vod\\-enc/[^/]+/videos/\\d+/V_\\d+_[A-Z0-9]+_E\\d+_\\d+_h264-mq_[a-f0-9]+\\.f4v\\.f4m\\?ts=\\d+";
     /* Tags: rtl-interactive.de, RTL, rtlnow, rtl-now */
-    /* General information: The "filmID" is a number which is usually in the html as "film_id" or in the XML 'generate' URL as "para1" */
-    /* https?://(www\\.)?<host>/hds/videos/<filmID>/manifest\\-hds\\.f4m */
-    private final String                  HDSTYPE_NEW_MANIFEST         = "https?://(www\\.)?[a-z0-0\\-\\.]+/hds/videos/\\d+/manifest\\-hds\\.f4m";
-    /*
-     * http://hds\\.fra\\.[^/]+/hds\\-vod\\-enc/abr/videos/<seriesID (same for all episodes of one series>/<videoIUD(same for all
-     * qualities/versions of a video)>/V_\\d+[A-Za-z0-9\\-_]+abr\\-<bitrate - usually 550, 1000 or 1500)>_[a-f0-9]{30}\\.mp4\\.f4m\\?cb=\\d+
-     */
-    private final String                  HDSTYPE_NEW_DETAILED         = "http://hds\\.fra\\.[^/]+/hds\\-vod\\-enc/abr/videos/\\d+/\\d+/V_\\d+[A-Za-z0-9\\-_]+_abr\\-\\d+_[a-f0-9]{25,}\\.mp4\\.f4m\\?cb=\\d+";
-    /*
-     * e.g.
-     * http://hds.fra.rtlnow.de/hds-vod-enc/rtlnow/videos/7793/V_569415_CP2I_E92565_108119_h264-hq_9b676645211eaf4364629d0ff6c7b4.f4v.f4m
-     */
-    private final String                  HDSTYPE_NEW_DETAILED_2       = "http://hds\\.fra\\.[^/]+/hds\\-vod\\-enc/[^/]+/videos/\\d+/V_\\d+[A-Za-z0-9\\-_]+_h264\\-(?:m|h)q_[a-f0-9]{25,}\\.f4v\\.f4m";
-    // http://hds.fra.rtlnow.de/hds-vod-enc/abr/videos/1668/62899/V_804172_MCIG_05-50001000000089_62899_abr-1500_86d8ee67d82c9e561c1bdd58bcefb6fa.mp4.f4m
-    private final String                  HDSTYPE_NEW_DETAILED_3       = "http://hds\\.fra\\.[^/]+/hds\\-vod\\-enc/abr/videos/\\d+/\\d+/V_\\d+[A-Za-z0-9\\-_]+_abr\\-\\d+_[a-f0-9]{25,}\\.mp4\\.f4m";
+    private static final String           TYPE_GENERAL_ALRIGHT           = "https?://[^/]+/[^/]+/[a-z0-9\\-]+/[^/\\?]+";
+    /* Old + new movie-linktype */
+    public static final String            TYPE_MOVIE_OLD                 = "https?://[^/]+/[^/]+/[^/]+";
+    public static final String            TYPE_MOVIE_NEW                 = "https?://[^/]+/filme/.+";
+    public static final String            TYPE_SERIES_NEW                = "^https?://[^/]+/(?:serien|shows)/([^/]+)(?:/staffel\\-\\d+)?";
+    public static final String            TYPE_SERIES_NEW_SPECIAL        = "^https?://[^/]+/specials/[^/]+$";
+    public static final String            TYPE_SERIES_SINGLE_EPISODE_NEW = "https?://[^/]+/(?:serien|shows)/([^/]+)/(?:[^/]+/)?(?!staffel\\-\\d+)([^/]+)$";
+    public static final String            TYPE_DEEPLINK                  = "^[a-z]+://link\\.[^/]+/.+";
+    public static final String            API_BASE                       = "https://api.tvnow.de/v3";
+    private static final String           API_NEW_BASE                   = "https://apigw.tvnow.de";
+    public static final String            CURRENT_DOMAIN                 = "tvnow.de";
+    private LinkedHashMap<String, Object> entries                        = null;
 
-    private static final String           RTMPTYPE_h264                = "^(?!abr/).+_h264\\-(?:m|h)q.+\\.f4v$";
-    private static final String           RTMPTYPE_abr                 = "^/abr/.+_abr\\-\\d+_.+\\.mp4$";
-    private static final String           RTMPTYPE_VERY_OLD            = "^\\d+/.+\\.flv$";
-    private static final String           RTMPTYPE_NEW                 = "^\\d+/.+\\.f4v$";
+    public static Browser prepBRAPI(final Browser br) {
+        br.getHeaders().put("Accept", "application/json, text/plain, */*");
+        br.getHeaders().put("Content-Type", "application/json");
+        /* 400-bad request for invalid API requests */
+        br.setAllowedResponseCodes(new int[] { 400 });
+        br.setFollowRedirects(false);
+        return br;
+    }
 
-    private static final String           TYPE_GENERAL_ALRIGHT         = "https?://(?:www\\.)?(?:nowtv|tvnow)\\.(?:de|ch)/[^/]+/[a-z0-9\\-]+/[^/]+";
-    private final String                  CURRENT_DOMAIN               = "tvnow.de";
+    public static boolean isMovie(final String url) {
+        return url.matches(TYPE_MOVIE_OLD) || url.matches(TYPE_MOVIE_NEW);
+    }
 
-    private Document                      doc;
-    private static final boolean          ALLOW_RTMP_TO_HDS_WORKAROUND = true;
-    private static final boolean          ALLOW_HLS                    = true;
-    private static final boolean          ALLOW_RTMP                   = true;
-    private Account                       currAcc                      = null;
-    private DownloadLink                  currDownloadLink             = null;
-    private LinkedHashMap<String, Object> entries                      = null;
-    private LinkedHashMap<String, Object> format                       = null;
+    public static boolean isMovie_old(final String url) {
+        return url.matches(TYPE_MOVIE_OLD) && !url.matches(TYPE_MOVIE_NEW) && !url.matches(TYPE_SERIES_SINGLE_EPISODE_NEW) && !url.matches(TYPE_SERIES_NEW);
+    }
+
+    public static boolean isSeriesSingleEpisodeNew(final String url) {
+        // return url.matches(TYPE_SERIES_SINGLE_EPISODE_NEW) && !url.matches("https?://[^/]+/(?:serien|shows)/[^/]+/staffel\\-\\d+$");
+        return url.matches(TYPE_SERIES_SINGLE_EPISODE_NEW);
+    }
+
+    public static boolean isSeriesNew(final String url) {
+        return (url.matches(TYPE_SERIES_NEW) && !isSeriesSingleEpisodeNew(url)) || url.matches(TYPE_SERIES_NEW_SPECIAL);
+    }
 
     @Override
-    public String rewriteHost(String host) {
-        if ("nowtv.de".equals(getHost())) {
-            if (host == null || "nowtv.de".equals(host)) {
-                return "tvnow.de";
-            }
-        }
-        return super.rewriteHost(host);
-    }
-
-    @SuppressWarnings("deprecation")
-    public void correctDownloadLink(final DownloadLink link) {
-        /* First lets get our source url and remove the unneeded '/player' part which is usually at the end of our url. */
-        if (link.getDownloadURL().matches(TYPE_GENERAL_ALRIGHT)) {
-            final String url_part = new Regex(link.getDownloadURL(), "https?://[^/]+/(.+)").getMatch(0);
-            final String newlink = "http://www." + CURRENT_DOMAIN + "/" + url_part;
-            link.setUrlDownload(newlink);
+    public void correctDownloadLink(final DownloadLink link) throws Exception {
+        /* First lets get our source url and remove the unneeded parts */
+        String urlNew;
+        if (link.getPluginPatternMatcher().matches(TYPE_DEEPLINK)) {
+            /* https not possible for this linktype!! */
+            urlNew = link.getPluginPatternMatcher().replaceAll("tvnowdecrypted://", "http://");
         } else {
-            /* We have no supported url --> Fix eventually existing issues */
-            String url_source = link.getDownloadURL();
-
-            /* First let's remove rubbish we don't need ... */
-            String rubbish = new Regex(link.getDownloadURL(), "(/(?:preview|player)(?:.+)?)").getMatch(0);
-            if (rubbish != null) {
-                url_source = url_source.replace(rubbish, "");
-            }
-            rubbish = new Regex(link.getDownloadURL(), "(\\?.+)").getMatch(0);
-            if (rubbish != null) {
-                url_source = url_source.replace(rubbish, "");
-            }
-
-            final Regex sourceregex = new Regex(url_source, "https?://[^/]+/([^/]+)/([a-z0-9\\-]+)");
-            final String name_tvstation = sourceregex.getMatch(0);
-            final String name_series = sourceregex.getMatch(1);
-            /* Find the name of the series which is usually at the end of our URL. */
-            final String name_episode = new Regex(url_source, "/([^/]+)$").getMatch(0);
-            final String newlink = "http://www." + CURRENT_DOMAIN + "/" + name_tvstation + "/" + name_series + "/" + name_episode;
-            link.setUrlDownload(newlink);
+            urlNew = link.getPluginPatternMatcher().replaceAll("tvnowdecrypted://", "https://");
         }
-    }
-
-    /* Thx https://github.com/bromix/plugin.video.rtl-now.de/blob/master/resources/lib/rtlinteractive/client.py */
-    // private String apiUrl = null;
-    // private String apiSaltPhone = null;
-    // private String apiSaltTablet = null;
-    // private String apiKeyPhone = null;
-    // private String apiKeyTablet = null;
-    // private String apiID = null;
-    //
-    // private void initAPI() throws PluginException {
-    // final String currHost = this.currDownloadLink.getHost();
-    // if (currHost.equals("rtlnow.rtl.de")) {
-    // apiUrl = "https://rtl-now.rtl.de/";
-    // apiSaltPhone = "ba647945-6989-477b-9767-870790fcf552";
-    // apiSaltTablet = "ba647945-6989-477b-9767-870790fcf552";
-    // apiKeyPhone = "46f63897-89aa-44f9-8f70-f0052050fe59";
-    // apiKeyTablet = "56f63897-89aa-44f9-8f70-f0052050fe59";
-    // apiID = "9";
-    //
-    // br.getHeaders().put("X-App-Name", "RTL NOW App");
-    // br.getHeaders().put("X-Device-Type", "rtlnow_android");
-    // br.getHeaders().put("X-App-Version", "1.3.1");
-    // } else if (currHost.equals("voxnow.de")) {
-    // apiUrl = "https://www.voxnow.de/";
-    // apiSaltPhone = "9fb130b5-447e-4bbc-a44a-406f2d10d963";
-    // apiSaltTablet = "0df2738e-6fce-4c44-adaf-9981902de81b";
-    // apiKeyPhone = "b11f23ac-10f1-4335-acb8-ebaaabdb8cde";
-    // apiKeyTablet = "2e99d88e-088e-4108-a319-c94ba825fe29";
-    // apiID = "41";
-    //
-    // br.getHeaders().put("X-App-Name", "VOX NOW App");
-    // br.getHeaders().put("X-Device-Type", "voxnow_android");
-    // br.getHeaders().put("X-App-Version", "1.3.1");
-    // } else if (currHost.equals("rtl2now.rtl2.de")) {
-    // apiUrl = "https://rtl2now.rtl2.de/";
-    // apiSaltPhone = "9be405a6-2d5c-4e62-8ba0-ba2b5f11072d";
-    // apiSaltTablet = "4bfab4aa-705a-4e8c-b1a7-b551b1b2613f";
-    // apiKeyPhone = "26c0d1ac-e6a0-4df9-9f79-e07727f33380";
-    // apiKeyTablet = "83bbc955-c96e-4b50-b263-bc7bcbcdf8c8";
-    // apiID = "37";
-    //
-    // br.getHeaders().put("X-App-Name", "RTL II NOW App");
-    // br.getHeaders().put("X-Device-Type", "rtl2now_android");
-    // br.getHeaders().put("X-App-Version", "1.3.1");
-    // } else if (currHost.equals("n-tvnow.de")) {
-    // apiUrl = "https://www.n-tvnow.de/";
-    // apiSaltPhone = "ba647945-6989-477b-9767-870790fcf552";
-    // apiSaltTablet = "ba647945-6989-477b-9767-870790fcf552";
-    // apiKeyPhone = "46f63897-89aa-44f9-8f70-f0052050fe59";
-    // apiKeyTablet = "56f63897-89aa-44f9-8f70-f0052050fe59";
-    // apiID = "49";
-    //
-    // br.getHeaders().put("X-App-Name", "N-TV NOW App");
-    // br.getHeaders().put("X-Device-Type", "ntvnow_android");
-    // br.getHeaders().put("X-App-Version", "1.3.1");
-    // } else {
-    // /* Unsupported host */
-    // throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-    // }
-    // br.getHeaders().put("User-Agent",
-    // "Mozilla/5.0 (Linux; Android 4.4.2; GT-I9505 Build/KOT49H) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/30.0.0.0 Mobile Safari/537.36");
-    // }
-    //
-    // private void apiperformrequest(final String path, String params) {
-    // final String requestUrl = this.apiUrl + path;
-    // }
-    //
-    // private String apiCalculateToken(final long timestamp, final String params) throws NoSuchAlgorithmException {
-    // final StringBuilder sb = new StringBuilder();
-    // sb.append(this.apiKeyTablet);
-    // sb.append(";");
-    // sb.append(this.apiSaltTablet);
-    // sb.append(";");
-    // sb.append(Long.toString(timestamp));
-    //
-    // final String[] paramslist = params.split("&");
-    // for (final String parampair : paramslist) {
-    // final String[] parPAIR = parampair.split("=");
-    // sb.append(";");
-    // sb.append(parPAIR[1]);
-    // }
-    //
-    // if (params.length() == 0) {
-    // sb.append(";");
-    // }
-    //
-    // final MessageDigest md = MessageDigest.getInstance("md5");
-    // md.update(sb.toString().getBytes());
-    // /* TODO */
-    //
-    // String token = "";
-    // try {
-    // } catch (final Throwable e) {
-    // token = "";
-    // }
-    //
-    // return token;
-    // }
-    //
-    // private void apiGet_film_details(final String filmID) {
-    // final String params = "filmid=" + filmID;
-    // apiperformrequest("/api/query/json/content.film_details", params);
-    // }
-
-    private void setConstants(final Account acc, final DownloadLink dl) {
-        this.currAcc = acc;
-        this.currDownloadLink = dl;
+        link.setPluginPatternMatcher(urlNew);
     }
 
     /**
@@ -259,93 +122,160 @@ public class TvnowDe extends PluginForHost {
      * ~2016-01-01: RTMP(E) streams were turned off / all of them are DRM protected/crypted now<br />
      * ~2016-02-24: Summary: There is absolutely NO WAY to download from this website <br />
      * ~2016-03-15: Domainchange from nowtv.de to tvnow.de<br />
+     * .2018-04-17: Big code cleanup and HLS streams were re-introduced<br />
+     * .2019-01-16: Added FHD download via hlsfairplayhd, added account support <br />
      */
-    @SuppressWarnings({ "deprecation", "unchecked" })
+    @SuppressWarnings({ "unchecked" })
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
-        setConstants(null, downloadLink);
         setBrowserExclusive();
         /* Fix old urls */
         correctDownloadLink(downloadLink);
-        /* 400-bad request for invalid API requests */
-        this.br.setAllowedResponseCodes(400);
-        String filename = "";
-        final String addedlink = downloadLink.getDownloadURL();
+        prepBRAPI(this.br);
+        /* Required to access items via API and also used as linkID */
         final String urlpart = getURLPart(downloadLink);
-        /* urlpart is the same throughout different TV stations so it is a reliable way to detect duplicate urls. */
-        downloadLink.setLinkID(urlpart);
         // ?fields=*,format,files,manifest,breakpoints,paymentPaytypes,trailers,packages,isDrm
-        final String apiurl = "https://api." + CURRENT_DOMAIN + "/v3/movies/" + urlpart + "?fields=*,format,files,manifest,breakpoints,paymentPaytypes,trailers,packages,isDrm";
-        br.getPage(apiurl);
+        /*
+         * Explanation of possible but left-out parameters: "breakpoints" = timecodes when ads are delivered, "paymentPaytypes" = how can
+         * this item be purchased and how much does it cost, "trailers" = trailers, "files" = old rtlnow URLs, see plugin revision 38232 and
+         * earlier
+         */
+        br.getPage(API_BASE + "/movies/" + urlpart + "?fields=" + getFields());
         if (br.getHttpConnection().getResponseCode() != 200) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
-        format = (LinkedHashMap<String, Object>) entries.get("format");
-        if (br.containsHTML("<\\!\\-\\- Payment\\-Teaser \\-\\->")) {
-            downloadLink.getLinkStatus().setStatusText("Download nicht möglich (muss gekauft werden)");
-            return AvailableStatus.TRUE;
-        }
+        final LinkedHashMap<String, Object> format = (LinkedHashMap<String, Object>) entries.get("format");
         final String tv_station = (String) format.get("station");
+        final String formatTitle = (String) format.get("title");
+        return parseInformation(downloadLink, entries, tv_station, formatTitle);
+    }
+
+    /** Returns parameters for API 'fields=' key. Only request all fields we actually need. */
+    public static String getFields() {
+        return "*,format,packages,isDrm";
+    }
+
+    public static AvailableStatus parseInformation(final DownloadLink downloadLink, final LinkedHashMap<String, Object> entries, final String tv_station, final String formatTitle) {
+        final MediathekProperties data = downloadLink.bindData(MediathekProperties.class);
         final String date = (String) entries.get("broadcastStartDate");
-        final String episode_str = new Regex(addedlink, "folge\\-(\\d+)").getMatch(0);
-        final long season = JavaScriptEngineFactory.toLong(entries.get("season"), -1);
-        long episode = JavaScriptEngineFactory.toLong(entries.get("episode"), -1);
-        if (episode == -1 && episode_str != null) {
-            episode = Long.parseLong(episode_str);
+        final String episode_url_str = new Regex(downloadLink.getPluginPatternMatcher(), "folge\\-(\\d+)").getMatch(0);
+        final int season = (int) JavaScriptEngineFactory.toLong(entries.get("season"), -1);
+        final String episodeStr = getEpisodeNumber(entries);
+        int episode = Integer.parseInt(episodeStr);
+        final boolean isDRM = ((Boolean) entries.get("isDrm")).booleanValue();
+        if (episode == -1 && episode_url_str != null) {
+            /* Fallback which should usually not be required */
+            episode = (int) Long.parseLong(episode_url_str);
         }
         final String description = (String) entries.get("articleLong");
+        /* Title or subtitle of a current series-episode */
         String title = (String) entries.get("title");
-        String title_series = (String) format.get("title");
-        if (title == null || title_series == null || tv_station == null || date == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        if (title == null || formatTitle == null || date == null) {
+            /* This should never happen */
+            return AvailableStatus.UNCHECKABLE;
         }
-        final String date_formatted = formatDate(date);
-        title = encodeUnicode(title);
-        title_series = encodeUnicode(title_series);
-
-        filename += date_formatted + "_" + tv_station + "_" + title_series;
+        String filename_beginning = "";
+        final AvailableStatus status;
+        if (isDRM) {
+            final TvnowConfigInterface cfg = PluginJsonConfig.get(jd.plugins.hoster.TvnowDe.TvnowConfigInterface.class);
+            filename_beginning = "[DRM]";
+            if (cfg.isEnableDRMOffline()) {
+                /* Show as offline although it is online ... but we cannot download it anyways! */
+                downloadLink.setAvailable(false);
+                status = AvailableStatus.FALSE;
+            } else {
+                /* Show as online although we cannot download it */
+                downloadLink.setAvailable(true);
+                status = AvailableStatus.TRUE;
+            }
+        } else {
+            /* Show as online as it is downloadable and online */
+            downloadLink.setAvailable(true);
+            status = AvailableStatus.TRUE;
+        }
+        data.setShow(formatTitle);
+        if (isValidTvStation(tv_station)) {
+            data.setChannel(tv_station);
+        }
+        data.setReleaseDate(getDateMilliseconds(date));
         if (season != -1 && episode != -1) {
-            final DecimalFormat df = new DecimalFormat("00");
-            filename += "_S" + df.format(season) + "E" + df.format(episode);
+            data.setSeasonNumber(season);
+            data.setEpisodeNumber(episode);
+            /* Episodenumber is in title --> Remove it as we insert it via 'S00E00' format so we do not need it twice! */
+            if (title.matches("Folge \\d+")) {
+                /* No usable title available - remove it completely! */
+                title = null;
+            } else if (title.matches("Folge \\d+: .+")) {
+                /* Improve title by removing redundant episodenumber from it. */
+                title = title.replaceAll("(Folge \\d+: )", "");
+            }
         }
-        filename += "_" + title;
-        filename += ".mp4";
-
+        if (!StringUtils.isEmpty(title)) {
+            data.setTitle(title);
+        }
+        final String filename = filename_beginning + MediathekHelper.getMediathekFilename(downloadLink, data, false, false);
         try {
             if (FilePackage.isDefaultFilePackage(downloadLink.getFilePackage())) {
                 final FilePackage fp = FilePackage.getInstance();
-                fp.setName(title_series);
+                fp.setName(formatTitle);
                 fp.add(downloadLink);
             }
-            if (description != null && downloadLink.getComment() == null) {
+            if (!StringUtils.isEmpty(description) && downloadLink.getComment() == null) {
                 downloadLink.setComment(description);
             }
         } catch (final Throwable e) {
         }
-        downloadLink.setName(filename);
-        return AvailableStatus.TRUE;
+        downloadLink.setFinalFileName(filename);
+        return status;
     }
 
-    /* Last revision with old handling: BEFORE 30393 */
-    @SuppressWarnings({ "unchecked", "rawtypes" })
-    private void download(final DownloadLink downloadLink) throws Exception {
-        final String[] duration_str = ((String) entries.get("duration")).split(":");
-        long duration = Long.parseLong(duration_str[0]) * 60 * 60;
-        duration += Long.parseLong(duration_str[1]) * 60;
-        duration += Long.parseLong(duration_str[2]);
+    /** Returns (modified) episodenumber (source = json) */
+    public static String getEpisodeNumber(final LinkedHashMap<String, Object> entries) {
+        final Object episodeO = getEpisodeNumberRAW(entries);
+        String episodenumber = null;
+        if (episodeO != null && episodeO instanceof String) {
+            final String episodeTmp = (String) episodeO;
+            if (episodeTmp.matches("\\d+")) {
+                episodenumber = episodeTmp;
+            } else if (episodenumberHasSpecialStringFormat(episodeO)) {
+                /* 2019-02-05: Very rare case */
+                episodenumber = new Regex(episodeTmp, "V(\\d+)").getMatch(0);
+                // System.out.println("WTF_workarounded: " + episodeTmp);
+            } else {
+                /* 2019-02-05: This should never happen! */
+                episodenumber = "-1";
+                // System.out.println("WTF: " + episodeTmp);
+            }
+        } else if (episodeO != null && episodeO instanceof Integer) {
+            episodenumber = Integer.toString(((Integer) episodeO).intValue());
+        } else if (episodeO != null && episodeO instanceof Long) {
+            episodenumber = Long.toString(((Long) episodeO).longValue());
+        } else {
+            episodenumber = null;
+        }
+        return episodenumber;
+    }
+
+    /** Returns RAW String of episodenumber from json */
+    public static Object getEpisodeNumberRAW(final LinkedHashMap<String, Object> entries) {
+        return entries.get("episode");
+    }
+
+    public static boolean episodenumberHasSpecialStringFormat(final Object episodeO) {
+        return episodeO instanceof String && ((String) episodeO).matches("V\\d+");
+    }
+
+    public static boolean isValidTvStation(final String tv_station) {
+        return !StringUtils.isEmpty(tv_station) && !tv_station.equalsIgnoreCase("none") && !tv_station.equalsIgnoreCase("tvnow");
+    }
+
+    /* Last revision with old handling: BEFORE 38232 (30393) */
+    private void handleDownload(final DownloadLink downloadLink, final Account acc) throws Exception {
+        final TvnowConfigInterface cfg = PluginJsonConfig.get(jd.plugins.hoster.TvnowDe.TvnowConfigInterface.class);
         final boolean isFree = ((Boolean) entries.get("free")).booleanValue();
         final boolean isDRM = ((Boolean) entries.get("isDrm")).booleanValue();
-        String url_hds = null;
-        String url_hls = null;
-        String url_rtmp_highest = null;
-        String url_rtmp_highest_valid = null;
-        boolean isHDS = (JavaScriptEngineFactory.toLong(format.get("flashHds"), -1) == 1);
-        long bitrate_max = 0;
-        long bitrate_temp = 0;
         final String movieID = Long.toString(JavaScriptEngineFactory.toLong(entries.get("id"), -1));
-        boolean hls_version_available = false;
-
         if (movieID.equals("-1")) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
@@ -353,152 +283,99 @@ public class TvnowDe extends PluginForHost {
             /* There really is no way to download these videos and if, you will get encrypted trash data so let's just stop here. */
             throw new PluginException(LinkStatus.ERROR_FATAL, "Unsupported streaming type [DRM]");
         }
-        br.getPage("http://rtl-now.rtl.de/hds/videos/" + movieID + "/manifest-hds.f4m?&ts=" + System.currentTimeMillis());
-        final String[] hdsurls = br.getRegex("<media (.*?)/>").getColumn(0);
-        if (hdsurls == null || hdsurls.length == 0) {
-            isHDS = false;
-        }
-        if (isHDS) {
-            /* hds/hls */
-            /* Get the highest quality available */
-            for (final String hdssource : hdsurls) {
-                final String url = new Regex(hdssource, "href=\"(http[^<>\"]*?)\"").getMatch(0);
-                final String bitrate_str = new Regex(hdssource, "bitrate=\"(\\d+)\"").getMatch(0);
-                if (url == null) {
-                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-                }
-                bitrate_temp = Long.parseLong(bitrate_str);
-                if (bitrate_temp > bitrate_max) {
-                    url_hds = url;
-                    bitrate_max = bitrate_temp;
-                }
-            }
-            if (url_hds == null) {
-                /* This should never happen */
+        /* 2019-01-16: Usage of new API requires auth header --> Only use it in premium mode for now */
+        final boolean useNewAPI = acc != null && acc.getType() == AccountType.PREMIUM;
+        if (useNewAPI) {
+            final String episodeID = downloadLink.getStringProperty("id_episode", null);
+            if (StringUtils.isEmpty(episodeID)) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-            // url_hds = "http://hds.fra.rtlnow.de/hds-vod-enc";
+            br.getPage(API_NEW_BASE + "/module/player/" + episodeID);
         } else {
-            /* check if rtmp is possible */
-            final String apiurl = "https://api." + CURRENT_DOMAIN + "/v3/movies/" + getURLPart(downloadLink) + "?fields=files";
-            br.getPage(apiurl);
-            LinkedHashMap<String, Object> entries_rtmp = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
-            final ArrayList<Object> ressourcelist = (ArrayList) JavaScriptEngineFactory.walkJson(entries_rtmp, "files/items");
-            if (ressourcelist == null || ressourcelist.size() == 0) {
-                if (!isFree) {
-                    /*
-                     * We found no downloadurls plus the video is not viewable for free --> Paid content. TODO: Maybe check if it is
-                     * downloadable once a user bought it --> Probably not as chances are high that it will be DRM protected!
-                     */
-                    throw new PluginException(LinkStatus.ERROR_FATAL, "Download nicht möglich (muss gekauft werden)");
-                }
-                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-            }
-            url_rtmp_highest = findHighestRTMPQuality(ressourcelist);
-            url_rtmp_highest_valid = findHighestValidRTMPQuality(ressourcelist);
-            if (url_rtmp_highest == null && url_rtmp_highest_valid == null) {
-                /* This should never happen */
-                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-            }
-            /* Check possible rtmp --> hds (later then --> hls) workaround */
-            if ((url_rtmp_highest.matches(RTMPTYPE_h264) || url_rtmp_highest.matches(RTMPTYPE_abr)) && ALLOW_RTMP_TO_HDS_WORKAROUND) {
-                final String rtmp_app = getRTMPApp(url_rtmp_highest);
-                final String rtmp_playpath_part = getRTMPPlaypathPart(url_rtmp_highest);
-                url_hds = "http://hds.fra.rtlnow.de/hds-vod-enc/" + rtmp_app + "/videos/" + rtmp_playpath_part + ".f4m";
-            }
-
+            final String urlpart = getURLPart(downloadLink);
+            br.getPage(API_BASE + "/movies/" + urlpart + "?fields=manifest");
         }
-
-        if (ALLOW_HLS && url_hds != null && (url_hds.matches(this.HDSTYPE_NEW_DETAILED) || url_hds.matches(HDSTYPE_NEW_DETAILED_2) || url_hds.matches(HDSTYPE_NEW_DETAILED_3))) {
-            /* Now we're sure that our .mp4 availablecheck-filename is correct */
-            downloadLink.setFinalFileName(downloadLink.getName());
-            url_hls = url_hds.replace("hds", "hls");
-            url_hls = url_hls.replace(".f4m", ".m3u8");
-            URLConnectionAdapter con = null;
-            try {
-                con = this.br.openHeadConnection(url_hls);
-                if (con.isOK()) {
-                    hls_version_available = true;
-                }
-            } catch (final Throwable e) {
-            } finally {
-                con.disconnect();
+        entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
+        entries = (LinkedHashMap<String, Object>) entries.get("manifest");
+        /* 2018-04-18: So far I haven't seen a single http stream! */
+        // final String urlHTTP = (String) entries.get("hbbtv");
+        final String hdsMaster = (String) entries.get("hds");
+        String hlsMaster = (String) entries.get("hlsfairplayhd");
+        if (StringUtils.isEmpty(hlsMaster) || !hlsMaster.startsWith("http")) {
+            hlsMaster = (String) entries.get("hlsfairplay");
+            if (StringUtils.isEmpty(hlsMaster) || !hlsMaster.startsWith("http")) {
+                hlsMaster = (String) entries.get("hlsclear");
             }
+            /* 2018-05-04: Only "hls" == Always DRM */
+            // if (StringUtils.isEmpty(hlsMaster)) {
+            // hlsMaster = (String) entries.get("hls");
+            // }
         }
-        if (hls_version_available) {
-            checkFFmpeg(downloadLink, "Download a HLS Stream");
-            dl = new HLSDownloader(downloadLink, br, url_hls);
-            dl.startDownload();
-        } else if (url_rtmp_highest != null && ALLOW_RTMP) {
-            if (!isValidRTMPUrl(url_rtmp_highest) && url_rtmp_highest_valid == null) {
-                /* Invalid rtmp url --> this should never happen */
-                throw new PluginException(LinkStatus.ERROR_FATAL, "Download nicht möglich [Kein gültiger Downloadlink gefunden]");
-            } else if (!isValidRTMPUrl(url_rtmp_highest)) {
-                /* Fallback to lower bitrate that is available via rtmp. */
-                url_rtmp_highest = url_rtmp_highest_valid;
-            }
-
+        if (!StringUtils.isEmpty(hlsMaster)) {
+            hlsMaster = hlsMaster.replaceAll("(\\??filter=.*?)(&|$)", "");// show all available qualities
             /*
-             * Either we already got rtmp urls or we can try to build them via the playpath-part of our HDS manifest url (see code BEFORE
-             * rev 30393)
+             * 2019-01-29: Error 404 may happen for content which is premiumonly (for ALL streaming-types, URLs are given but do not work!)
+             * It may also happen that content is broken, all sources return 404 and the same happens with acount.
              */
-            final String rtmp_app = getRTMPApp(url_rtmp_highest);
-            final String rtmp_playpath_part = getRTMPPlaypathPart(url_rtmp_highest);
-            /*
-             * We don't need the exact url of the video, especially because we do not even always have it. An url of the "old" mainpage is
-             * enough!
-             */
-            final String pageURL = convertAppToMainpage(rtmp_app);
-            final String rtmp_playpath;
-            if (rtmp_playpath_part.matches(RTMPTYPE_VERY_OLD)) {
-                /*
-                 * 2011 - 2007 or even older --> We have to completely remove the extension from the rtmp_playpath_part and also correct the
-                 * extensiom of the filename from previously set .mp4 to .flv.
-                 */
-                /* Other possible playpath beginning: "flv:" */
-                rtmp_playpath = "flv:/" + rtmp_playpath_part.replace(".flv", "");
-                downloadLink.setFinalFileName(downloadLink.getName().replace(".mp4", ".flv"));
+            br.getPage(hlsMaster);
+            /* Find user-preferred quality */
+            final Quality preferredQuality = cfg.getPreferredQuality();
+            final String preferredQualityString = selectedQualityEnumToQualityString(preferredQuality);
+            final boolean preferBEST = preferredQuality == Quality.BEST;
+            final List<HlsContainer> hlsQualities = HlsContainer.getHlsQualities(br);
+            HlsContainer hlsDownloadCandidate = null;
+            if (preferBEST) {
+                hlsDownloadCandidate = HlsContainer.findBestVideoByBandwidth(hlsQualities);
             } else {
-                // TYPE = RTMPTYPE_NEW
-                /* From 2011 or newer */
-                /* Other possible playpath beginning: "flv:" */
-                rtmp_playpath = "mp4:/" + rtmp_playpath_part;
-                /* Now we're sure that our .mp4 availablecheck-filename is correct */
-                downloadLink.setFinalFileName(downloadLink.getName());
+                for (final HlsContainer currentHlsQuality : hlsQualities) {
+                    final String qualityStringTemp = bandwidthToQualityString(currentHlsQuality.getBandwidth());
+                    if (qualityStringTemp.equalsIgnoreCase(preferredQualityString)) {
+                        hlsDownloadCandidate = currentHlsQuality;
+                        break;
+                    }
+                }
+                if (hlsDownloadCandidate != null) {
+                    logger.info("Found preferred quality: " + preferredQualityString);
+                } else {
+                    /* Fallback */
+                    logger.info("Failed to find preferred quality: " + preferredQualityString);
+                    hlsDownloadCandidate = HlsContainer.findBestVideoByBandwidth(hlsQualities);
+                    if (hlsDownloadCandidate != null) {
+                        logger.info("Downloading best quality instead: " + hlsDownloadCandidate.getResolution());
+                    }
+                }
             }
-            /* Either use fms-fra[1-32].rtl.de or just fms.rtl.de */
-            final String rtmpurl = "rtmpe://fms.rtl.de/" + rtmp_app + "/";
-
-            downloadLink.setProperty("FLVFIXER", true);
-            dl = new RTMPDownload(this, downloadLink, rtmpurl);
-            final jd.network.rtmp.url.RtmpUrlConnection rtmp = ((RTMPDownload) dl).getRtmpConnection();
-
-            rtmp.setPlayPath(rtmp_playpath);
-            rtmp.setPageUrl(pageURL);
-            /* Other possible player: http://cdn.static-fra.de/now/PlayerApp.swf */
-            rtmp.setSwfVfy("http://cdn.static-fra.de/now/vodplayer.swf");
-            rtmp.setFlashVer("WIN 14,0,0,145");
-            rtmp.setApp(rtmp_app);
-            rtmp.setUrl(rtmpurl);
-            rtmp.setResume(true);
-            rtmp.setRealTime();
-            if (!getPluginConfig().getBooleanProperty(DEFAULTTIMEOUT, false)) {
-                rtmp.setTimeOut(-1);
+            if (hlsDownloadCandidate == null) {
+                errorNoDownloadurlFound(acc, isFree);
             }
-
-            ((RTMPDownload) dl).startDownload();
-
+            if (downloadLink.getComment() == null || cfg.isShowQualityInfoInComment()) {
+                downloadLink.setComment(hlsDownloadCandidate.toString());
+            }
+            logger.info("Downloading quality: " + hlsDownloadCandidate.toString());
+            checkFFmpeg(downloadLink, "Download a HLS Stream");
+            try {
+                dl = new HLSDownloader(downloadLink, br, hlsDownloadCandidate.getDownloadurl());
+            } catch (final Throwable e) {
+                /*
+                 * 2017-11-15: They've changed these URLs to redirect to image content (a pixel). Most likely we have a broken HLS url -->
+                 * Download not possible, only crypted HDS available.
+                 */
+                throw new PluginException(LinkStatus.ERROR_FATAL, "Unsupported streaming type [DRM]");
+            }
+            dl.startDownload();
         } else {
-            /* Now we're sure that our .mp4 availablecheck-filename is correct */
-            downloadLink.setFinalFileName(downloadLink.getName());
-            /* TODO */
-            if (true) {
-                // throw new PluginException(LinkStatus.ERROR_FATAL, "Unsupported streaming type [HDS]");
-                throw new PluginException(LinkStatus.ERROR_FATAL, "Unsupported streaming type / encrypted HDS");
-            }
-            if (url_hds.matches(this.HDSTYPE_NEW_DETAILED)) {
-                throw new PluginException(LinkStatus.ERROR_FATAL, "Unsupported streaming type / encrypted HDS");
-            }
+            /* hds */
+            errorNoDownloadurlFound(acc, isFree);
+            // /* Now we're sure that our .mp4 availablecheck-filename is correct */
+            // downloadLink.setFinalFileName(downloadLink.getName());
+            // /* TODO */
+            // if (true) {
+            // // throw new PluginException(LinkStatus.ERROR_FATAL, "Unsupported streaming type [HDS]");
+            // throw new PluginException(LinkStatus.ERROR_FATAL, "Unsupported streaming type / encrypted HDS");
+            // }
+            // if (url_hds.matches(this.HDSTYPE_NEW_DETAILED)) {
+            // throw new PluginException(LinkStatus.ERROR_FATAL, "Unsupported streaming type / encrypted HDS");
+            // }
             // if (dllink.matches(this.HDSTYPE_NEW_MANIFEST)) {
             // logger.info("2nd attempt to get final hds url");
             // /* TODO */
@@ -512,162 +389,209 @@ public class TvnowDe extends PluginForHost {
             // }
             // br.getPage(dllink);
             // final String hds = parseManifest();
-
-            dl = new HDSDownloader(downloadLink, br, url_hds);
-            dl.startDownload();
-
+            // dl = new HDSDownloader(downloadLink, br, url_hds);
+            // dl.startDownload();
         }
     }
 
-    /** Checks whether we know that rtmp url and can download it or not. */
-    private boolean isValidRTMPUrl(final String url_rtmp) {
-        if (url_rtmp.startsWith("/abr/") || !(url_rtmp.endsWith(".f4v") || url_rtmp.endsWith(".flv"))) {
-            return false;
-        } else {
-            return true;
-        }
-    }
-
-    /** Finds the highest quality rtmp url regardless if its valid or not. */
-    @SuppressWarnings("unchecked")
-    private String findHighestRTMPQuality(final ArrayList<Object> ressourcelist) {
-        long bitrate_temp = 0;
-        long bitrate_max = 0;
-        String url_rtmp_highest = null;
-        LinkedHashMap<String, Object> entries_rtmp = null;
-        for (final Object quality_o : ressourcelist) {
-            entries_rtmp = (LinkedHashMap<String, Object>) quality_o;
-            bitrate_temp = JavaScriptEngineFactory.toLong(entries_rtmp.get("bitrate"), -1);
-            if (bitrate_temp > bitrate_max) {
-                bitrate_max = bitrate_temp;
-                url_rtmp_highest = (String) entries_rtmp.get("path");
+    private void errorNoDownloadurlFound(final Account acc, final boolean isFree) throws PluginException {
+        /* 2019-01-29: TODO: Check if this can also happen when logged-in */
+        if (!isFree) {
+            logger.info("Only downloadable via premium");
+            if (acc != null && acc.getType() == AccountType.PREMIUM) {
+                /*
+                 * 2019-01-30: If content is not available for freeusers but also fails via premium account this is an indication of
+                 * missing/broken content - this shall be a very rare case!
+                 */
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Failed to find downloadurl: content missing/broken");
+            } else if (acc != null) {
+                logger.info("Account available --> WTF, maybe content has to be bought individually");
             }
+            throw new AccountRequiredException();
         }
-        return url_rtmp_highest;
+        /* Assume that no downloadable stream-type is available. */
+        throw new PluginException(LinkStatus.ERROR_FATAL, "Unsupported streaming type [DRM]");
     }
 
-    /** Finds the highest quality rtmp url that is valid. */
-    @SuppressWarnings("unchecked")
-    private String findHighestValidRTMPQuality(final ArrayList<Object> ressourcelist) {
-        long bitrate_temp = 0;
-        long bitrate_max = 0;
-        String url_rtmp_temp = null;
-        String url_rtmp_highest = null;
-        LinkedHashMap<String, Object> entries_rtmp = null;
-        for (final Object quality_o : ressourcelist) {
-            entries_rtmp = (LinkedHashMap<String, Object>) quality_o;
-            bitrate_temp = JavaScriptEngineFactory.toLong(entries_rtmp.get("bitrate"), -1);
-            url_rtmp_temp = (String) entries_rtmp.get("path");
-            if (bitrate_temp > bitrate_max && this.isValidRTMPUrl(url_rtmp_temp)) {
-                bitrate_max = bitrate_temp;
-                url_rtmp_highest = url_rtmp_temp;
-            }
+    private String selectedQualityEnumToQualityString(final Quality selectedQuality) {
+        final String qualitystring;
+        switch (selectedQuality) {
+        case FHD1080:
+            qualitystring = "1080p";
+            break;
+        case HD720:
+            qualitystring = "720p";
+            break;
+        case SD540HIGH:
+            qualitystring = "540phigh";
+            break;
+        case SD540LOW:
+            qualitystring = "540plow";
+            break;
+        case SD360HIGH:
+            qualitystring = "360phigh";
+            break;
+        case SD360LOW:
+            qualitystring = "360plow";
+            break;
+        default:
+            /* BEST */
+            qualitystring = null;
         }
-        return url_rtmp_highest;
+        return qualitystring;
     }
 
-    private String getRTMPApp(final String url_rtmp) throws PluginException {
-        String app = null;
-        if (url_rtmp.matches(RTMPTYPE_abr)) {
-            app = "abr";
+    private String bandwidthToQualityString(final int bandwidth) {
+        final String qualitystring;
+        if (bandwidth > 150000 && bandwidth < 1006000) {
+            /* 360p low */
+            qualitystring = "360plow";
+        } else if (bandwidth >= 1006000 && bandwidth < 1656000) {
+            /* 360p high */
+            qualitystring = "360phigh";
+        } else if (bandwidth >= 1656000 && bandwidth < 3006000) {
+            /* 540 low */
+            qualitystring = "540plow";
+        } else if (bandwidth >= 3006000 && bandwidth < 6006000) {
+            /* 540 high */
+            qualitystring = "540phigh";
+        } else if (bandwidth >= 6006000 && bandwidth < 7000000) {
+            /* 720p */
+            qualitystring = "720p";
+        } else if (bandwidth >= 7000000) {
+            /* 1080p */
+            qualitystring = "1080p";
         } else {
-            final Regex urlregex = new Regex(url_rtmp, "/([^/]+)/(\\d+/.+)");
-            app = urlregex.getMatch(0);
-            if (app == null) {
+            qualitystring = "unknown";
+        }
+        return qualitystring;
+    }
+
+    private String getURLPart(final DownloadLink dl) throws PluginException, IOException {
+        /* OLD rev: 39908 */
+        // return new Regex(dl.getDownloadURL(), "/([a-z0-9\\-]+/[a-z0-9\\-]+)$").getMatch(0);
+        /* 2018-12-12: New */
+        final String regExPattern_Urlinfo = "https?://[^/]+/[^/]+/([^/]*?)/([^/]+/)?(.+)";
+        Regex urlInfo = new Regex(dl.getPluginPatternMatcher(), regExPattern_Urlinfo);
+        final String showname_url = urlInfo.getMatch(0);
+        final String episodename_url = urlInfo.getMatch(2);
+        /* 2018-12-27: TODO: Remove this old code - crawler will store all relevant information on DownloadLink via properties! */
+        /* Find relevant information - first check if we've stored that before (e.g. URLs were added via decrypter) */
+        String showname = dl.getStringProperty("url_showname", null);
+        String episodename = dl.getStringProperty("url_episodetitle", null);
+        boolean grabbed_url_info_via_website = false;
+        if (StringUtils.isEmpty(showname) || StringUtils.isEmpty(episodename)) {
+            /* No stored information available --> URLs have NOT been added via decrypter --> Now it might get a little bit complicated */
+            final boolean showname_url_is_unsafe = showname_url == null || (new Regex(showname_url, "(\\-\\d+){1}$").matches() && !new Regex(showname_url, "(\\-\\d+){2}$").matches());
+            if (!showname_url_is_unsafe) {
+                /* URLs were not added via decrypter --> Try to use information in URL */
+                logger.info("Using info from URL");
+                showname = showname_url;
+                episodename = episodename_url;
+            } else if (StringUtils.isEmpty(showname) || StringUtils.isEmpty(episodename)) {
+                final String url_old;
+                if (dl.getPluginPatternMatcher().matches(TYPE_DEEPLINK)) {
+                    /* 2018-12-20: Code unused at the moment */
+                    /* TYPE_DEEPLINK --> old_url --> new_url */
+                    logger.info("TYPE_DEEPLINK --> old_url");
+                    br.getPage(dl.getPluginPatternMatcher());
+                    if (br.getHttpConnection().getResponseCode() == 404) {
+                        throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+                    }
+                    url_old = br.getRegex("webLink = \\'(https?://[^<>\"\\']+)\\'").getMatch(0);
+                } else {
+                    /* old_url --> new_url */
+                    url_old = dl.getPluginPatternMatcher();
+                }
+                if (url_old == null) {
+                    logger.warning("Failed to find old_url");
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                }
+                logger.info("Expecting redirect from old linktype to new linktype");
+                final boolean follow_redirects_setting_before = br.isFollowingRedirects();
+                br.setFollowRedirects(false);
+                br.getPage(url_old);
+                /* Old linkformat should redirect to new linkformat */
+                final String redirecturl = br.getRedirectLocation();
+                /*
+                 * We accessed the main-URL so it makes sense to at least check for a 404 at this stage to avoid requestion potentially dead
+                 * URLÖs again via API!
+                 */
+                if (br.getHttpConnection().getResponseCode() == 404) {
+                    throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+                } else if (redirecturl == null) {
+                    logger.warning("Redirect to new linktype failed");
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                }
+                br.setFollowRedirects(follow_redirects_setting_before);
+                logger.info("URL_old: " + dl.getPluginPatternMatcher() + " | URL_new: " + redirecturl);
+                /* Cleanup for API requests if values haven't been set in crawler before */
+                urlInfo = new Regex(redirecturl, regExPattern_Urlinfo);
+                showname = urlInfo.getMatch(0);
+                episodename = urlInfo.getMatch(2);
+                if (StringUtils.isEmpty(showname) || StringUtils.isEmpty(episodename)) {
+                    logger.warning("Failed to extract urlInfo from URL_new");
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                }
+                grabbed_url_info_via_website = true;
+            }
+            if (StringUtils.isEmpty(showname) || StringUtils.isEmpty(episodename)) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-            app = convertAppToRealApp(app);
-        }
-        return app;
-    }
-
-    private String getRTMPPlaypathPart(final String url_rtmp) throws PluginException {
-        final Regex urlregex = new Regex(url_rtmp, "/([^/]+)/(\\d+/.+)");
-        final String rtmp_playpath_part = urlregex.getMatch(1);
-        if (rtmp_playpath_part == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-        }
-        return rtmp_playpath_part;
-    }
-
-    @SuppressWarnings("deprecation")
-    private String getURLPart(final DownloadLink dl) {
-        return new Regex(dl.getDownloadURL(), "/([a-z0-9\\-]+/[a-z0-9\\-]+)$").getMatch(0);
-    }
-
-    /** Corrects the rtmpdump app-parameter for some rare cases where it does not match the exact domain name. */
-    private String convertAppToRealApp(final String input) {
-        final String output;
-        if (input.equals("rtlnitronow")) {
-            output = "nitronow";
-        } else if (input.equals("n-tvnow")) {
-            output = "ntvnow";
-        } else {
-            output = input;
-        }
-        return output;
-    }
-
-    /** Returns the main URL that fits the given rtmpdump-app. Needed for some special cases! */
-    private String convertAppToMainpage(final String input) {
-        final String output;
-        if (input.equals("nitronow")) {
-            output = "http://www.rtlnitronow.de/";
-        } else if (input.equals("ntvnow")) {
-            output = "http://www.n-tvnow.de/";
-        } else {
-            output = "http://www." + input + ".de/";
-        }
-        return output;
-    }
-
-    private String parseManifest() {
-        try {
-
-            final DocumentBuilder parser = DocumentBuilderFactory.newInstance().newDocumentBuilder();
-            final XPath xPath = XPathFactory.newInstance().newXPath();
-
-            Document d = parser.parse(new ByteArrayInputStream(br.toString().getBytes("UTF-8")));
-            NodeList nl = (NodeList) xPath.evaluate("/manifest/media", d, XPathConstants.NODESET);
-
-            for (int i = 0; i < nl.getLength(); i++) {
-                Node n = nl.item(i);
-                String streamId = null;
-                String bootstrapInfoId = null;
-                String drmAdditionalHeaderId = null;
-                String url = null;
-                if (n.getAttributes().getNamedItem("url") != null) {
-                    /* Crypted */
-                    url = n.getAttributes().getNamedItem("url").getTextContent();
-                    streamId = n.getAttributes().getNamedItem("streamId").getTextContent();
-                    bootstrapInfoId = n.getAttributes().getNamedItem("bootstrapInfoId").getTextContent();
-                    drmAdditionalHeaderId = n.getAttributes().getNamedItem("drmAdditionalHeaderId").getTextContent();
-                } else {
-                    /* Uncrypted */
-                    url = n.getAttributes().getNamedItem("href").getTextContent();
-                }
-
-                if (url.startsWith("http")) {
-                    return url;
-                } else {
-                    String base = br.getBaseURL();
-                    return base + url;
-                }
-                // System.out.println(n);
-                // String tc = n.getTextContent();
-                // String media = xPath.evaluate("metadata", n).trim();
-                // byte[] mediaB = Base64.decode(media);
-                // media = new String(mediaB, "UTF-8");
-                // System.out.println(media);
-
+            showname = cleanupShowTitle(showname);
+            episodename = cleanupEpisodeTitle(episodename);
+            if (grabbed_url_info_via_website) {
+                /* Store information so we do not have to access that URL without API ever again. */
+                storeUrlPartInfo(dl, showname, episodename, null, null, null);
+                /* Store this info for future error cases */
+                dl.setProperty("grabbed_url_info_via_website", true);
             }
-
-        } catch (Throwable e) {
-            e.printStackTrace();
-        } finally {
-
         }
-        return null;
+        final String urlpart = showname + "/" + episodename;
+        return urlpart;
+    }
+
+    public static void storeUrlPartInfo(final DownloadLink dl, final String showname, final String episodename, final String thisStationName, final String formatID, final String episodeID) {
+        dl.setProperty("url_showname", showname);
+        dl.setProperty("url_episodetitle", episodename);
+        if (thisStationName != null) {
+            /* 2018-12-18: Not required to store at the moment but this might be relevant in the future */
+            dl.setProperty("tv_station_name", thisStationName);
+        }
+        if (formatID != null && episodeID != null) {
+            /* Even movies have a formatID and episodeID - both of these IDs are ALWAYS given! */
+            dl.setProperty("id_format", formatID);
+            dl.setProperty("id_episode", episodeID);
+            /* Important: Make sure that crawler- and hosterplugin always set correct linkids! */
+            dl.setLinkID(formatID + "/" + episodeID);
+        }
+    }
+
+    /**
+     * Removes parts of the show-title which are not allowed for API requests e.g. the show-ID. <br />
+     * Keep ind mind that this may fail for Strings which end with numbers and do NOT contain a show-ID anymore e.g. BAD case: "koeln-1337".
+     * Good case: "koeln-1337-506928"
+     */
+    public static String cleanupShowTitle(String showname) {
+        if (showname == null) {
+            return null;
+        }
+        showname = showname.replaceAll("\\-\\d+$", "");
+        return showname;
+    }
+
+    /** Removes parts of the episode-title which are not allowed for API requests e.g. the show-ID. */
+    public static String cleanupEpisodeTitle(String episodename) {
+        if (episodename == null) {
+            return null;
+        }
+        episodename = episodename.replaceAll("^episode\\-\\d+\\-", "");
+        /* This part is tricky - we have to filter-out stuff which does not belong to their intern title ... */
+        /* Examples: which shall NOT be modified: "super-8-kamera-von-1965", "folge-w-05" */
+        if (!episodename.matches(".*?(folge|teil)\\-\\d+$") && !episodename.matches(".+\\d{4}\\-\\d{2}-\\d{2}-\\d{2}-\\d{2}-\\d{2}$") && !episodename.matches(".+\\-[12]\\d{3}")) {
+            episodename = episodename.replaceAll("\\-\\d+$", "");
+        }
+        return episodename;
     }
 
     @Override
@@ -677,8 +601,16 @@ public class TvnowDe extends PluginForHost {
 
     @Override
     public int getMaxSimultanFreeDownloadNum() {
-        /* More possible but the servers freak out then so keep the load low! */
-        return 1;
+        return getMaxSimultaneousDownloads();
+    }
+
+    public int getMaxSimultaneousDownloads() {
+        final TvnowConfigInterface cfg = PluginJsonConfig.get(jd.plugins.hoster.TvnowDe.TvnowConfigInterface.class);
+        if (cfg.isEnableUnlimitedSimultaneousDownloads()) {
+            return -1;
+        } else {
+            return 1;
+        }
     }
 
     @Override
@@ -689,7 +621,134 @@ public class TvnowDe extends PluginForHost {
         // if (ageCheck != null) {
         // throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, ageCheck, 10 * 60 * 60 * 1000l);
         // }
-        download(downloadLink);
+        handleDownload(downloadLink, null);
+    }
+
+    private static Object LOCK = new Object();
+
+    private void login(final Account account, final boolean force) throws Exception {
+        synchronized (LOCK) {
+            try {
+                br.setFollowRedirects(true);
+                br.setCookiesExclusive(true);
+                final Cookies cookies = account.loadCookies("");
+                String authtoken = account.getStringProperty("authtoken", null);
+                String userID = account.getStringProperty("userid", null);
+                /* Always try to re-use sessions! */
+                if (cookies != null && authtoken != null && userID != null) {
+                    this.br.setCookies(this.getHost(), cookies);
+                    setLoginHeaders(this.br, authtoken);
+                    /* Only request the fields we need to verify whether stored headers&cookies are valid or not. */
+                    br.getPage(API_BASE + "/users/" + userID + "/transactions?fields=id,status");
+                    final String useridTmp = PluginJSonUtils.getJson(br, "id");
+                    if (useridTmp != null && useridTmp.matches("\\d+") && br.getHttpConnection().getResponseCode() != 401) {
+                        return;
+                    }
+                    /* Full login required - cleanup old cookies / headers */
+                    br = new Browser();
+                }
+                /* 2019-01-16: This is skippable */
+                // br.getPage("https://my." + this.getHost() + "/login");
+                prepBRAPI(br);
+                br.getHeaders().put("Origin", "https://my.tvnow.de");
+                /* 2019-03-04: Workaround for backslashes inside passwords */
+                final String postdata = "{\"email\":\"" + account.getUser() + "\",\"password\":\"" + account.getPass().replace("\\", "\\\\") + "\"}";
+                final PostRequest loginReq = br.createJSonPostRequest(API_BASE + "/backend/login?fields=[%22*%22,%22user%22,[%22receiveInsiderEmails%22,%22receiveMarketingEmails%22,%22marketingsettingsDone%22,%22receiveGroupMarketingEmails%22,%22receiveRTLIIMarketingEmails%22]]", postdata);
+                br.openRequestConnection(loginReq);
+                br.loadConnection(null);
+                /*
+                 * This token is a set of base64 strings separated by dots which contains more json which contains some information about
+                 * the account and some more tokens (again base64)
+                 */
+                authtoken = PluginJSonUtils.getJson(br, "token");
+                userID = PluginJSonUtils.getJson(br, "id");
+                final String clientID = PluginJSonUtils.getJson(br, "clientId");
+                final String ck = PluginJSonUtils.getJson(br, "ck");
+                if (authtoken == null || userID == null || clientID == null || ck == null) {
+                    /* E.g. wrong logindata: {"error":{"code":401,"message":"backend.user.authentication.failed"}} */
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
+                }
+                /* Important header! */
+                setLoginHeaders(this.br, authtoken);
+                account.setProperty("userid", userID);
+                account.setProperty("authtoken", authtoken);
+                account.saveCookies(this.br.getCookies(this.getHost()), "");
+            } catch (final PluginException e) {
+                account.clearCookies("");
+                throw e;
+            }
+        }
+    }
+
+    private void setLoginHeaders(final Browser br, final String authtoken) {
+        br.getHeaders().put("x-auth-token", authtoken);
+    }
+
+    @Override
+    public AccountInfo fetchAccountInfo(final Account account) throws Exception {
+        final AccountInfo ai = new AccountInfo();
+        try {
+            login(account, true);
+        } catch (PluginException e) {
+            throw e;
+        }
+        final String userID = account.getStringProperty("userid", null);
+        br.getPage(API_BASE + "/users/" + userID + "/transactions?fields=*,paymentPaytype.*,paymentPaytype.format.*,paymentTransaction.*,paymentTransaction.paymentProvider&filter=%7B%22ContainerId%22:0%7D");
+        /** We can get A LOT of information here ... but we really only want to know if we have a free- or a premium account. */
+        LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaMap(br.toString());
+        entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.walkJson(entries, "items/{0}");
+        long expiredateTimestamp = 0;
+        if (entries != null) {
+            final String expiredateStr = (String) entries.get("endDate");
+            final String createdateStr = (String) entries.get("created");
+            expiredateTimestamp = !StringUtils.isEmpty(expiredateStr) ? TimeFormatter.getMilliSeconds(expiredateStr, "yyyy-MM-dd HH:mm:ss", Locale.GERMANY) : 0;
+            if (!StringUtils.isEmpty(createdateStr)) {
+                ai.setCreateTime(TimeFormatter.getMilliSeconds(createdateStr, "yyyy-MM-dd HH:mm:ss", Locale.GERMANY));
+            }
+        }
+        if (expiredateTimestamp < System.currentTimeMillis()) {
+            account.setType(AccountType.FREE);
+            /*
+             * 2019-02-05: Free accounts do not have any advantages over anonymous streaming - also, login is not used for downloading
+             * anyways (only for premium accounts)!
+             */
+            ai.setTrafficLeft(0);
+            /* free accounts can still have captcha */
+            account.setConcurrentUsePossible(false);
+            ai.setStatus("Registered (free) user");
+        } else {
+            account.setType(AccountType.PREMIUM);
+            ai.setValidUntil(expiredateTimestamp);
+            ai.setUnlimitedTraffic();
+            account.setConcurrentUsePossible(true);
+            final String cancelleddateStr = (String) entries.get("cancelled");
+            final long cancelleddateTimestamp = !StringUtils.isEmpty(cancelleddateStr) ? TimeFormatter.getMilliSeconds(cancelleddateStr, "yyyy-MM-dd HH:mm:ss", Locale.GERMANY) : 0;
+            if (cancelleddateTimestamp > 0) {
+                ai.setStatus("Premium account (subscription cancelled)");
+            } else {
+                ai.setStatus("Premium account (subscription active)");
+            }
+        }
+        return ai;
+    }
+
+    @Override
+    public void handlePremium(final DownloadLink link, final Account account) throws Exception {
+        requestFileInformation(link);
+        login(account, false);
+        /* 2019-01-16: At the moment, account implementation is not used at all for downloading as it is simply not required. */
+        handleDownload(link, account);
+    }
+
+    @Override
+    public boolean hasCaptcha(DownloadLink link, jd.plugins.Account acc) {
+        /* This provider has no captchas at all */
+        return false;
+    }
+
+    @Override
+    public int getMaxSimultanPremiumDownloadNum() {
+        return getMaxSimultaneousDownloads();
     }
 
     @Override
@@ -698,60 +757,116 @@ public class TvnowDe extends PluginForHost {
 
     @Override
     public void resetDownloadlink(final DownloadLink link) {
+        if (link != null) {
+            link.removeProperty(HDSDownloader.RESUME_FRAGMENT);
+        }
     }
 
     @Override
     public void resetPluginGlobals() {
     }
 
-    private XPath xmlParser(final String linkurl) throws Exception {
-        URLConnectionAdapter con = null;
-        try {
-            con = new Browser().openGetConnection(linkurl);
-            final DocumentBuilder parser = DocumentBuilderFactory.newInstance().newDocumentBuilder();
-            final XPath xPath = XPathFactory.newInstance().newXPath();
-            try {
-                doc = parser.parse(con.getInputStream());
-                return xPath;
-            } finally {
-                try {
-                    con.disconnect();
-                } catch (final Throwable e) {
-                }
-            }
-        } catch (final Throwable e2) {
-            return null;
-        }
-    }
-
     /** Formats the existing date to the 'general' date used for german TV online services: yyyy-MM-dd */
-    private String formatDate(final String input) {
-        final long date = TimeFormatter.getMilliSeconds(input, "yyyy-MM-dd HH:mm:ss", Locale.GERMAN);
-        String formattedDate = null;
-        final String targetFormat = "yyyy-MM-dd";
-        Date theDate = new Date(date);
-        try {
-            final SimpleDateFormat formatter = new SimpleDateFormat(targetFormat);
-            formattedDate = formatter.format(theDate);
-        } catch (Exception e) {
-            /* prevent input error killing plugin */
-            formattedDate = input;
+    public static long getDateMilliseconds(final String input) {
+        if (input == null) {
+            return -1;
         }
-        return formattedDate;
+        return TimeFormatter.getMilliSeconds(input, "yyyy-MM-dd HH:mm:ss", Locale.GERMAN);
     }
 
-    // private long crc32Hash(final String wahl) throws UnsupportedEncodingException {
-    // String a = Long.toString(System.currentTimeMillis()) + Double.toString(Math.random());
-    // if ("session".equals(wahl)) {
-    // a = Long.toString(System.currentTimeMillis()) + Double.toString(Math.random()) + Long.toString(Runtime.getRuntime().totalMemory());
-    // }
-    // final CRC32 c = new CRC32();
-    // c.update(a.getBytes("UTF-8"));
-    // return c.getValue();
-    // }
-
-    private void setConfigElements() {
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), DEFAULTTIMEOUT, JDL.L("plugins.hoster.rtlnowde.enabledefaulttimeout", "Enable default timeout?")).setDefaultValue(false));
+    @Override
+    public Class<? extends PluginConfigInterface> getConfigInterface() {
+        return TvnowConfigInterface.class;
     }
 
+    public static interface TvnowConfigInterface extends PluginConfigInterface {
+        public static class TRANSLATION {
+            public String getEnableUnlimitedSimultaneousDownloads_label() {
+                /* Translation not required for this */
+                return "Enable unlimited simultaneous downloads? [Warning this may cause issues]";
+            }
+
+            public String getEnableDRMOffline_label() {
+                /* Translation not required for this */
+                return "Display DRM protected content as offline (because it is not downloadable anyway)?";
+            }
+
+            public String getShowQualityInfoInComment() {
+                /* Translation not required for this */
+                return "Show quality information in comment field on downloadstart?";
+            }
+        }
+
+        public static enum Quality implements LabelInterface {
+            BEST {
+                @Override
+                public String getLabel() {
+                    return "Best";
+                }
+            },
+            FHD1080 {
+                @Override
+                public String getLabel() {
+                    return "1080p";
+                }
+            },
+            HD720 {
+                @Override
+                public String getLabel() {
+                    return "720p";
+                }
+            },
+            SD540HIGH {
+                @Override
+                public String getLabel() {
+                    return "540p high";
+                }
+            },
+            SD540LOW {
+                @Override
+                public String getLabel() {
+                    return "540p low";
+                }
+            },
+            SD360HIGH {
+                @Override
+                public String getLabel() {
+                    return "360p high";
+                }
+            },
+            SD360LOW {
+                @Override
+                public String getLabel() {
+                    return "360p low";
+                }
+            };
+        }
+
+        public static final TRANSLATION TRANSLATION = new TRANSLATION();
+
+        @DefaultBooleanValue(false)
+        @Order(10)
+        boolean isEnableUnlimitedSimultaneousDownloads();
+
+        void setEnableUnlimitedSimultaneousDownloads(boolean b);
+
+        @DefaultBooleanValue(false)
+        @Order(20)
+        boolean isEnableDRMOffline();
+
+        void setEnableDRMOffline(boolean b);
+
+        @DefaultBooleanValue(false)
+        @Order(30)
+        boolean isShowQualityInfoInComment();
+
+        void setShowQualityInfoInComment(boolean b);
+
+        @AboutConfig
+        @DefaultEnumValue("BEST")
+        @Order(40)
+        Quality getPreferredQuality();
+
+        void setPreferredQuality(Quality quality);
+    }
 }

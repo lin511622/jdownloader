@@ -1,15 +1,12 @@
 package jd.controlling.downloadcontroller;
 
-import java.net.UnknownHostException;
+import org.jdownloader.plugins.ConditionalSkipReason;
+import org.jdownloader.plugins.SkipReason;
 
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 
-import org.jdownloader.plugins.ConditionalSkipReason;
-import org.jdownloader.plugins.SkipReason;
-
 public class DownloadLinkCandidateResult {
-
     public static enum RESULT {
         /* DO NOT CHANGE ORDER HERE, we use compareTo(sorting) which uses ordinal */
         CONNECTION_TEMP_UNAVAILABLE,
@@ -40,13 +37,16 @@ public class DownloadLinkCandidateResult {
 
     private final RESULT     result;
     private final SkipReason skipReason;
-
     private long             startTime = -1;
     private long             waitTime  = -1;
-
     private String           message   = null;
     private final String     lastPluginHost;
     private final boolean    reachedDownloadInterface;
+    private final long       timeStamp = System.currentTimeMillis();
+
+    public long getTimeStamp() {
+        return timeStamp;
+    }
 
     public boolean isReachedDownloadInterface() {
         return reachedDownloadInterface;
@@ -92,7 +92,11 @@ public class DownloadLinkCandidateResult {
     }
 
     public long getFinishTime() {
-        return finishTime;
+        if (finishTime == -1) {
+            return getTimeStamp();
+        } else {
+            return finishTime;
+        }
     }
 
     private long finishTime = -1;
@@ -102,7 +106,6 @@ public class DownloadLinkCandidateResult {
     }
 
     private final ConditionalSkipReason conditionalSkip;
-
     private final Throwable             throwable;
 
     public ConditionalSkipReason getConditionalSkip() {
@@ -123,20 +126,18 @@ public class DownloadLinkCandidateResult {
                 StringBuilder sb2 = new StringBuilder();
                 if (throwable instanceof PluginException) {
                     sb.append("PluginException: ").append(throwable.getMessage()).append("(" + LinkStatus.toString(((PluginException) throwable).getLinkStatus()) + ")");
-
-                } else if (throwable instanceof UnknownHostException) {
-                    sb.append(UnknownHostException.class.getSimpleName());
-
+                    // let's test without. this should help finding the host
+                    // } else if (throwable instanceof UnknownHostException) {
+                    // sb.append(UnknownHostException.class.getSimpleName());
                 } else {
-                    sb.append(throwable.toString());
-
+                    // not the localized message
+                    sb.append(throwable.getClass().getName() + " : " + throwable.getMessage());
                 }
                 sb2.append(sb.toString());
                 boolean found = false;
                 boolean found2 = false;
                 for (int i = 0; i < st.length; i++) {
                     String line = st[i].toString();
-
                     if (sb.length() > 0) {
                         sb.append("\r\n");
                     }
@@ -167,7 +168,6 @@ public class DownloadLinkCandidateResult {
             } else {
                 return throwable.toString();
             }
-
         } else if (result != null) {
             switch (result) {
             case FAILED:
@@ -232,5 +232,4 @@ public class DownloadLinkCandidateResult {
     public RESULT getResult() {
         return result;
     }
-
 }

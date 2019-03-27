@@ -1,5 +1,5 @@
 //jDownloader - Downloadmanager
-//Copyright (C) 2012  JD-Team support@jdownloader.org
+//Copyright (C) 2009  JD-Team support@jdownloader.org
 //
 //This program is free software: you can redistribute it and/or modify
 //it under the terms of the GNU General Public License as published by
@@ -13,229 +13,243 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
 import java.text.DecimalFormat;
-import java.text.SimpleDateFormat;
-import java.util.Calendar;
-import java.util.Date;
-import java.util.Locale;
+import java.util.regex.Pattern;
+
+import org.appwork.storage.config.annotations.DefaultBooleanValue;
+import org.jdownloader.plugins.config.Order;
+import org.jdownloader.plugins.config.PluginConfigInterface;
+import org.jdownloader.plugins.config.PluginJsonConfig;
+import org.jdownloader.translate._JDT;
 
 import jd.PluginWrapper;
-import jd.config.ConfigContainer;
-import jd.config.ConfigEntry;
-import jd.config.SubConfiguration;
 import jd.http.Browser;
+import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
-import jd.plugins.Plugin;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
-import jd.utils.locale.JDL;
 
-import org.appwork.utils.formatter.TimeFormatter;
-import org.jdownloader.downloader.hls.HLSDownloader;
-import org.jdownloader.plugins.components.hls.HlsContainer;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "deluxemusic.tv" }, urls = { "http://deluxemusic\\.tvdecrypted/\\d+_\\d+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "deluxemusic.tv" }, urls = { "https?://(?:www\\.)?deluxetv\\-vimp\\.mivitec\\.net/.*?/?video/[^/]+/[a-f0-9]{32}.*|https?://deluxetv\\-vimp\\.mivitec\\.net/getMedium/[a-f0-9]{32}\\.mp4" })
 public class DeluxemusicTv extends PluginForHost {
-
     public DeluxemusicTv(PluginWrapper wrapper) {
         super(wrapper);
-        setConfigElements();
     }
+
+    /* Extension which will be used if no correct extension is found */
+    public static final String   default_extension = ".mp4";
+    /* Connection stuff */
+    private static final boolean free_resume       = true;
+    private static final int     free_maxchunks    = 0;
+    private static final int     free_maxdownloads = -1;
+    private String               dllink            = null;
+    private boolean              server_issues     = false;
+    private static final String  TYPE_DIRECT       = ".+/getMedium/.+";
 
     @Override
     public String getAGBLink() {
-        return "http://www.deluxemusic.tv/impressum.html";
+        return "https://deluxetv-vimp.mivitec.net/pages/view/id/1";
     }
 
-    public static final String   ENABLE_DATE_AT_BEGINNING_OF_FILENAME        = "ENABLE_DATE_AT_BEGINNING_OF_FILENAME";
-    public static final String   ENABLE_TEST_FEATURES                        = "ENABLE_TEST_FEATURES";
-    public static final boolean  defaultENABLE_DATE_AT_BEGINNING_OF_FILENAME = false;
-    public static final boolean  defaultENABLE_TEST_FEATURES                 = false;
-
-    private static final boolean download_method_prefer_hls                  = false;
-
-    private String               xml_source                                  = null;
+    @Override
+    public String getLinkID(final DownloadLink link) {
+        return new Regex(link.getPluginPatternMatcher(), "([a-f0-9]{32})").getMatch(0);
+    }
 
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
+        dllink = null;
+        server_issues = false;
+        final String fid = getLinkID(link);
         this.setBrowserExclusive();
-        final AvailableStatus status;
         br.setFollowRedirects(true);
-        final String playlist_url = link.getStringProperty("playlist_url", null);
-        if (playlist_url != null) {
-            this.br.getPage(playlist_url);
-            if (isOffline(this.br)) {
-                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-            }
-            final String[] xml_array = jd.plugins.decrypter.DeluxemusicTv.getTrackArray(this.br);
-            this.xml_source = xml_array[getArrayid(link)];
-            status = parseTrackInfo(this, link, this.br.toString(), xml_array);
+        br.setAllowedResponseCodes(new int[] { 500 });
+        final Regex urlregex = new Regex(link.getPluginPatternMatcher(), "/video/([^/]+).*[a-f0-9]{32}(/(\\d+))?");
+        final String category_id = urlregex.getMatch(2);
+        final String url_title = urlregex.getMatch(0);
+        final DeluxemusicTvConfigInterface cfg = PluginJsonConfig.get(jd.plugins.hoster.DeluxemusicTv.DeluxemusicTvConfigInterface.class);
+        /*
+         * Usually this setting is for decrypters but in this case their contentservers are very slow which is why users can disable the
+         * filesize check - it speeds up the linkcheck for this plugin!
+         */
+        final boolean fastlinkcheck = cfg.isFastLinkcheckEnabled();
+        String filename = null;
+        if (new Regex(link.getPluginPatternMatcher(), TYPE_DIRECT).matches()) {
+            /* No other information available ... */
+            filename = fid;
         } else {
-            status = AvailableStatus.TRUE;
+            br.getPage(link.getPluginPatternMatcher());
+            /*
+             * 2018-04-03: Website seems to be broken sometimes which leads to 404 error here but content is still online and downloadable.
+             */
+            final boolean probablyOffline = br.getHttpConnection().getResponseCode() == 404 || !this.br.getURL().matches(".*?[a-f0-9]{32}.*?");
+            if (br.getHttpConnection().getResponseCode() == 500) {
+                /* Can be caused by trying to access wrong urls but also if there are server issues! */
+                server_issues = true;
+                return AvailableStatus.UNCHECKABLE;
+            } else if (!probablyOffline) {
+                final String description = this.br.getRegex("name=\"description\" content=\"([^<>\"]+)\"").getMatch(0);
+                filename = br.getRegex("<title>([^<>\"]+):: Medien :: DELUXE MUSIC</title>").getMatch(0);
+                if (filename == null) {
+                    filename = br.getRegex("name=\"title\" content=\"([^<>\"]+)MedienDELUXE MUSIC\"").getMatch(0);
+                }
+                if (description != null && link.getComment() == null) {
+                    link.setComment(description);
+                }
+            }
+            if (filename == null && url_title != null && !"discodeluxe_set".equalsIgnoreCase(url_title)) {
+                filename = url_title;
+            }
+            if (filename == null) {
+                /* Last chance */
+                filename = fid;
+            }
         }
-        return status;
-    }
-
-    @SuppressWarnings("deprecation")
-    public static AvailableStatus parseTrackInfo(Plugin plugin, final DownloadLink link, final String xml_all, final String[] xml_array) throws IOException, PluginException {
-        final DecimalFormat df = new DecimalFormat("0000");
-        final String playlist_id = getPlaylistid(link);
-        final String xml_source = xml_array[getArrayid(link)];
-
-        String title = getXML(xml_source, "title");
-        final boolean addDateAtBeginningOfFilenamesForMashupSets = SubConfiguration.getConfig("deluxemusic.tv").getBooleanProperty(jd.plugins.hoster.DeluxemusicTv.ENABLE_DATE_AT_BEGINNING_OF_FILENAME, jd.plugins.hoster.DeluxemusicTv.defaultENABLE_DATE_AT_BEGINNING_OF_FILENAME);
-        boolean isMashupSet = true;
-        String date = new Regex(xml_all, "Die Sets vom (\\d{1,2}\\. [A-Za-z]+)").getMatch(0);
-        if (date == null) {
-            isMashupSet = false;
-            date = new Regex(xml_source, "UPDATE DELUXE (\\d{4} \\d{1,2} \\d{1,2})").getMatch(0);
+        if (filename == null) {
+            /* This should never happen! */
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        if (title == null) {
-            link.setAvailable(false);
-            return AvailableStatus.FALSE;
+        if (category_id != null) {
+            /*
+             * Actually the "/category/" if not needed even if a category_id is given but we'll handle it similar to how the website handles
+             * it.
+             */
+            dllink = "https://deluxetv-vimp.mivitec.net/category/" + category_id + "/getMedium/" + fid + ".mp4";
+        } else {
+            dllink = "https://deluxetv-vimp.mivitec.net/getMedium/" + fid + ".mp4";
         }
-        if (date == null) {
-            /* Final attempt to find a date */
-            date = new Regex(title, "(\\d{4} \\d{1,2} \\d{1,2})").getMatch(0);
+        filename = nicerDicerFilename(filename);
+        if (dllink != null && !fastlinkcheck) {
+            dllink = Encoding.htmlDecode(dllink);
+            link.setFinalFileName(filename);
+            final Browser br2 = br.cloneBrowser();
+            // In case the link redirects to the finallink
+            br2.setFollowRedirects(true);
+            URLConnectionAdapter con = null;
+            try {
+                con = br2.openHeadConnection(dllink);
+                if (!con.getContentType().contains("html")) {
+                    link.setDownloadSize(con.getLongContentLength());
+                    link.setProperty("directlink", dllink);
+                } else {
+                    server_issues = true;
+                }
+            } finally {
+                try {
+                    con.disconnect();
+                } catch (final Throwable e) {
+                }
+            }
+        } else {
+            /* We cannot be sure whether we have the correct extension or not! */
+            link.setName(filename);
         }
-        String filename = "";
-
-        /* Only add date to the beginning of the filename if wished by the user */
-        if (date != null && ((isMashupSet && addDateAtBeginningOfFilenamesForMashupSets) || !isMashupSet)) {
-            /* Remove date from title - we don't need it twice! */
-            title = title.replace(" " + date, "");
-
-            final String date_formatted = formatDate(date);
-            filename = date_formatted + "_";
-        }
-
-        filename += "deluxemusictv_playlist_" + df.format(Integer.parseInt(playlist_id)) + "_";
-        filename += title + ".mp4";
-
-        filename = Encoding.htmlDecode(filename).trim();
-        filename = plugin.encodeUnicode(filename);
-
-        link.setFinalFileName(filename);
         return AvailableStatus.TRUE;
     }
 
-    public static boolean isOffline(final Browser br) throws IOException {
-        if (br.getHttpConnection().getResponseCode() == 404 || br.toString().length() < 200) {
-            return true;
+    /* Improve filenames */
+    public static String nicerDicerFilename(String name) {
+        if (name == null) {
+            return null;
         }
-        return false;
+        final String discodeluxe_setnumber_str = new Regex(name, Pattern.compile("DISCO.*?DELUXE.*?Set.{0,}?(\\d+)", Pattern.CASE_INSENSITIVE)).getMatch(0);
+        if (discodeluxe_setnumber_str != null) {
+            final int discodeluxe_setnumber = Integer.parseInt(discodeluxe_setnumber_str);
+            final String discodeluxe_setnumber_str_formatted = new DecimalFormat("000").format(discodeluxe_setnumber);
+            name = "deluxemusictv_disco_deluxe_set_" + discodeluxe_setnumber_str_formatted;
+        } else if (!name.contains(default_extension)) {
+            name = "deluxemusictv_" + name;
+        } else {
+            /* Nothing - filename is already correct */
+        }
+        name = Encoding.htmlDecode(name);
+        name = name.trim();
+        name += default_extension;
+        return name;
+    }
+
+    private String getLowerQualityVideourl(final String fid) {
+        String dllink = br.getRegex("property=\"og:video:url\" content=\"(http[^<>\"]+)\"").getMatch(0);
+        if (dllink == null) {
+            dllink = br.getRegex("(https?://deluxetv\\-vimp\\.mivitec\\.net/getMedium/[^<>\"/]+)").getMatch(0);
+        }
+        if (dllink == null) {
+            dllink = "https://deluxetv-vimp.mivitec.net/getMedium/" + fid + ".m4v";
+        }
+        return dllink;
     }
 
     @Override
-    public void handleFree(final DownloadLink downloadLink) throws Exception, PluginException {
+    public void handleFree(final DownloadLink downloadLink) throws Exception {
         requestFileInformation(downloadLink);
-
-        String streamer = new Regex(xml_source, "rel=\"streamer\">(rtmp://[^<>\"]*?)</meta>").getMatch(0);
-        String location = getXML(xml_source, "location");
-        if (streamer == null) {
-            streamer = downloadLink.getStringProperty("streamer", null);
-        }
-        if (location == null) {
-            location = downloadLink.getStringProperty("location", null);
-        }
-
-        if (streamer == null || location == null) {
+        if (server_issues) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown server error", 10 * 60 * 1000l);
+        } else if (dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-
-        if (download_method_prefer_hls) {
-            final String hls_Server = streamer.replaceAll("rtmpe?://", "http://");
-            final String url_hls_playlist = hls_Server + location + "/playlist.m3u8";
-            this.br.getPage(url_hls_playlist);
-            final HlsContainer hlsbest = HlsContainer.findBestVideoByBandwidth(HlsContainer.getHlsQualities(this.br));
-            if (hlsbest == null) {
-                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, free_resume, free_maxchunks);
+        if (dl.getConnection().getContentType().contains("html")) {
+            if (dl.getConnection().getResponseCode() == 403) {
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 60 * 60 * 1000l);
+            } else if (dl.getConnection().getResponseCode() == 404) {
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 404", 60 * 60 * 1000l);
             }
-            final String url_hls = hlsbest.downloadurl;
-            checkFFmpeg(downloadLink, "Download a HLS Stream");
-            dl = new HLSDownloader(downloadLink, br, url_hls);
-            dl.startDownload();
-        } else {
-            final String url_playpath = "mp4:" + location;
-            final String rtmp_app = "deluxemusic.tv/_definst_/";
-            final String url_rtmp = streamer;
-            dl = new RTMPDownload(this, downloadLink, url_rtmp);
-            final jd.network.rtmp.url.RtmpUrlConnection rtmp = ((RTMPDownload) dl).getRtmpConnection();
+            br.followConnection();
+            try {
+                dl.getConnection().disconnect();
+            } catch (final Throwable e) {
+            }
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
+        dl.startDownload();
+    }
 
-            rtmp.setPlayPath(url_playpath);
-            rtmp.setPageUrl(this.br.getURL());
-            rtmp.setSwfVfy("http://static.deluxemusic.tv.dl1.ipercast.net/theme/deluxemusic.tv/flash/player.swf");
-            rtmp.setFlashVer("WIN 16,0,0,305");
+    @Override
+    public int getMaxSimultanFreeDownloadNum() {
+        return free_maxdownloads;
+    }
 
-            /* Important! */
-            rtmp.setLive(true);
+    @Override
+    public String getDescription() {
+        return "Lade Videos aus der DeluxeTV Mediathek herunter";
+    }
 
-            rtmp.setApp(rtmp_app);
-            rtmp.setUrl(url_rtmp);
-            rtmp.setResume(false);
-            dl.startDownload();
+    @Override
+    public Class<? extends PluginConfigInterface> getConfigInterface() {
+        return DeluxemusicTvConfigInterface.class;
+    }
+
+    public static interface DeluxemusicTvConfigInterface extends PluginConfigInterface {
+        public static class TRANSLATION {
+            public String getFastLinkcheckEnabled_label() {
+                return _JDT.T.lit_enable_fast_linkcheck();
+            }
+
+            public String getEnableCategoryCrawler_label() {
+                return "Enable category crawler? This may add huge amounts of URLs!";
+            }
         }
 
-    }
+        public static final TRANSLATION TRANSLATION = new TRANSLATION();
 
-    public static String formatDate(String input) {
-        final String source_format;
-        if (input.matches("\\d{4} \\d{1,2} \\d{1,2}")) {
-            source_format = "yyyy MM dd";
-        } else {
-            final Calendar now = Calendar.getInstance();
-            final int year = now.get(Calendar.YEAR);
-            input += " " + Integer.toString(year);
-            source_format = "dd. MMMM yyyy";
-        }
-        final long date = TimeFormatter.getMilliSeconds(input, source_format, Locale.GERMAN);
-        String formattedDate = null;
-        final String targetFormat = "yyyy-MM-dd";
-        Date theDate = new Date(date);
-        try {
-            final SimpleDateFormat formatter = new SimpleDateFormat(targetFormat);
-            formattedDate = formatter.format(theDate);
-        } catch (Exception e) {
-            /* prevent input error killing plugin */
-            formattedDate = input;
-        }
-        return formattedDate;
-    }
+        @DefaultBooleanValue(false)
+        @Order(9)
+        boolean isFastLinkcheckEnabled();
 
-    @SuppressWarnings("deprecation")
-    public static String getPlaylistid(final DownloadLink dl) {
-        final Regex info = new Regex(dl.getDownloadURL(), "(\\d+)_(\\d+)");
-        final String playlist_id = info.getMatch(0);
-        return playlist_id;
-    }
+        void setFastLinkcheckEnabled(boolean b);
 
-    @SuppressWarnings("deprecation")
-    public static int getArrayid(final DownloadLink dl) {
-        final Regex info = new Regex(dl.getDownloadURL(), "(\\d+)_(\\d+)");
-        final String array_id = info.getMatch(1);
-        return Integer.parseInt(array_id);
-    }
+        @DefaultBooleanValue(false)
+        @Order(10)
+        boolean isEnableCategoryCrawler();
 
-    @SuppressWarnings("unused")
-    private String getXML(final String parameter) {
-        return getXML(this.br.toString(), parameter);
-    }
-
-    public static String getXML(final String source, final String parameter) {
-        String result = new Regex(source, "<" + parameter + "( type=\"[^<>\"/]*?\")?>([^<>]*?)</" + parameter + ">").getMatch(1);
-        if (result == null) {
-            result = new Regex(source, "<" + parameter + "><\\!\\[CDATA\\[([^<>]*?)\\]\\]></" + parameter + ">").getMatch(0);
-        }
-        return result;
+        void setEnableCategoryCrawler(boolean b);
     }
 
     @Override
@@ -243,22 +257,10 @@ public class DeluxemusicTv extends PluginForHost {
     }
 
     @Override
-    public int getMaxSimultanFreeDownloadNum() {
-        return -1;
+    public void resetPluginGlobals() {
     }
 
     @Override
-    public String getDescription() {
-        return "JDownloader's Deluxemusic plugin helps downloading videos from deluxemusic.tv.";
+    public void resetDownloadlink(DownloadLink link) {
     }
-
-    private void setConfigElements() {
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), ENABLE_DATE_AT_BEGINNING_OF_FILENAME, JDL.L("plugins.hoster.DeluxemusicTv.dateInFilenameOfMashupSets", "For mashup sets: Put date at the beginning of filenames?\r\nThe date is not relevant for such sets so it is recommended to disable this setting.")).setDefaultValue(defaultENABLE_DATE_AT_BEGINNING_OF_FILENAME));
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), ENABLE_TEST_FEATURES, JDL.L("plugins.hoster.DeluxemusicTv.enableTestMode", "<html><p style=\"color:#F62817\">Enable test mode?<br />ONLY ENABLE THIS IF YOU KNOW WHAT YOU'RE DOING!! This setting may add thousands of links to your linkgrabber!</p></html>")).setDefaultValue(defaultENABLE_TEST_FEATURES));
-    }
-
-    @Override
-    public void resetDownloadlink(final DownloadLink link) {
-    }
-
 }

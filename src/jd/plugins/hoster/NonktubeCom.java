@@ -13,15 +13,16 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
 
+import org.appwork.utils.StringUtils;
+
 import jd.PluginWrapper;
-import jd.http.Browser;
 import jd.http.Browser.BrowserException;
 import jd.http.URLConnectionAdapter;
+import jd.http.requests.HeadRequest;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.plugins.DownloadLink;
@@ -31,13 +32,11 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "nonktube.com" }, urls = { "http://(www\\.)?nonktube\\.com/(?:porn/)?video/\\d+/[a-z0-9\\-]+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "nonktube.com" }, urls = { "https?://(www\\.)?nonktube\\.com/(?:porn/)?video/\\d+/[a-z0-9\\-]+" })
 public class NonktubeCom extends PluginForHost {
-
     public NonktubeCom(PluginWrapper wrapper) {
         super(wrapper);
     }
-
     /* DEV NOTES */
     // Porn_plugin
     // Tags:
@@ -48,12 +47,17 @@ public class NonktubeCom extends PluginForHost {
     private static final boolean free_resume       = true;
     private static final int     free_maxchunks    = 0;
     private static final int     free_maxdownloads = -1;
-
     private String               dllink            = null;
+    private boolean              server_issues     = false;
 
     @Override
     public String getAGBLink() {
         return "http://www.nonktube.com/static/terms";
+    }
+
+    public void correctDownloadLink(DownloadLink link) {
+        // 20170228 Referrer should be https
+        link.setUrlDownload(link.getDownloadURL().replace("http:", "https:"));
     }
 
     @SuppressWarnings("deprecation")
@@ -93,49 +97,57 @@ public class NonktubeCom extends PluginForHost {
             br.getPage("http://www.nonktube.com/media/nuevo/config.php?key=" + fid + "--");
         }
         if (filename == null) {
+            /* Final fallback */
             filename = new Regex(downloadLink.getDownloadURL(), "nonktube\\.com/video/\\d+/([a-z0-9\\-]+)").getMatch(0);
         }
-        dllink = br.getRegex("<file>(http://[^<>\"]*?)</file>").getMatch(0);
-        if (filename == null || dllink == null) {
+        dllink = br.getRegex("<file>(https?://[^<>\"]*?)</file>").getMatch(0);
+        if (filename == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        dllink = Encoding.htmlDecode(dllink);
         filename = Encoding.htmlDecode(filename);
         filename = filename.trim();
-        filename = encodeUnicode(filename);
-        final String ext = getFileNameExtensionFromString(dllink, ".mp4");
-        if (!filename.endsWith(ext)) {
-            filename += ext;
-        }
+        filename = encodeUnicode(filename) + ".mp4";
         downloadLink.setFinalFileName(filename);
-        final Browser br2 = br.cloneBrowser();
-        // In case the link redirects to the finallink
-        br2.setFollowRedirects(true);
-        URLConnectionAdapter con = null;
-        try {
+        if (dllink != null) {
+            dllink = Encoding.htmlDecode(dllink);
+            /** 2019-01-29: Works only with .mp4 ending! */
+            dllink = dllink.replace(".flv", ".mp4");
+            URLConnectionAdapter con = null;
             try {
-                con = openConnection(br2, dllink);
-            } catch (final BrowserException e) {
-                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-            }
-            if (!con.getContentType().contains("html")) {
-                downloadLink.setDownloadSize(con.getLongContentLength());
-            } else {
-                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-            }
-            downloadLink.setProperty("directlink", dllink);
-            return AvailableStatus.TRUE;
-        } finally {
-            try {
-                con.disconnect();
-            } catch (final Throwable e) {
+                try {
+                    HeadRequest headRequest = new HeadRequest(dllink);
+                    headRequest.getHeaders().put("Range", "bytes=0-");
+                    con = br.openRequestConnection(headRequest);
+                } catch (final BrowserException e) {
+                    throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+                }
+                if (!con.getContentType().contains("html") && con.isOK()) {
+                    downloadLink.setDownloadSize(con.getLongContentLength());
+                } else {
+                    server_issues = true;
+                }
+                downloadLink.setProperty("directlink", dllink);
+            } finally {
+                try {
+                    if (con != null) {
+                        con.disconnect();
+                    }
+                } catch (final Throwable e) {
+                }
             }
         }
+        return AvailableStatus.TRUE;
     }
 
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception {
         requestFileInformation(downloadLink);
+        if (server_issues) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown server error", 10 * 60 * 1000l);
+        } else if (StringUtils.isEmpty(dllink)) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
+        downloadLink.setProperty("ServerComaptibleForByteRangeRequest", true);
         dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, free_resume, free_maxchunks);
         if (dl.getConnection().getContentType().contains("html")) {
             if (dl.getConnection().getResponseCode() == 403) {
@@ -156,16 +168,6 @@ public class NonktubeCom extends PluginForHost {
     @Override
     public int getMaxSimultanFreeDownloadNum() {
         return free_maxdownloads;
-    }
-
-    private URLConnectionAdapter openConnection(final Browser br, final String directlink) throws IOException {
-        URLConnectionAdapter con;
-        if (isJDStable()) {
-            con = br.openGetConnection(directlink);
-        } else {
-            con = br.openHeadConnection(directlink);
-        }
-        return con;
     }
 
     private boolean isJDStable() {

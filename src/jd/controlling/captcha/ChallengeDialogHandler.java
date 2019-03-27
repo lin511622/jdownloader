@@ -2,6 +2,12 @@ package jd.controlling.captcha;
 
 import javax.swing.SwingUtilities;
 
+import jd.gui.swing.dialog.DialogType;
+import jd.gui.swing.jdgui.JDGui;
+import jd.plugins.Plugin;
+import jd.plugins.PluginForDecrypt;
+import jd.plugins.PluginForHost;
+
 import org.appwork.storage.config.JsonConfig;
 import org.appwork.uio.UIOManager;
 import org.appwork.utils.logging2.LogInterface;
@@ -17,13 +23,8 @@ import org.jdownloader.DomainInfo;
 import org.jdownloader.captcha.v2.Challenge;
 import org.jdownloader.controlling.UniqueAlltimeID;
 import org.jdownloader.settings.SilentModeSettings.CaptchaDuringSilentModeAction;
+import org.jdownloader.settings.staticreferences.CFG_CAPTCHA;
 import org.jdownloader.settings.staticreferences.CFG_SILENTMODE;
-
-import jd.gui.swing.dialog.DialogType;
-import jd.gui.swing.jdgui.JDGui;
-import jd.plugins.Plugin;
-import jd.plugins.PluginForDecrypt;
-import jd.plugins.PluginForHost;
 
 public abstract class ChallengeDialogHandler<T extends Challenge<?>> {
     private DomainInfo            host;
@@ -148,11 +149,11 @@ public abstract class ChallengeDialogHandler<T extends Challenge<?>> {
             /* no external response available */
             if (e.isCausedByInterrupt()) {
                 throw new InterruptedException("Dialog Interrupted");
-            }
-            if (e.isCausedByTimeout()) {
+            } else if (e.isCausedByTimeout()) {
                 throw new SkipException(captchaChallenge, SkipRequest.TIMEOUT);
+            } else {
+                throw new SkipException(captchaChallenge, SkipRequest.SINGLE);
             }
-            throw new SkipException(captchaChallenge, SkipRequest.SINGLE);
         } catch (HideCaptchasByHostException e) {
             throw new SkipException(captchaChallenge, SkipRequest.BLOCK_HOSTER);
         } catch (HideCaptchasByPackageException e) {
@@ -170,24 +171,17 @@ public abstract class ChallengeDialogHandler<T extends Challenge<?>> {
 
     protected int getTimeoutInMS() {
         int countdown = -1;
-        if (captchaChallenge.getPlugin() instanceof PluginForHost) {
-            if (config.isDialogCountdownForDownloadsEnabled()) {
-                countdown = config.getCaptchaDialogDefaultCountdown();
-            }
-        } else if (captchaChallenge.getPlugin() instanceof PluginForDecrypt) {
-            if (config.isDialogCountdownForCrawlerEnabled()) {
-                countdown = config.getCaptchaDialogDefaultCountdown();
-            }
+        final Plugin plugin = captchaChallenge.getPlugin();
+        if (plugin instanceof PluginForHost && config.isDialogCountdownForDownloadsEnabled()) {
+            countdown = CFG_CAPTCHA.CAPTCHA_DIALOG_DEFAULT_COUNTDOWN.getValue().intValue();
+        } else if (plugin instanceof PluginForDecrypt && config.isDialogCountdownForCrawlerEnabled()) {
+            countdown = CFG_CAPTCHA.CAPTCHA_DIALOG_DEFAULT_COUNTDOWN.getValue().intValue();
         }
-        int pluginTimeout = captchaChallenge.getTimeout();
-        if (pluginTimeout > 0) {
-            if (countdown <= 0 || pluginTimeout < countdown) {
-                countdown = pluginTimeout;
+        final int remainingTimeout = captchaChallenge.getRemainingTimeout();
+        if (remainingTimeout > 0) {
+            if (countdown <= 0 || remainingTimeout < countdown) {
+                countdown = remainingTimeout;
             }
-        }
-        int pluginCaptchaChallengeTimout = captchaChallenge.getPlugin() == null ? 0 : captchaChallenge.getPlugin().getChallengeTimeout(captchaChallenge);
-        if (pluginCaptchaChallengeTimout > 0 && pluginCaptchaChallengeTimout < countdown) {
-            countdown = pluginCaptchaChallengeTimout;
         }
         return countdown;
     }

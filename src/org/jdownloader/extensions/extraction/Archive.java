@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package org.jdownloader.extensions.extraction;
 
 import java.io.File;
@@ -38,7 +37,6 @@ import org.jdownloader.extensions.extraction.split.SplitType;
  *
  */
 public class Archive {
-
     public static String getBestArchiveID(List<ArchiveFile> archiveFiles, final String suggestedArchiveID) {
         final HashMap<String, ArchiveID> scores = new HashMap<String, ArchiveID>();
         for (final ArchiveFile archiveFile : archiveFiles) {
@@ -109,25 +107,18 @@ public class Archive {
      * ArchiveFiles of the archive.
      */
     private List<ArchiveFile> archives;
-
     /**
      * Exitcode of the extrraction.
      */
-    private int               exitCode    = -1;
-
+    private int               exitCode = -1;
     /**
      * Type of the archive.
      */
-    private ArchiveType       archiveType = null;
-
-    private SplitType         splitType   = null;
+    private final ArchiveType archiveType;
+    private final SplitType   splitType;
 
     public SplitType getSplitType() {
         return splitType;
-    }
-
-    public void setSplitType(SplitType splitType) {
-        this.splitType = splitType;
     }
 
     public ArchiveFile getBestArchiveFileMatch(final String fileName) {
@@ -135,31 +126,25 @@ public class Archive {
             return getArchiveType().getBestArchiveFileMatch(this, fileName);
         } else if (getSplitType() != null) {
             return getSplitType().getBestArchiveFileMatch(this, fileName);
+        } else {
+            return null;
         }
-        return null;
     }
 
     /**
      * ArchiveFiles CRC error.
      */
     private final List<ArchiveFile>                      crcError;
-
     /**
      * List of the extracted files.
      */
     private final List<File>                             extractedFiles;
-
     private final List<File>                             skippedFiles;
-
     private final ArchiveFactory                         factory;
-
     private String                                       name;
-
     private ContentView                                  contents;
-
     private boolean                                      passwordRequiredToOpen;
     private volatile String                              archiveID            = null;
-
     private volatile WeakReference<ExtractionController> extractionController = null;
 
     public String getArchiveID() {
@@ -174,13 +159,26 @@ public class Archive {
         return factory;
     }
 
-    public Archive(final ArchiveFactory link) {
+    public Archive(final ArchiveFactory link, ArchiveType archiveType) {
         factory = link;
         archives = new CopyOnWriteArrayList<ArchiveFile>();
         crcError = new CopyOnWriteArrayList<ArchiveFile>();
         extractedFiles = new CopyOnWriteArrayList<File>();
         skippedFiles = new CopyOnWriteArrayList<File>();
         contents = new ContentView();
+        this.archiveType = archiveType;
+        this.splitType = null;
+    }
+
+    public Archive(final ArchiveFactory link, SplitType splitType) {
+        factory = link;
+        archives = new CopyOnWriteArrayList<ArchiveFile>();
+        crcError = new CopyOnWriteArrayList<ArchiveFile>();
+        extractedFiles = new CopyOnWriteArrayList<File>();
+        skippedFiles = new CopyOnWriteArrayList<File>();
+        contents = new ContentView();
+        this.splitType = splitType;
+        this.archiveType = null;
     }
 
     public Archive getParentArchive() {
@@ -190,8 +188,19 @@ public class Archive {
     public Archive getRootArchive() {
         if (getParentArchive() != null) {
             return getParentArchive().getRootArchive();
+        } else {
+            return this;
         }
-        return this;
+    }
+
+    public ArchiveFile getLastArchiveFile() {
+        if (archiveType != null) {
+            return ArchiveType.getLastArchiveFile(this);
+        } else if (splitType != null) {
+            return SplitType.getLastArchiveFile(this);
+        } else {
+            return null;
+        }
     }
 
     private volatile ArchiveFormat cachedArchiveFormat = null;
@@ -246,10 +255,6 @@ public class Archive {
 
     public void setArchiveFiles(java.util.List<ArchiveFile> collection) {
         this.archives = new CopyOnWriteArrayList<ArchiveFile>(collection);
-    }
-
-    public void setArchiveType(ArchiveType singleFile) {
-        this.archiveType = singleFile;
     }
 
     public ArchiveType getArchiveType() {
@@ -374,5 +379,4 @@ public class Archive {
             notifyChanges(ArchiveSettings.AUTO_EXTRACT);
         }
     }
-
 }

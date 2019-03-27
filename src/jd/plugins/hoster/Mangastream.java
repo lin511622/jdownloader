@@ -6,8 +6,6 @@ import java.io.FileOutputStream;
 
 import javax.imageio.ImageIO;
 
-import org.jdownloader.plugins.components.antiDDoSForHost;
-
 import jd.PluginWrapper;
 import jd.http.URLConnectionAdapter;
 import jd.parser.Regex;
@@ -17,16 +15,17 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "mangastream.com" }, urls = { "mangastream:///read/[a-z0-9-_/\\%\\+\\.]+" }) 
-public class Mangastream extends antiDDoSForHost {
+import org.jdownloader.plugins.components.antiDDoSForHost;
 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "mangastream.com" }, urls = { "mangastream:///read/[a-z0-9-_/\\%\\+\\.]+" })
+public class Mangastream extends antiDDoSForHost {
     public Mangastream(PluginWrapper wrapper) {
         super(wrapper);
     }
 
     @Override
     public String getAGBLink() {
-        return "http://mangastream.com/content/privacy";
+        return "https://readms.net/content/privacy";
     }
 
     @Override
@@ -36,13 +35,12 @@ public class Mangastream extends antiDDoSForHost {
 
     @Override
     public void correctDownloadLink(final DownloadLink link) throws PluginException {
-        link.setUrlDownload(link.getDownloadURL().replaceFirst("mangastream://", "http://mangastream.com"));
+        link.setUrlDownload(link.getDownloadURL().replaceFirst("mangastream://", "https://readms.net"));
     }
 
     @Override
     public void handleFree(DownloadLink downloadLink) throws Exception, PluginException {
         requestFileInformation(downloadLink);
-
         // We create the final picture based on the information of the page
         Regex sizes = br.getRegex("<div style=\"position:relative;width:(\\d+)px;height:(\\d+)px\">");
         if (sizes.getMatch(0) != null && sizes.getMatch(1) != null) {
@@ -52,21 +50,17 @@ public class Mangastream extends antiDDoSForHost {
             BufferedImage buffer = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
             Graphics2D g = buffer.createGraphics();
             sizes = null;
-
             downloadLink.getLinkStatus().setStatusText("Working...");
             downloadLink.getLinkStatus().setStatus(1 << 18);
             // We get every chunk of the image
-            String[][] chunksData = br.getRegex("<div style=\"position:absolute;z-index:\\d+;width:\\d+px;height:\\d+px;top:(\\d+)px;left:(\\d+)px\"><a href=\"/read/.+?\"><img src=\"(http://img.mangastream.com/m/\\d+/\\d+/\\w+.(jpg|png))\" border=\"0\" /></a></div>").getMatches();
-
+            String[][] chunksData = br.getRegex("<div style=\"position:absolute;z-index:\\d+;width:\\d+px;height:\\d+px;top:(\\d+)px;left:(\\d+)px\"><a href=\"/read/.+?\"><img src=\"(https?://img.mangastream.com/m/\\d+/\\d+/\\w+.(jpg|png))\" border=\"0\" /></a></div>").getMatches();
             for (String[] chunkData : chunksData) {
                 int offsetTop = Integer.parseInt(chunkData[0]);
                 int offsetLeft = Integer.parseInt(chunkData[1]);
-
                 URLConnectionAdapter con = null;
                 try {
                     con = br.openGetConnection(chunkData[2]);
                     BufferedImage chunk = ImageIO.read(con.getInputStream());
-
                     // We paint the chunk on the picture
                     g.drawImage(chunk, offsetLeft, offsetTop, null);
                 } finally {
@@ -91,7 +85,7 @@ public class Mangastream extends antiDDoSForHost {
             }
         } else {
             /* old method - or most recent one! (present in Naturo chap. 547) */
-            String picUrl = br.getRegex("id=\"manga-page\"\\s+src=\"(http[^<>\"]*?)\"").getMatch(0);
+            String picUrl = br.getRegex("id=\"manga-page\"\\s+src=\"((?:https?:)?//[^<>\"]*?)\"").getMatch(0);
             String ext = new Regex(picUrl, ".*?(\\.jpg|\\.png)").getMatch(0);
             if (picUrl == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -117,7 +111,8 @@ public class Mangastream extends antiDDoSForHost {
     public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
         this.setBrowserExclusive();
         correctDownloadLink(downloadLink);
-        getPage(downloadLink.getDownloadURL());
+        getPage(downloadLink.getDownloadURL().replaceFirst("http://", "https://"));
+        br.followRedirect();
         if (br.containsHTML("We couldn't find the page you were looking for") || br.getHttpConnection() == null || br.getHttpConnection().getResponseCode() == 404) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }

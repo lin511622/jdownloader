@@ -23,6 +23,7 @@ import javax.script.ScriptEngine;
 import javax.script.ScriptEngineManager;
 
 import org.appwork.utils.StringUtils;
+import org.appwork.utils.net.URLHelper;
 import org.jdownloader.plugins.components.antiDDoSForDecrypt;
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
@@ -40,14 +41,13 @@ import jd.plugins.DecrypterException;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.Plugin;
-import jd.plugins.components.PluginJSonUtils;
+import jd.plugins.components.SiteType.SiteTemplate;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "1short.us", "clictune.com", "xfast.link", "lientelecharger.com", "f16f.com", "adyou.me", "manteb.in", "zonambulos.info", "nifteam.info", "swzz.xyz", "animeforce.org", "link.achanime.net", "sipkur.net", "xxxporn88.com", "otrkeyfinder.com", "solarmovie.is", "xiaomengku.com", "anyt.ml", "fastgo.cu.cc", "linkdecode.com", "lienscash.com", "is.gd", "djurl.com", "umhq.net", "madlink.sk", "url.fm", "searchonzippy.eu", "sharmota.com", "hflix.in", "hnzoom.com", "basemp3.ru", "lezlezlez.com", "dwz.cn", "guardlink.org", "q32.ru", "icefilms.info", "adfoc.us", "damasgate.com", "freeonsmash.com", "lnk.co", "myurl.in", "filep.info", "eskimotube.com", "4p5.com", "href.hu", "migre.me", "altervista.org", "agaleradodownload.com", "songspk.info", "deurl.me", "muzgruz.ru", "zero10.net", "chip.de", "nbanews.us", "1tool.biz",
-        "zero10.net", "official.fm", "academicearth.org", "tm-exchange.com", "adiarimore.com", "mafia.to", "warcraft.ingame.de", "twiturm.com", "mp3.wp.pl", "gantrack.com" }, urls = { "https?://(?:www\\.)?1short\\.us/[A-Za-z0-9]+", "https?://(?:www\\.)?clictune\\.com/id=\\d+", "https?://(?:www\\.)?xfast\\.link/[A-Za-z0-9]+", "https?://(?:www\\.)?lientelecharger\\.com/[A-Za-z0-9]+", "https?://(?:\\w+\\.)?f16f\\.com/\\?i=\\d+", "https?://(?:\\w+\\.)?adyou\\.me/[a-zA-Z0-9]{4,}$", "https?://(?:\\w+\\.)?manteb\\.in/[a-zA-Z0-9]+$", "https?://(?:www\\.)?zonambulos\\.info/download/([a-zA-Z0-9_/\\+\\=\\-%]+)", "http://nifteam\\.info/link\\.php\\?file=.+", "https?://(?:www\\.)?swzz\\.xyz/link/[a-zA-Z0-9]{5}/", "http://(?:www\\.)?animeforce\\.org/ds(?:\\d+)?\\.php\\?file=.+", "https?://link\\.achanime\\.net/(short/\\?id=[a-f0-9]{32}|link/\\?[^/]+)", "http://sipkur\\.net/[a-z0-9\\-_]+\\.html",
-                "http://xxxporn88\\.com/video/[a-z0-9\\-_]+\\.[a-z0-9]+\\.html", "https?://otrkeyfinder\\.com/de/go\\-to\\-mirror\\?otrkey=.+", "https?://cinema\\.solarmovie\\.is/link/play/\\d+/?", "https?://(?:www\\.)?xiaomengku\\.com/files\\?id=\\d+", "http://anyt\\.ml/[A-Za-z0-9]+", "https?://(www\\.)?fastgo\\.cu\\.cc/[a-zA-Z0-9]{6}", "http://(www\\.)?(linkdecode|fastdecode)\\.com/\\?[a-zA-Z0-9_/\\+\\=\\-%]+", "http://(www\\.)?lienscash\\.com/l/[a-z0-9]+", "http://(www\\.)?is\\.gd/[a-zA-Z0-9]+", "http://djurl\\.com/[A-Za-z0-9]+", "http://(www\\.)?umhq\\.net/[A-Z0-9]+/rdf\\.php\\?link=[a-z0-9]+", "http://(www\\.)?(madlink\\.sk|m\\-l\\.sk)/[a-z0-9]+", "http://(www\\.)?url\\.fm/[a-z0-9]+", "http://(www\\.)?searchonzippy\\.eu/out\\.php\\?link=\\d+", "http://(www\\.)?sharmota\\.com/movies/\\d+/\\d+", "http://(www\\.)?hflix\\.in/[A-Za-z0-9]+",
-                "http://(www\\.)?hnzoom\\.com/(\\?[A-Za-z0-9]{20}|folder/[a-zA-Z0-9\\-]{11})", "http://(www\\.)?basemp3\\.ru/music\\-view\\-\\d+\\.html", "http://(www\\.)?lezlezlez\\.com/mediaswf\\.php\\?type=vid\\&name=[^<>\"/]+\\.flv", "http://(www\\.)?dwz\\.cn/[A-Za-z0-9]+", "http://(www\\.)?guardlink\\.org/[A-Za-z0-9]+", "http://q32\\.ru/\\d+/c/[A-Za-z0-9\\-_]+", "https?://(www\\.)?icefilms\\.info/ip\\.php\\?v=\\d+\\&?", "http://(www\\.)?adfoc\\.us/(serve/\\?id=[a-z0-9]+|(?!serve|privacy|terms)[a-z0-9]+)", "http://(www\\.)?damasgate\\.com/redirector\\.php\\?url=.+", "http://(www\\.)?freeonsmash\\.com/redir/[A-Za-z0-9\\=\\+\\/\\.\\-]+", "http://(www\\.)?lnk\\.co/[A-Za-z0-9]+", "http://(www\\.)?protect\\.myurl\\.in/[A-Za-z0-9]+", "http://(www\\.)?filep\\.info/(\\?url=|/)\\d+", "http://(www\\.)?eskimotube\\.com/\\d+\\-.*?\\.html", "http://(www\\.)?4p5\\.com/[a-z0-9]+",
-                "http://href\\.hu/x/[a-zA-Z0-9\\.]+", "http://[\\w\\.]*?migre\\.me/[a-z0-9A-Z]+", "http://[\\w\\.]*?altervista\\.org/\\?i=[0-9a-zA-Z]+", "http://[\\w\\.]*?agaleradodownload\\.com/download.*?\\?.*?//:ptth", "http://[\\w\\.]*?(link\\.songs\\.pk/(popsong|song1|bhangra)\\.php\\?songid=|songspk\\.info/ghazals/download/ghazals\\.php\\?id=|link\\.songspk\\.help/\\S+/download\\.php\\?id=)[0-9]+", "http://[\\w\\.]*?deurl\\.me/[0-9A-Z]+", "http://[\\w\\.]*?muzgruz\\.ru/music/download/\\d+", "http://[\\w\\.]*?zero10\\.net/\\d+", "http://[\\w\\.]*?chip\\.de/c1_videos/.*?-Video_\\d+\\.html", "http://[\\w\\.]*?nbanews\\.us/\\d+", "http://(www\\.)?1tool\\.biz/\\d+", "http://[\\w\\.]*?zero10\\.net/\\d+", "http://(www\\.)?official\\.fm/track(s)?/[A-Za-z0-9]+", "http://[\\w\\.]*?academicearth\\.org/lectures/.{2,}",
-                "http://[\\w\\.]*?tm-exchange\\.com/(get\\.aspx\\?action=trackgbx|\\?action=trackshow)\\&id=\\d+", "http://[\\w\\.]*?adiarimore\\.com/miralink/[a-z0-9]+", "http://[\\w\\.]*?mafia\\.to/download-[a-z0-9]+\\.cfm", "http://(www\\.)?warcraft\\.ingame\\.de/downloads/\\?file=\\d+", "http://(www\\.)?twiturm\\.com/[a-z0-9]+", "http://[\\w\\.]*?mp3\\.wp\\.pl/(?!ftp)(p/strefa/artysta/\\d+,utwor,\\d+\\.html|\\?tg=[A-Za-z0-9=]+)", "http://(www\\.)?gantrack\\.com/t/l/\\d+/[A-Za-z0-9]+" })
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "topporn88.net", "1short.us", "clictune.com", "f16f.com", "manteb.in", "nifteam.info", "swzz.xyz", "animeforce.org", "link.achanime.net", "sipkur.net", "otrkeyfinder.com", "xiaomengku.com", "anyt.ml", "fastgo.cu.cc", "linkdecode.com", "is.gd", "djurl.com", "umhq.net", "url.fm", "searchonzippy.eu", "hnzoom.com", "lezlezlez.com", "guardlink.org", "q32.ru", "icefilms.info", "adfoc.us", "damasgate.com", "freeonsmash.com", "lnk.co", "myurl.in", "eskimotube.com", "4p5.com", "href.hu", "migre.me", "altervista.org", "agaleradodownload.com", "songspk.info", "deurl.me", "muzgruz.ru", "chip.de", "nbanews.us", "academicearth.org", "tm-exchange.com", "adiarimore.com", "mafia.to", "warcraft.ingame.de", "mp3.wp.pl", "gantrack.com" }, urls = { "http://topporn88\\.net/video/[a-z0-9\\-_]+\\.[a-z0-9]+\\.html",
+        "https?://(?:www\\.)?1short\\.us/[A-Za-z0-9]+", "https?://(?:www\\.)?clictune\\.com/(?:id=\\d+|[a-zA-Z0-9]+)", "https?://(?:\\w+\\.)?f16f\\.com/\\?i=\\d+", "https?://(?:\\w+\\.)?manteb\\.in/[a-zA-Z0-9]+$", "http://nifteam\\.info/link\\.php\\?file=.+", "https?://(?:www\\.)?swzz\\.xyz/link/[a-zA-Z0-9]{5}/", "http://(?:www\\.)?animeforce\\.org/ds(?:\\d+)?\\.php\\?file=.+", "https?://link\\.achanime\\.net/(short/\\?id=[a-f0-9]{32}|link/\\?[^/]+)", "http://sipkur\\.net/[a-z0-9\\-_]+\\.html", "https?://otrkeyfinder\\.com/de/go\\-to\\-mirror\\?otrkey=.+", "https?://(?:www\\.)?xiaomengku\\.com/files\\?id=\\d+", "http://anyt\\.ml/[A-Za-z0-9]+", "https?://(www\\.)?fastgo\\.cu\\.cc/[a-zA-Z0-9]{6}", "http://(www\\.)?(linkdecode|fastdecode)\\.com/\\?[a-zA-Z0-9_/\\+\\=\\-%]+", "http://(www\\.)?is\\.gd/[a-zA-Z0-9]+", "http://djurl\\.com/[A-Za-z0-9]+",
+        "http://(www\\.)?umhq\\.net/[A-Z0-9]+/rdf\\.php\\?link=[a-z0-9]+", "http://(www\\.)?url\\.fm/[a-z0-9]+", "http://(www\\.)?searchonzippy\\.eu/out\\.php\\?link=\\d+", "http://(www\\.)?hnzoom\\.com/(\\?[A-Za-z0-9]{20}|folder/[a-zA-Z0-9\\-]{11})", "http://(www\\.)?lezlezlez\\.com/mediaswf\\.php\\?type=vid\\&name=[^<>\"/]+\\.flv", "http://(www\\.)?guardlink\\.org/[A-Za-z0-9]+", "http://q32\\.ru/\\d+/c/[A-Za-z0-9\\-_]+", "https?://(\\w+\\.)?icefilms\\.info/ip\\.php\\?v=\\d+\\&?", "http://(www\\.)?adfoc\\.us/(serve/\\?id=[a-z0-9]+|(?!serve|privacy|terms)[a-z0-9]+)", "http://(www\\.)?damasgate\\.com/redirector\\.php\\?url=.+", "http://(www\\.)?freeonsmash\\.com/redir/[A-Za-z0-9\\=\\+\\/\\.\\-]+", "http://(www\\.)?lnk\\.co/[A-Za-z0-9]+", "http://(www\\.)?protect\\.myurl\\.in/[A-Za-z0-9]+", "http://(www\\.)?eskimotube\\.com/\\d+\\-.*?\\.html", "http://(www\\.)?4p5\\.com/[a-z0-9]+",
+        "http://href\\.hu/x/[a-zA-Z0-9\\.]+", "http://[\\w\\.]*?migre\\.me/[a-z0-9A-Z]+", "http://[\\w\\.]*?altervista\\.org/\\?i=[0-9a-zA-Z]+", "http://[\\w\\.]*?agaleradodownload\\.com/download.*?\\?.*?//:ptth", "http://[\\w\\.]*?(link\\.songs\\.pk/(popsong|song1|bhangra)\\.php\\?songid=|songspk\\.info/ghazals/download/ghazals\\.php\\?id=|link\\.songspk\\.help/\\S+/download\\.php\\?id=)[0-9]+", "http://[\\w\\.]*?deurl\\.me/[0-9A-Z]+", "http://[\\w\\.]*?muzgruz\\.ru/music/download/\\d+", "http://[\\w\\.]*?chip\\.de/c1_videos/.*?-Video_\\d+\\.html", "http://[\\w\\.]*?nbanews\\.us/\\d+", "http://[\\w\\.]*?academicearth\\.org/lectures/.{2,}", "http://[\\w\\.]*?tm-exchange\\.com/(get\\.aspx\\?action=trackgbx|\\?action=trackshow)\\&id=\\d+", "http://[\\w\\.]*?adiarimore\\.com/miralink/[a-z0-9]+", "http://[\\w\\.]*?mafia\\.to/download-[a-z0-9]+\\.cfm",
+        "http://(www\\.)?warcraft\\.ingame\\.de/downloads/\\?file=\\d+", "http://[\\w\\.]*?mp3\\.wp\\.pl/(?!ftp)(p/strefa/artysta/\\d+,utwor,\\d+\\.html|\\?tg=[A-Za-z0-9=]+)", "http://(www\\.)?gantrack\\.com/t/l/\\d+/[A-Za-z0-9]+" })
 public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoSForDecrypt {
     @Override
     public String[] siteSupportedNames() {
@@ -79,18 +79,10 @@ public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoS
         String finalfilename = null;
         /* Some links don't have to be accessed (here) */
         try {
-            if (!new Regex(parameter, "xfast\\.link|1tool\\.biz|file4ever\\.us|tm-exchange\\.com/|dwz\\.cn/|icefilms\\.info/|linkdecode\\.com|fastdecode\\.com/|is\\.gd/|swzz\\.xyz/|animeforce\\.org/|nifteam\\.info/").matches()) {
-                br.getPage(parameter);
-            }
-            if (parameter.contains("xfast.link/")) {
-                // contains cloudflare.
+            if (!new Regex(parameter, "clictune\\.com|tm-exchange\\.com/|icefilms\\.info/|linkdecode\\.com|fastdecode\\.com/|is\\.gd/|swzz\\.xyz/|animeforce\\.org/|nifteam\\.info/").matches()) {
                 getPage(parameter);
-                final Form form = br.getForm(0);
-                if (form != null) {
-                    submitForm(form);
-                }
-                finallink = br.getRedirectLocation();
-            } else if (parameter.contains("link.songs.pk/") || parameter.contains("songspk.info/ghazals/download/ghazals.php?id=") || parameter.contains("link.songspk.help/")) {
+            }
+            if (parameter.contains("link.songs.pk/") || parameter.contains("songspk.info/ghazals/download/ghazals.php?id=") || parameter.contains("link.songspk.help/")) {
                 finallink = br.getRedirectLocation();
                 dh = true;
             } else if (parameter.contains("deurl.me/")) {
@@ -112,10 +104,6 @@ public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoS
                 final String id = new Regex(parameter, "nbanews\\.us/(\\d+)").getMatch(0);
                 br.getPage("http://www.nbanews.us/m1.php?id=" + id);
                 finallink = br.getRegex("NewWindow\\('(.*?)'").getMatch(0);
-            } else if (parameter.contains("1tool.biz/")) {
-                final String id = new Regex(parameter, "1tool\\.biz/(\\d+)").getMatch(0);
-                br.getPage("http://1tool.biz/2.php?id=" + id);
-                finallink = br.getRegex("onclick=\"NewWindow\\('(.*?)','").getMatch(0);
             } else if (parameter.contains("agaleradodownload.com")) {
                 final String url = new Regex(parameter, "download.*?\\?(.+)").getMatch(0);
                 if (url != null) {
@@ -124,36 +112,6 @@ public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoS
                     sb.reverse();
                     finallink = sb.toString();
                 }
-            } else if (parameter.contains("zero10.net/")) {
-                final String damnID = new Regex(parameter, "(\\d+)$").getMatch(0);
-                br.postPage("http://zero10.net/link.php?id=" + damnID, "s=1");
-                finallink = br.getRegex("onClick=.*?\\('(http:.*?)'").getMatch(0);
-            } else if (parameter.contains("official.fm/")) {
-                if (br.getRedirectLocation() != null) {
-                    br.getPage(br.getRedirectLocation());
-                }
-                final String redirect = br.getRegex(">You are being <a href=\"(http://[^<>\"]*?)\">redirected").getMatch(0);
-                if (redirect != null) {
-                    br.getPage(redirect);
-                }
-                if (br.getHttpConnection().getResponseCode() == 404) {
-                    logger.info("Link offline: " + parameter);
-                    return decryptedLinks;
-                }
-                finalfilename = br.getRegex("<meta property=\"og:title\" content=\"(.*?)\"/>").getMatch(0);
-                if (finalfilename == null) {
-                    finalfilename = br.getRegex("<title>(.*?) on Official\\.fm</title>").getMatch(0);
-                }
-                if (finalfilename != null) {
-                    finalfilename = Encoding.htmlDecode(finalfilename.trim()) + ".mp3";
-                }
-                finallink = br.getRegex("mp3_url\\&quot;:\\&quot;(http://cdn\\.official\\.fm/[^<>\"]*?)\\&quot;").getMatch(0);
-                if (finallink == null) {
-                    br.setFollowRedirects(true);
-                    br.getPage(parameter + ".xspf?ll_header=yes");
-                    finallink = br.getRegex("\"(http://cdn\\.official\\.fm/mp3s/\\d+/\\d+\\.mp3)").getMatch(0);
-                }
-                dh = true;
             } else if (parameter.contains("academicearth.org/")) {
                 if (!(br.getRedirectLocation() != null && br.getRedirectLocation().contains("users/login"))) {
                     if (br.containsHTML(">Looks like the Internet may require a little disciplinary action")) {
@@ -203,16 +161,6 @@ public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoS
                     finallink = br.getRegex("class=\"download\"><a href=\"(http://.*?)\"").getMatch(0);
                 }
                 dh = true;
-            } else if (parameter.contains("twiturm.com/")) {
-                finallink = br.getRegex("<div id=\"player\">[\r\t\n ]+<a href=\"(http://.*?)\">").getMatch(0);
-                if (finallink == null) {
-                    finallink = br.getRegex("\"(http://s\\d+\\.amazonaws\\.com/twiturm_prod/.*?)\"").getMatch(0);
-                }
-                dh = true;
-                finalfilename = br.getRegex("<title>Twiturm\\.com - (.*?)</title>").getMatch(0);
-                if (finalfilename != null) {
-                    finalfilename += ".mp3";
-                }
             } else if (parameter.contains("mp3.wp.pl/")) {
                 if (br.getRedirectLocation() != null) {
                     br.getPage(br.getRedirectLocation());
@@ -246,10 +194,6 @@ public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoS
                 if (finallink == null && this.br.containsHTML("<file></file>")) {
                     offline = true;
                 }
-            } else if (parameter.contains("filep.info/")) {
-                parameter = parameter.replace("filep.info//", "filep.info/?url=");
-                br.postPage(parameter, "abod=1");
-                finallink = br.getRegex("onclick=\"NewWindow\\(\\'(.*?)\\'").getMatch(0);
             } else if (parameter.contains("protect.myurl.in/")) {
                 finallink = br.getRegex("<iframe scrolling=\"(yes|no)\" src=\"(.*?)\"").getMatch(1);
             } else if (parameter.contains("lnk.co/")) {
@@ -290,7 +234,7 @@ public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoS
                     return decryptedLinks;
                 }
                 br.setFollowRedirects(true);
-                br.getPage(parameter);
+                getPage(parameter);
                 br.setFollowRedirects(false);
                 if (br.containsHTML(">403 Forbidden<")) {
                     logger.info("Link offline: " + parameter);
@@ -316,7 +260,7 @@ public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoS
                 } else if (click != null && click.contains("adfoc.us/")) {
                     br.getHeaders().put("Referer", parameter);
                     br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
-                    br.getPage(HTMLEntities.unhtmlentities(click));
+                    getPage(HTMLEntities.unhtmlentities(click));
                     if (br.getRedirectLocation() != null && !br.getRedirectLocation().matches("http://adfoc.us/")) {
                         finallink = br.getRedirectLocation();
                     }
@@ -352,7 +296,7 @@ public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoS
                 if (sec == null || t == null || url == null) {
                     return null;
                 }
-                String[] results = br.getRegex("(<a rel=\\d+.*?</a>)").getColumn(0);
+                String[] results = br.getRegex("<a rel=('|\"|)\\d+\\1.*?</a>").getColumn(-1);
                 if (results == null || results.length == 0) {
                     return null;
                 }
@@ -361,21 +305,22 @@ public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoS
                 final String mm = br.getRegex(",\\s*m=\\s*(\\d+)").getMatch(0);
                 final int m = mm != null ? Integer.parseInt(mm) : 10000;
                 for (String result : results) {
-                    final String id = new Regex(result, "onclick=\'go\\((\\d+)").getMatch(0);
+                    final String id = new Regex(result, "onclick=('|\"|)go\\((\\d+)").getMatch(1);
                     // continue when we can't find go value!
                     if (id == null) {
                         continue;
                     }
                     Browser br2 = br.cloneBrowser();
                     br2.getHeaders().put("Accept", "*/*");
-                    postPage(br2, url.substring(0, url.indexOf("?")) + "?s=" + id + "&t=" + t, "&id=" + id + "&s=" + ++s + "&iqs=&url=&m=" + (m + 1 + new Random().nextInt(1000)) + "&cap= &sec=" + sec + "&t=" + t);
-                    final String link = Encoding.htmlDecode(br2.getRegex("url=(.*?)$").getMatch(0));
+                    final String postURL = URLHelper.parseLocation(br.getURL(url), "video.php-link.php?s=" + id + "&t=" + t);
+                    postPage(br2, postURL, "&id=" + id + "&s=" + ++s + "&iqs=&url=&m=" + (m + 1 + new Random().nextInt(1000)) + "&captcha= &secret=" + sec + "&t=" + t);
+                    final String link = Encoding.urlDecode(br2.getRegex(".+url=(.*?)$").getMatch(0), true);
                     // continues on link failure.. not all mirrors are live.
                     if (link != null) {
                         decryptedLinks.add(createDownloadlink(link));
                     }
                     // small pause to prevent high loads
-                    Thread.sleep(500);
+                    sleep(500, param);
                 }
                 return decryptedLinks;
             } else if (parameter.contains("q32.ru/")) {
@@ -388,14 +333,6 @@ public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoS
                 finallink = br.getRegex("<iframe src=\"([^<>\"\\']+)\"").getMatch(0);
                 if (finallink != null) {
                     finallink = Encoding.deepHtmlDecode(finallink);
-                }
-            } else if (parameter.contains("dwz.cn/")) {
-                // It's a normal redirector but needs special handling, maybe
-                // because of browser bug
-                br.setFollowRedirects(true);
-                br.getPage(parameter);
-                if (!br.getURL().contains("dwz.cn/")) {
-                    finallink = br.getURL();
                 }
             } else if (parameter.contains("lezlezlez.com/")) {
                 finallink = parameter.replace("lezlezlez.com/mediaswf.php?type=vid&name=", "lezlezlez.com/xmoov.php?file=vidz/") + "&start=true";
@@ -459,29 +396,6 @@ public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoS
                         }
                     }
                 }
-            } else if (parameter.contains("basemp3.ru/")) {
-                finallink = "http://basemp3.ru/download.php?id=" + new Regex(parameter, "(\\d+)\\.html$").getMatch(0);
-                finalfilename = br.getRegex("<title>([^<>\"]*?) скачать бесплатно mp3").getMatch(0);
-                if (finalfilename == null) {
-                    finalfilename = br.getRegex("href=\"download\\.php\\?id=\\d+\" title=\"([^<>\"]*?) скачать бесплатно mp3\"").getMatch(0);
-                }
-                if (finalfilename != null) {
-                    finalfilename = Encoding.htmlDecode(finalfilename.trim()) + ".mp3";
-                }
-                dh = true;
-            } else if (parameter.contains("hflix.in/")) {
-                finallink = br.getRedirectLocation();
-                if (finallink == null) {
-                    finallink = br.getRegex("<a id=\"yourls\\-once\" href=\"(http://[^<>\"]*?)\"").getMatch(0);
-                }
-            } else if (parameter.contains("sharmota.com/")) {
-                br.setFollowRedirects(true);
-                br.getPage(parameter);
-                finalfilename = br.getRegex("<h3><b>(.*?)</b></h3>").getMatch(0);
-                if (finalfilename != null) {
-                    finalfilename = finalfilename.replaceAll("[\r\n]+", "") + ".flv";
-                }
-                finallink = "http://videos.sharmota.com/flv888/" + new Regex(parameter, "movies/\\d+/(\\d+)").getMatch(0) + ".flv";
             } else if (parameter.contains("searchonzippy.eu/")) {
                 finallink = br.getRegex("setTimeout\\(\"document\\.location\\.href=\\'(http[^<>\"]*?)\\'\"").getMatch(0);
             } else if (parameter.contains("url.fm/")) {
@@ -560,12 +474,6 @@ public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoS
                 if (br.containsHTML(">Sorry, we couldn't find the shortened URL you requested") || br.containsHTML(">Link Disabled<") || parameter.equals("http://is.gd") || parameter.equals("http://www.is.gd")) {
                     offline = true;
                 }
-            } else if (parameter.contains("lienscash.com/")) {
-                br.getPage(parameter);
-                finallink = br.getRegex("class=\"redirect\" id=\"(.*?)\"").getMatch(0);
-                if (finallink == null) {
-                    finallink = br.getRegex("id=\"redir_btn\" href=\"(https?://[^<>\"]*?)\"").getMatch(0);
-                }
             } else if (parameter.contains("linkdecode.com/") || parameter.contains("fastdecode.com/")) {
                 // linkdecode typically returns results to fastdecode. best to return back and run again incase it doesn't or ppl share
                 // fastdecode links instead.
@@ -597,23 +505,20 @@ public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoS
                 if (finallink == null) {
                     offline = true;
                 }
-            } else if (parameter.contains("solarmovie.is/")) {
-                this.br.getPage(parameter);
-                if (this.br.getHttpConnection().getResponseCode() == 404) {
-                    offline = true;
-                }
-                final String html = this.br.getRegex("<div class=\"thirdPartyEmbContainer\"(.*?)class=\"hidden\"").getMatch(0);
-                if (html != null) {
-                    finallink = new Regex(html, "(?:SRC|src)=\"(http[^<>\"]*?)\"").getMatch(0);
-                }
             } else if (parameter.contains("otrkeyfinder.com/")) {
-                finallink = br.getRegex("id=\"mirror\\-link\" href=\"(http[^<>\"]*?)\"").getMatch(0);
-                if (finallink != null) {
-                    finallink = Encoding.htmlDecode(finallink);
+                final String redirect = this.br.getRedirectLocation();
+                if (redirect != null && !redirect.contains("otrkeyfinder.com/")) {
+                    /* 2016-12-16 */
+                    finallink = redirect;
                 } else {
-                    offline = true;
+                    finallink = br.getRegex("id=\"mirror\\-link\" href=\"(http[^<>\"]*?)\"").getMatch(0);
+                    if (finallink != null) {
+                        finallink = Encoding.htmlDecode(finallink);
+                    } else {
+                        offline = true;
+                    }
                 }
-            } else if (parameter.contains("xxxporn88.com/")) {
+            } else if (parameter.contains("topporn88.net/")) {
                 finallink = this.br.getRegex("loading_player\\(\\'([^<>\"]*?)\\'").getMatch(0);
                 if (finallink == null) {
                     finallink = this.br.getRegex("source[\t\n\r ]*?:[\t\n\r ]*?\\'([^<>\"/]*?)\\',[\t\n\r ]*?redirect").getMatch(0);
@@ -649,7 +554,8 @@ public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoS
                 }
             } else if (parameter.contains("swzz.xyz/")) {
                 // cloudflare
-                getPage(parameter);
+                br.setFollowRedirects(true);
+                getPage(parameter.replaceAll("http://", "https://"));
                 if (br.containsHTML("<em>Questo Link Non è ancora attivo\\.\\.\\.riprova tra qualche istante!<em>")) {
                     logger.warning("Retry in a few minutes: " + parameter);
                     return decryptedLinks;
@@ -675,40 +581,17 @@ public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoS
             } else if (parameter.contains("nifteam.info/")) {
                 dh = true;
                 finallink = "http://download.nifteam.info/Download/Anime/" + new Regex(parameter, "\\?file=(.+)").getMatch(0);
-            } else if (parameter.contains("zonambulos.info/")) {
-                finallink = br.getRegex("[^a-zA-Z0-9_\\-]+url\\s*=\\s*\"(.*?)\"").getMatch(0);
             } else if (parameter.contains("manteb.in/")) {
                 finallink = br.getRegex("<a href=\"([^\"]+)\"[^>]*><b>Menuju Link</b>").getMatch(0);
-            } else if (parameter.contains("adyou.me/")) {
-                finallink = br.getRegex("message:\\s*\"Content from: (.*?) disallows").getMatch(0);
-                if (finallink == null) {
-                    finallink = br.getRegex("//top\\.location\\.href\\s*=\\s*\"(.*?)\";").getMatch(0);
-                    if (finallink == null) {
-                        // we can get via ajax also
-                        final String data = br.getRegex("data:\\s*(\\{.*?\\}),[\r\n]").getMatch(0);
-                        final String[] args = new Regex(data, "_args:\\s*\\{'([a-f0-9]{32})'\\s*:\\s*(\\d+)\\s*\\}").getRow(0);
-                        if (data != null) {
-                            br.getHeaders().put("Accept", "application/json, text/javascript, */*; q=0.01");
-                            br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
-                            br.getHeaders().put("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
-                            final String postarg = "_args[" + args[0] + "]=" + args[1] + "&benid=0";
-                            Browser ajax = br.cloneBrowser();
-                            ajax.postPage(br.getURL() + "/skip_timer", postarg);
-                            sleep(6000l, param);
-                            ajax = br.cloneBrowser();
-                            ajax.postPage(br.getURL() + "/skip_timer", postarg);
-                            finallink = PluginJSonUtils.getJsonValue(ajax, "url");
-                        }
-                    }
-                }
-            } else if (parameter.contains("f16f.com/")) {
+            } else if (parameter.toLowerCase().contains("f16f.com/")) {
                 finallink = br.getRegex("<a target=\"_blank\" href=\"(.*?)\" id=\"downloadlink\"").getMatch(0);
-            } else if (parameter.contains("lientelecharger.com/")) {
-                finallink = this.br.getRegex("window\\.location = \"(http[^<>\"]*?)\"").getMatch(0);
             } else if (parameter.contains("clictune.com/")) {
-                finallink = this.br.getRegex("/redirect\\.php\\?url=(http[^<>\"]+)").getMatch(0);
+                // cloudflare
+                br.setFollowRedirects(true);
+                getPage(parameter);
+                finallink = br.getRegex("redirect/\\?url=(http[^<>\"]+)\">Click here to access the link").getMatch(0);
                 if (finallink != null) {
-                    finallink = Encoding.htmlDecode(finallink);
+                    finallink = Encoding.urlDecode(finallink, true);
                 }
             } else if (parameter.contains("1short.us")) {
                 finallink = br.getRedirectLocation();
@@ -749,11 +632,16 @@ public class DecrypterForRedirectServicesWithoutDirectRedirects extends antiDDoS
     }
 
     private String getHttpMetaRefreshURL() {
-        return this.br.getRegex("http\\-equiv=\"refresh\" content=\"\\d+; url=(http[^<>\"]*?)\"").getMatch(0);
+        return br.getRegex("http-equiv=\"refresh\" content=\"\\d+; url=(http[^<>\"]*?)\"").getMatch(0);
     }
 
     /* NO OVERRIDE!! */
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
+    }
+
+    @Override
+    public SiteTemplate siteTemplateType() {
+        return SiteTemplate.NotApplicable;
     }
 }

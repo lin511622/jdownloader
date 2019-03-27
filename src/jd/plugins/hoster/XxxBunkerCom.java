@@ -13,10 +13,7 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
-
-import java.io.IOException;
 
 import jd.PluginWrapper;
 import jd.http.Browser;
@@ -31,7 +28,6 @@ import jd.plugins.PluginForHost;
 
 @HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "xxxbunker.com" }, urls = { "http://(www\\.)?xxxbunkerdecrypted\\.com/[a-z0-9_\\-]+" })
 public class XxxBunkerCom extends PluginForHost {
-
     @SuppressWarnings("deprecation")
     public XxxBunkerCom(PluginWrapper wrapper) {
         super(wrapper);
@@ -42,12 +38,10 @@ public class XxxBunkerCom extends PluginForHost {
     // Tags:
     // protocol: no https
     // other:
-
     /* Connection stuff */
     private static final boolean free_resume       = true;
-    private static final int     free_maxchunks    = 0;
+    private static final int     free_maxchunks    = 1;
     private static final int     free_maxdownloads = -1;
-
     private String               dllink            = null;
 
     @Override
@@ -62,11 +56,12 @@ public class XxxBunkerCom extends PluginForHost {
 
     @SuppressWarnings("deprecation")
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
         dllink = null;
         this.setBrowserExclusive();
+        br = new Browser();
         br.setFollowRedirects(true);
-        this.br.getHeaders().put("User-Agent", "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:38.0) Gecko/20100101 Firefox/38.0");
+        br.getHeaders().put("User-Agent", "Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.113 Safari/537.36");
         br.getPage(downloadLink.getDownloadURL());
         if (br.getHttpConnection().getResponseCode() == 404) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
@@ -88,12 +83,13 @@ public class XxxBunkerCom extends PluginForHost {
             filename = new Regex(downloadLink.getDownloadURL(), "xxxbunker\\.com/(.+)").getMatch(0);
         }
         String externID_extern = br.getRegex("postbackurl(?:=|%3D)([^<>\"\\&]*?)%26amp%3B").getMatch(0);
-        String externID = br.getRegex("player\\.swf\\?config=(http%3A%2F%2Fxxxbunker\\.com%2FplayerConfig\\.php%3F[^<>\"]*?)\"").getMatch(0);
+        String externID = br.getRegex("player\\.swf\\?config=(https?%3A%2F%2Fxxxbunker\\.com%2FplayerConfig\\.php%3F[^<>\"]*?)\"").getMatch(0);
         final String externID3 = br.getRegex("lvid=(\\d+)").getMatch(0);
         if (externID_extern == null && externID == null && externID3 == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        if (externID_extern != null) {
+        // leads to incorrect shit.
+        if (false && externID_extern != null) {
             /* E.g. http://xxxbunker.com/3568499 pornhub direct */
             externID_extern = Encoding.htmlDecode(externID_extern);
             externID_extern = Encoding.htmlDecode(externID_extern);
@@ -107,22 +103,25 @@ public class XxxBunkerCom extends PluginForHost {
                 dllink = externID;
             }
         } else {
-            br.getPage("http://xxxbunker.com/videoPlayer.php?videoid=" + externID3 + "&autoplay=true&ageconfirm=true&title=true&html5=false&hasflash=true&r=" + System.currentTimeMillis());
-            dllink = br.getRegex("\\&amp;file=(http[^<>\"]*?\\.(?:flv|mp4))").getMatch(0);
+            // html5!
+            br.getPage("https://xxxbunker.com/html5player.php?videoid=" + externID3 + "&autoplay=false&index=false");
+            dllink = br.getRegex("<source src=(\"|')(http[^<>\"]*?)\\1").getMatch(1);
         }
         if (dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        dllink = Encoding.htmlDecode(dllink);
+        dllink = Encoding.htmlOnlyDecode(dllink);
         filename = Encoding.htmlDecode(filename);
         filename = filename.trim();
         filename = encodeUnicode(filename);
         String ext = getFileNameExtensionFromString(dllink, ".mp4");
+        if (ext.equals(".php")) {
+            ext = ".mp4";
+        }
         if (!filename.endsWith(ext)) {
             filename += ext;
         }
         downloadLink.setFinalFileName(filename);
-        this.br = new Browser();
         br.getHeaders().put("Accept-Encoding", "identity");
         return AvailableStatus.TRUE;
         // // In case the link redirects to the finallink
@@ -154,7 +153,12 @@ public class XxxBunkerCom extends PluginForHost {
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception {
         requestFileInformation(downloadLink);
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, free_resume, free_maxchunks);
+        br.getHeaders().put("Accept", "*/*");
+        br.getHeaders().put("Referer", "");
+        br.setCookie(br.getURL(), "ageconfirm", "20150302");
+        br.setCookie(br.getURL(), "autostart", "1");
+        downloadLink.setProperty("ServerComaptibleForByteRangeRequest", true);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, free_resume, free_maxchunks);
         if (dl.getConnection().getContentType().contains("html")) {
             if (dl.getConnection().getResponseCode() == 403) {
                 throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 60 * 60 * 1000l);
@@ -166,7 +170,7 @@ public class XxxBunkerCom extends PluginForHost {
                 dl.getConnection().disconnect();
             } catch (final Throwable e) {
             }
-            if (this.br.containsHTML(">SITE MAINTENANCE<")) {
+            if (br.containsHTML(">SITE MAINTENANCE<")) {
                 throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 'Site maintenance'", 5 * 60 * 1000l);
             }
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);

@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
@@ -27,18 +26,19 @@ import jd.parser.Regex;
 import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
+import jd.plugins.LinkStatus;
+import jd.plugins.PluginException;
 import jd.plugins.PluginForDecrypt;
 
 @DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = {}, urls = {})
 public class FrancetelevisionsCom extends PluginForDecrypt {
-
     /**
      * Returns the annotations names array
      *
      * @return
      */
     public static String[] getAnnotationNames() {
-        return new String[] { "france2.fr", "france4.fr", "france5.fr", "franceo.fr", "francetvinfo.fr", "pluzz.francetv.fr", "francetvsport.fr", "zoom.francetv.fr", "education.francetv.fr", "ludo.fr", "zouzous.fr" };
+        return new String[] { "france.tv", "france2.fr", "france4.fr", "france5.fr", "franceo.fr", "francetvinfo.fr", "pluzz.francetv.fr", "francetvsport.fr", "zoom.francetv.fr", "education.francetv.fr", "ludo.fr", "zouzous.fr" };
     }
 
     /**
@@ -61,18 +61,43 @@ public class FrancetelevisionsCom extends PluginForDecrypt {
     }
 
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
-        ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
+        final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         List<String> videoids = new ArrayList<String>();
         final String parameter = param.toString();
         if (parameter.matches("https?://(?:www\\.)?zouzous\\.fr/videos/\\d+")) {
             /* Special case - videoid is given inside url */
             final String videoid = new Regex(parameter, "(\\d+)$").getMatch(0);
+            if (videoid == null) {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            }
             videoids.add(videoid + "@Zouzous_web");
         } else if (parameter.matches("https?://pluzz\\.francetv\\.fr/videos/[A-Za-z0-9\\-_]+,\\d+\\.html")) {
             /* Special case - videoid is given inside url */
             final String videoid = new Regex(parameter, "(\\d+)\\.html$").getMatch(0);
+            if (videoid == null) {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            }
             videoids.add(videoid + "@Pluzz");
+        } else if (parameter.matches(".+france\\.tv/.+")) {
+            br.getPage(parameter);
+            if (br.getHttpConnection().getResponseCode() == 404) {
+                decryptedLinks.add(this.createOfflinelink(parameter));
+                return decryptedLinks;
+            }
+            String videoid = br.getRegex("data\\-main\\-video=\"(.*?)\"").getMatch(0);
+            if (videoid == null) {
+                videoid = br.getRegex("videoId(?:\"|')?\\s*:\\s*'(.*?)'").getMatch(0);
+                if (videoid == null) {
+                    videoid = br.getRegex("videoId(?:\"|')?\\s*:\\s*\"(.*?)\"").getMatch(0);
+                }
+            }
+            if (videoid == null) {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            }
+            /* 2017-05-10: The 'catalogue' parameter is not required anymore or not required for these URLs --> nullify that. */
+            videoids.add(videoid + "@null");
         } else {
+            /* Old code (or all other cases) */
             br.getPage(parameter);
             if (br.getHttpConnection().getResponseCode() == 404) {
                 decryptedLinks.add(this.createOfflinelink(parameter));
@@ -88,9 +113,9 @@ public class FrancetelevisionsCom extends PluginForDecrypt {
         }
         for (final String singleid : videoids) {
             final DownloadLink dl = createDownloadlink("http://francetelevisionsdecrypted/" + singleid);
+            dl.setContentUrl(parameter);
             decryptedLinks.add(dl);
         }
-
         return decryptedLinks;
     }
 }

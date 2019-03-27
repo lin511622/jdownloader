@@ -13,10 +13,8 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 
@@ -35,9 +33,8 @@ import jd.plugins.PluginForHost;
 import org.appwork.utils.formatter.SizeFormatter;
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "amazon.com" }, urls = { "https://amazondecrypted\\.com/\\d+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "amazon.com" }, urls = { "https://amazondecrypted\\.com/\\d+" })
 public class AmazonCloud extends PluginForHost {
-
     public AmazonCloud(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -48,16 +45,14 @@ public class AmazonCloud extends PluginForHost {
     }
 
     public static final String   JSON_KIND_FILE     = "FILE";
-
     /* Connection stuff */
     private static final boolean FREE_RESUME        = true;
     private static final int     FREE_MAXCHUNKS     = 0;
     private static final int     FREE_MAXDOWNLOADS  = -1;
-
     /* Don't touch this! */
     public static int            max_items_per_page = 200;
 
-    public AvailableStatus requestFileInformationOld(final DownloadLink link) throws IOException, PluginException {
+    public AvailableStatus requestFileInformationOld(final DownloadLink link) throws Exception {
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         final String mainlink = link.getStringProperty("mainlink", null);
@@ -66,7 +61,7 @@ public class AmazonCloud extends PluginForHost {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         final String url = (mainlink != null && mainlink.contains("/gp/drive/share") ? mainlink : "https://www.amazon.com/clouddrive/share?s=" + plain_folder_id);
-        br.getPage(url);
+        getPage(br, url);
         if (br.containsHTML("=\"error_page\"") || this.br.getHttpConnection().getResponseCode() == 404) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
@@ -88,7 +83,7 @@ public class AmazonCloud extends PluginForHost {
 
     @SuppressWarnings("deprecation")
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         final AvailableStatus status;
         if (isOldType(link)) {
             status = requestFileInformationOld(link);
@@ -97,12 +92,11 @@ public class AmazonCloud extends PluginForHost {
                 /* Check if user still has VERY old links in his list --> Invalid */
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
-
             this.setBrowserExclusive();
             prepBR();
             final String plain_folder_id = link.getStringProperty("plain_folder_id", null);
             final String plain_domain = link.getStringProperty("plain_domain", null);
-            br.getPage("https://www." + plain_domain + "/drive/v1/shares/" + plain_folder_id + "?customerId=0&ContentType=JSON&asset=ALL");
+            getPage(br, "https://www." + plain_domain + "/drive/v1/shares/" + plain_folder_id + "?customerId=0&ContentType=JSON&asset=ALL");
             if (br.containsHTML("id=\"error_page\"")) {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
@@ -115,7 +109,14 @@ public class AmazonCloud extends PluginForHost {
         return status;
     }
 
-    public void handleFreeOld(final DownloadLink downloadLink) throws Exception, PluginException {
+    private static void getPage(final Browser br, final String url) throws Exception {
+        br.getPage(url);
+        if (br.getRequest().getHttpConnection().getResponseCode() == 429) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Too many Requests", 60 * 60 * 1000l);
+        }
+    }
+
+    public void handleFreeOld(final DownloadLink downloadLink) throws Exception {
         requestFileInformationOld(downloadLink);
         String dllink;
         if ("old20140922".equals(downloadLink.getStringProperty("type", null))) {
@@ -131,13 +132,13 @@ public class AmazonCloud extends PluginForHost {
             final String shareid = downloadLink.getStringProperty("plain_folder_id");
             final String getlink = "http://www." + domain + "/gp/drive/share/downloadFile.html?_=" + System.currentTimeMillis() + "&sharedId=" + Encoding.urlEncode(shareid) + "&download=TRUE&deviceType=ubid&deviceSerialNumber=" + deviceserial;
             br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
-            br.getPage(getlink);
+            getPage(br, getlink);
             dllink = br.getRegex("\"url\":\"(http[^<>\"]*?)\"").getMatch(0);
         }
         if (dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 0);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, true, 0);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -153,7 +154,6 @@ public class AmazonCloud extends PluginForHost {
         }
         requestFileInformation(link);
         String dllink = link.getStringProperty("plain_directlink", null);
-
         boolean needs_new_directlink = false;
         if (dllink == null) {
             needs_new_directlink = true;
@@ -168,8 +168,7 @@ public class AmazonCloud extends PluginForHost {
         if (needs_new_directlink) {
             dllink = refreshDirectlink(link);
         }
-
-        dl = jd.plugins.BrowserAdapter.openDownload(br, link, dllink, FREE_RESUME, FREE_MAXCHUNKS);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, link, dllink, FREE_RESUME, FREE_MAXCHUNKS);
         if (dl.getConnection().getContentType().contains("html")) {
             if (dl.getConnection().getResponseCode() == 403) {
                 throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 60 * 60 * 1000l);
@@ -185,7 +184,7 @@ public class AmazonCloud extends PluginForHost {
     }
 
     @SuppressWarnings("unchecked")
-    private String refreshDirectlink(final DownloadLink dl) throws PluginException, IOException {
+    private String refreshDirectlink(final DownloadLink dl) throws Exception {
         LinkedHashMap<String, Object> entries = null;
         ArrayList<Object> resource_data_list = null;
         final String plain_domain = dl.getStringProperty("plain_domain", null);
@@ -195,9 +194,7 @@ public class AmazonCloud extends PluginForHost {
         final String linkid_target = getLinkid(plain_folder_id, dl.getMD5Hash(), plain_name);
         String linkid_temp = null;
         String finallink = null;
-
         logger.info("Refreshing directlink");
-
         if (plain_folder_id == null) {
             /* Should never happen! */
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
@@ -227,7 +224,6 @@ public class AmazonCloud extends PluginForHost {
             } catch (final Throwable e) {
             }
         }
-
         try {
             for (final Object data_o : resource_data_list) {
                 final LinkedHashMap<String, Object> nodeInfo = (LinkedHashMap<String, Object>) data_o;
@@ -248,12 +244,10 @@ public class AmazonCloud extends PluginForHost {
             }
         } catch (final Throwable e) {
         }
-
         if (finallink == null) {
             logger.warning("Either something went terribly wrong or maybe the file we're trying to download is offline (or owner changed rights / filename / folder structure)");
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown error: Failed to refresh final downloadurl");
         }
-
         return finallink;
     }
 
@@ -287,38 +281,52 @@ public class AmazonCloud extends PluginForHost {
         return (String) entries.get("tempLink");
     }
 
-    public static void accessFolder(final Browser br, final String domain, final String plain_folder_id) throws IOException {
-        br.getPage("https://www." + domain + "/drive/v1/shares/" + plain_folder_id + "?customerId=0&resourceVersion=V2&ContentType=JSON&asset=ALL");
+    public static void accessFolder(final Browser br, final String domain, final String plain_folder_id) throws Exception {
+        getPage(br, "https://www." + domain + "/drive/v1/shares/" + plain_folder_id + "?shareId=" + plain_folder_id + "&resourceVersion=V2&ContentType=JSON&asset=ALL&_t=" + System.currentTimeMillis());
     }
 
     /* Access nodes/subfolders. Does pagination if needed (e.g. more than max_items_per_page items)! */
     @SuppressWarnings({ "unchecked", "rawtypes", "deprecation" })
-    public static ArrayList<Object> getListFromNode(final Browser br, final String domain, final String plain_folder_id, final String nodeid) throws IOException {
-        ArrayList<Object> resource_data_list_all = new ArrayList<Object>();
-        ArrayList<Object> resource_data_list_tmp = null;
-        LinkedHashMap<String, Object> entries_tmp = null;
-        int numberof_found_items = 0;
-        int offset = 0;
+    public static ArrayList<Object> getListFromNode(final Browser br, final String domain, final String plain_folder_id, final String nodeid) throws Exception {
+        final ArrayList<Object> resourcesAll = new ArrayList<Object>();
+        int offsetAll = 0;
+        int tempFound = 0;
+        int failed = 0;
         do {
-            numberof_found_items = 0;
-            br.getPage("https://www." + domain + "/drive/v1/nodes/" + nodeid + "/children?customerId=0&resourceVersion=V2&ContentType=JSON&offset=" + offset + "&limit=" + max_items_per_page + "&sort=%5B%22kind+DESC%22%2C+%22name+ASC%22%5D&tempLink=true&shareId=" + plain_folder_id);
             try {
-                entries_tmp = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
-                resource_data_list_tmp = (ArrayList) entries_tmp.get("data");
-                for (final Object fileo : resource_data_list_tmp) {
-                    resource_data_list_all.add(fileo);
-                    numberof_found_items++;
-                    offset++;
+                tempFound = 0;
+                if (offsetAll > 0) {
+                    Thread.sleep(1250);
                 }
-            } catch (final Throwable e) {
+                br.getHeaders().put("Referer", "https://www." + domain + "/");
+                getPage(br, "https://www." + domain + "/drive/v1/nodes/" + nodeid + "/children?asset=ALL&tempLink=true&limit=" + max_items_per_page + "&sort=%5B%27kind+DESC%27%2C+%27name+ASC%27%5D&searchOnFamily=false&shareId=" + plain_folder_id + "&offset=" + offsetAll + "&resourceVersion=V2&ContentType=JSON&_t=" + System.currentTimeMillis());
+                int tempOffset = 0;
+                final LinkedHashMap<String, Object> entries_tmp = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
+                final ArrayList<Object> resource_data_list_tmp = (ArrayList) entries_tmp.get("data");
+                final ArrayList<Object> tempResources = new ArrayList<Object>();
+                for (final Object fileo : resource_data_list_tmp) {
+                    tempResources.add(fileo);
+                    tempFound++;
+                    tempOffset++;
+                }
+                offsetAll += tempOffset;
+                resourcesAll.addAll(tempResources);
+            } catch (final Exception e) {
+                if (br.getHttpConnection().getResponseCode() == 429) {
+                    if (++failed > 5) {
+                        e.printStackTrace();
+                        break;
+                    }
+                    continue;
+                }
                 break;
             }
-        } while (numberof_found_items >= max_items_per_page);
-        return resource_data_list_all;
+        } while (tempFound >= max_items_per_page);
+        return resourcesAll;
     }
 
     public static boolean isOffline(final Browser br) {
-        if (br.containsHTML("\"message\":\"ShareId does not exist") || br.getHttpConnection().getResponseCode() == 404) {
+        if (br.containsHTML("\"message\":\"(ShareId does not exist|Due to)") || br.getHttpConnection().getResponseCode() == 404) {
             return true;
         }
         return false;
@@ -331,6 +339,7 @@ public class AmazonCloud extends PluginForHost {
 
     private void prepBR() {
         br.setFollowRedirects(true);
+        br.addAllowedResponseCodes(429);
         br.getHeaders().put("Accept", "application/json, text/javascript, */*; q=0.01");
     }
 
@@ -346,5 +355,4 @@ public class AmazonCloud extends PluginForHost {
     @Override
     public void resetDownloadlink(final DownloadLink link) {
     }
-
 }

@@ -13,10 +13,10 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.File;
+import java.util.Map;
 
 import jd.PluginWrapper;
 import jd.config.ConfigContainer;
@@ -25,6 +25,7 @@ import jd.controlling.AccountController;
 import jd.http.Browser;
 import jd.http.Cookies;
 import jd.http.URLConnectionAdapter;
+import jd.http.requests.GetRequest;
 import jd.nutils.encoding.Encoding;
 import jd.parser.html.Form;
 import jd.plugins.Account;
@@ -38,11 +39,14 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.SiteType.SiteTemplate;
 
+import org.appwork.storage.JSonStorage;
+import org.appwork.storage.TypeRef;
+import org.appwork.utils.StringUtils;
+import org.appwork.utils.formatter.TimeFormatter;
 import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "realitykings.com" }, urls = { "https?://(?:new\\.)?members\\.realitykings\\.com/video/download/\\d+/[A-Za-z0-9\\-_]+/|http://realitykingsdecrypted.+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "realitykings.com" }, urls = { "https?://(?:new\\.)?members\\.realitykings\\.com/video/download/\\d+/[A-Za-z0-9\\-_]+/|realitykingsdecrypted://.+" })
 public class RealityKingsCom extends PluginForHost {
-
     public RealityKingsCom(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium("http://www.realitykings.com/tour/join/");
@@ -55,26 +59,24 @@ public class RealityKingsCom extends PluginForHost {
     }
 
     /* Connection stuff */
-    private static final boolean FREE_RESUME                  = false;
-    private static final int     FREE_MAXCHUNKS               = 1;
-    private static final int     FREE_MAXDOWNLOADS            = 1;
-    private static final boolean ACCOUNT_PREMIUM_RESUME       = true;
-    private static final int     ACCOUNT_PREMIUM_MAXCHUNKS    = 0;
-    private static final int     ACCOUNT_PREMIUM_MAXDOWNLOADS = 20;
-
-    private final String         type_premium_pic             = ".+\\.jpg.*?";
-
-    public static final String   html_loggedin                = "/member/profile/";
-
-    private String               dllink                       = null;
-    private boolean              server_issues                = false;
+    private static final boolean FREE_RESUME          = false;
+    private static final int     FREE_MAXCHUNKS       = 1;
+    private static final int     FREE_MAXDOWNLOADS    = 1;
+    private static final boolean ACCOUNT_RESUME       = true;
+    private static final int     ACCOUNT_MAXCHUNKS    = 0;
+    private static final int     ACCOUNT_MAXDOWNLOADS = 20;
+    private final String         type_premium_pic     = ".+\\.jpg.*?";
+    public static final String   html_loggedin        = "/member/profile/";
+    private String               dllink               = null;
+    private boolean              server_issues        = false;
 
     public static Browser prepBR(final Browser br) {
+        br.setFollowRedirects(true);
         return jd.plugins.hoster.BrazzersCom.pornportalPrepBR(br, jd.plugins.decrypter.RealityKingsCom.DOMAIN_PREFIX_PREMIUM + jd.plugins.decrypter.RealityKingsCom.DOMAIN_BASE);
     }
 
     public void correctDownloadLink(final DownloadLink link) {
-        link.setUrlDownload(link.getDownloadURL().replaceAll("http://realitykingsdecrypted", "http://"));
+        link.setUrlDownload(link.getDownloadURL().replaceAll("realitykingsdecrypted://", "http://"));
     }
 
     @SuppressWarnings("deprecation")
@@ -85,13 +87,16 @@ public class RealityKingsCom extends PluginForHost {
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         final Account aa = AccountController.getInstance().getValidAccount(this);
-        if (aa == null) {
+        if (aa == null && !link.getBooleanProperty("free_downloadable", false)) {
             link.getLinkStatus().setStatusText("Cannot check links without valid premium account");
             return AvailableStatus.UNCHECKABLE;
         }
-        this.login(this.br, aa, false);
+        if (aa != null) {
+            /* Login whenever possible */
+            this.login(this.br, aa, false);
+        }
         dllink = link.getDownloadURL();
-        final String fid = link.getStringProperty("fid", null);
+        final String fid = getFID(link);
         URLConnectionAdapter con = null;
         try {
             con = br.openHeadConnection(dllink);
@@ -120,7 +125,6 @@ public class RealityKingsCom extends PluginForHost {
                     if (dllink == null) {
                         throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                     }
-
                     /* ... new URL should work! */
                     con = br.openHeadConnection(dllink);
                     if (!con.getContentType().contains("html")) {
@@ -151,15 +155,44 @@ public class RealityKingsCom extends PluginForHost {
         doFree(downloadLink, FREE_RESUME, FREE_MAXCHUNKS, "free_directlink");
     }
 
+    private String getFID(final DownloadLink dl) {
+        return dl.getStringProperty("fid", null);
+    }
+
+    private boolean isFreeDownloadable(final DownloadLink dl) {
+        return dl.getBooleanProperty("free_downloadable", false);
+    }
+
     private void doFree(final DownloadLink downloadLink, final boolean resumable, final int maxchunks, final String directlinkproperty) throws Exception, PluginException {
-        try {
+        if (!isFreeDownloadable(downloadLink)) {
             throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
-        } catch (final Throwable e) {
-            if (e instanceof PluginException) {
-                throw (PluginException) e;
-            }
+        } else if (server_issues) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown server error", 10 * 60 * 1000l);
+        } else if (dllink == null) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        throw new PluginException(LinkStatus.ERROR_FATAL, "This file can only be downloaded by premium users");
+        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, ACCOUNT_RESUME, ACCOUNT_MAXCHUNKS);
+        if (dl.getConnection().getContentType().contains("html")) {
+            if (dl.getConnection().getResponseCode() == 403) {
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 60 * 60 * 1000l);
+            } else if (dl.getConnection().getResponseCode() == 404) {
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 404", 60 * 60 * 1000l);
+            }
+            logger.warning("The final dllink seems not to be a file!");
+            br.followConnection();
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
+        downloadLink.setProperty("free_directlink", dllink);
+        dl.startDownload();
+    }
+
+    @Override
+    public String buildExternalDownloadURL(final DownloadLink downloadLink, final PluginForHost buildForThisPlugin) {
+        if (!StringUtils.equals(this.getHost(), buildForThisPlugin.getHost()) && jd.plugins.decrypter.RealityKingsCom.isVideoURL(downloadLink.getDownloadURL())) {
+            return jd.plugins.decrypter.RealityKingsCom.getVideoUrlFree(this.getFID(downloadLink));
+        } else {
+            return super.buildExternalDownloadURL(downloadLink, buildForThisPlugin);
+        }
     }
 
     @Override
@@ -167,7 +200,8 @@ public class RealityKingsCom extends PluginForHost {
         return FREE_MAXDOWNLOADS;
     }
 
-    private static Object LOCK = new Object();
+    private static Object LOCK          = new Object();
+    private final String  MEMBER_DOMAIN = "MEMBER_DOMAIN";
 
     public void login(Browser br, final Account account, final boolean force) throws Exception {
         synchronized (LOCK) {
@@ -181,16 +215,28 @@ public class RealityKingsCom extends PluginForHost {
                      * when the user logs in via browser.
                      */
                     br.setCookies(account.getHoster(), cookies);
-                    br.getPage(jd.plugins.decrypter.RealityKingsCom.getProtocol() + jd.plugins.decrypter.RealityKingsCom.DOMAIN_PREFIX_PREMIUM + account.getHoster() + "/");
-                    if (br.containsHTML(html_loggedin)) {
+                    if (StringUtils.containsIgnoreCase(account.getStringProperty(MEMBER_DOMAIN, null), "members.")) {
+                        br.getPage("https://members.realitykings.com/");
+                    } else {
+                        br.getPage("https://site-ma.realitykings.com");
+                    }
+                    if (StringUtils.containsIgnoreCase(br.getURL(), "/access/login")) {
+                        logger.info("Cookie login failed --> Performing full login");
+                        br = prepBR(new Browser());
+                        account.clearCookies("");
+                    } else {
+                        account.saveCookies(br.getCookies(account.getHoster()), "");
                         logger.info("Cookie login successful");
                         return;
                     }
-                    logger.info("Cookie login failed --> Performing full login");
-                    br = prepBR(new Browser());
                 }
                 br.getPage(jd.plugins.decrypter.RealityKingsCom.getProtocol() + jd.plugins.decrypter.RealityKingsCom.DOMAIN_PREFIX_PREMIUM + account.getHoster() + "/access/login/");
-                String postdata = "rememberme=on&username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass());
+                Form loginForm = br.getFormbyActionRegex("/access/submit");
+                if (loginForm == null) {
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                }
+                loginForm.put("username", Encoding.urlEncode(account.getUser()));
+                loginForm.put("password", Encoding.urlEncode(account.getPass()));
                 if (br.containsHTML("api\\.recaptcha\\.net|google\\.com/recaptcha/api/")) {
                     final Recaptcha rc = new Recaptcha(br, this);
                     rc.findID();
@@ -198,15 +244,32 @@ public class RealityKingsCom extends PluginForHost {
                     final File cf = rc.downloadCaptcha(getLocalCaptchaFile());
                     final DownloadLink dummyLink = new DownloadLink(this, "Account", account.getHoster(), jd.plugins.decrypter.RealityKingsCom.getProtocol() + jd.plugins.decrypter.RealityKingsCom.DOMAIN_PREFIX_PREMIUM + account.getHoster() + "/", true);
                     final String code = getCaptchaCode("recaptcha", cf, dummyLink);
-                    postdata += "&recaptcha_challenge_field=" + Encoding.urlEncode(rc.getChallenge()) + "&recaptcha_response_field=" + Encoding.urlEncode(code);
+                    loginForm.put("recaptcha_challenge_field", Encoding.urlEncode(rc.getChallenge()));
+                    loginForm.put("ecaptcha_response_field", Encoding.urlEncode(code));
                 }
-                br.postPage(jd.plugins.decrypter.RealityKingsCom.getProtocol() + jd.plugins.decrypter.RealityKingsCom.DOMAIN_PREFIX_PREMIUM + account.getHoster() + "/access/submit/", postdata);
-                final Form continueform = br.getFormbyKey("response");
+                br.submitForm(loginForm);
+                final String redirect_http = br.getRedirectLocation();
+                if (redirect_http != null) {
+                    br.getPage(redirect_http);
+                }
+                Form continueform = br.getFormbyKey("response");
                 if (continueform != null) {
                     /* Redirect from probiller.com to main website --> Login complete */
                     br.submitForm(continueform);
+                    continueform = br.getFormbyKey("response");
+                    if (continueform != null) {
+                        /* Redirect from site-ma.realitykings.com.com to main website --> Login complete */
+                        br.submitForm(continueform);
+                    }
                 }
-                if (!br.containsHTML(html_loggedin)) {
+                if (br.getURL().matches("^https?://members\\..+")) {
+                    account.setProperty(MEMBER_DOMAIN, br._getURL().getHost());
+                    br.getPage("https://members.realitykings.com/");
+                } else {
+                    account.setProperty(MEMBER_DOMAIN, br._getURL().getHost());
+                    br.getPage("https://site-ma.realitykings.com");
+                }
+                if (StringUtils.containsIgnoreCase(br.getURL(), "/access/login")) {
                     if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername,Passwort und/oder login Captcha!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     } else {
@@ -215,7 +278,85 @@ public class RealityKingsCom extends PluginForHost {
                 }
                 account.saveCookies(br.getCookies(account.getHoster()), "");
             } catch (final PluginException e) {
-                account.clearCookies("");
+                if (e.getLinkStatus() == LinkStatus.ERROR_PREMIUM) {
+                    account.clearCookies("");
+                    account.removeProperty(MEMBER_DOMAIN);
+                }
+                throw e;
+            }
+        }
+    }
+
+    private AccountInfo fetchAccountInfoMembers(final Account account) throws Exception {
+        final AccountInfo ai = new AccountInfo();
+        br.getPage("/member/profile/");
+        final boolean isPremium = br.containsHTML("<dt>Membership type:</dt>\\s*?<dd>Paying</dd>");
+        if (!isPremium) {
+            /*
+             * 2017-02-28: Added free account support. Advantages: View trailers (also possible without account), view picture galleries
+             * (only possible via free/premium account, free is limited to max 99 viewable pictures!)
+             */
+            account.setType(AccountType.FREE);
+            ai.setStatus("Free Account");
+        } else {
+            final String days_remaining = br.getRegex("Remaining membership:</dt>\\s*?<dd>(\\d+) days</dd>").getMatch(0);
+            if (days_remaining != null) {
+                /* 2018-03-09: Expiredate might not always be available */
+                ai.setValidUntil(System.currentTimeMillis() + Long.parseLong(days_remaining) * 24 * 60 * 60 * 1000, br);
+            }
+            account.setType(AccountType.PREMIUM);
+            ai.setStatus("Premium Account");
+        }
+        account.setMaxSimultanDownloads(ACCOUNT_MAXDOWNLOADS);
+        account.setConcurrentUsePossible(true);
+        ai.setUnlimitedTraffic();
+        account.setValid(true);
+        return ai;
+    }
+
+    private AccountInfo fetchAccountInfoSiteMa(final Account account) throws Exception {
+        synchronized (account) {
+            try {
+                final AccountInfo ai = new AccountInfo();
+                final GetRequest get = br.createGetRequest("https://site-api.realitykings.com/v1/self");
+                get.getHeaders().put("Authorization", br.getCookie(getHost(), "access_token_ma"));
+                get.getHeaders().put("Instance", br.getCookie(getHost(), "instance_token"));
+                get.getHeaders().put("Origin", "https://site-ma.realitykings.com");
+                br.getPage(get);
+                if (br.getRequest().getHttpConnection().getResponseCode() == 401) {
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
+                }
+                final Map<String, Object> map = JSonStorage.restoreFromString(br.toString(), TypeRef.HASHMAP);
+                final Boolean isExpired = (Boolean) map.get("isExpired");
+                final Boolean isTrial = (Boolean) map.get("isTrial");
+                if (Boolean.TRUE.equals(isTrial) || Boolean.TRUE.equals(isExpired)) {
+                    /*
+                     * 2017-02-28: Added free account support. Advantages: View trailers (also possible without account), view picture
+                     * galleries (only possible via free/premium account, free is limited to max 99 viewable pictures!)
+                     */
+                    account.setType(AccountType.FREE);
+                    ai.setStatus("Free Account");
+                } else {
+                    final String expiryDate = (String) map.get("expiryDate");
+                    if (expiryDate != null) {
+                        final long expireTimestamp = TimeFormatter.getMilliSeconds(expiryDate, "yyyy'-'MM'-'dd'T'HH':'mm':'ss", null);
+                        if (expireTimestamp > 0) {
+                            ai.setValidUntil(expireTimestamp, br);
+                        }
+                    }
+                    account.setType(AccountType.PREMIUM);
+                    ai.setStatus("Premium Account");
+                }
+                account.setMaxSimultanDownloads(ACCOUNT_MAXDOWNLOADS);
+                account.setConcurrentUsePossible(true);
+                ai.setUnlimitedTraffic();
+                account.setValid(true);
+                return ai;
+            } catch (PluginException e) {
+                if (e.getLinkStatus() == LinkStatus.ERROR_PREMIUM) {
+                    account.clearCookies("");
+                    account.removeProperty(MEMBER_DOMAIN);
+                }
                 throw e;
             }
         }
@@ -223,20 +364,23 @@ public class RealityKingsCom extends PluginForHost {
 
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
-        final AccountInfo ai = new AccountInfo();
-        try {
+        synchronized (account) {
             login(this.br, account, true);
-        } catch (PluginException e) {
-            account.setValid(false);
-            throw e;
+            if (StringUtils.containsIgnoreCase(account.getStringProperty(MEMBER_DOMAIN, null), "members.")) {
+                return fetchAccountInfoMembers(account);
+            } else {
+                try {
+                    return fetchAccountInfoSiteMa(account);
+                } catch (final PluginException e) {
+                    if (e.getLinkStatus() == LinkStatus.ERROR_PREMIUM) {
+                        login(this.br, account, true);
+                        return fetchAccountInfoSiteMa(account);
+                    } else {
+                        throw e;
+                    }
+                }
+            }
         }
-        ai.setUnlimitedTraffic();
-        account.setType(AccountType.PREMIUM);
-        account.setMaxSimultanDownloads(ACCOUNT_PREMIUM_MAXDOWNLOADS);
-        account.setConcurrentUsePossible(true);
-        ai.setStatus("Premium Account");
-        account.setValid(true);
-        return ai;
     }
 
     @Override
@@ -247,14 +391,42 @@ public class RealityKingsCom extends PluginForHost {
         } else if (dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, link, dllink, ACCOUNT_PREMIUM_RESUME, ACCOUNT_PREMIUM_MAXCHUNKS);
+        dl = jd.plugins.BrowserAdapter.openDownload(br, link, dllink, ACCOUNT_RESUME, ACCOUNT_MAXCHUNKS);
         if (dl.getConnection().getContentType().contains("html")) {
+            if (dl.getConnection().getResponseCode() == 403) {
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 60 * 60 * 1000l);
+            } else if (dl.getConnection().getResponseCode() == 404) {
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 404", 60 * 60 * 1000l);
+            }
             logger.warning("The final dllink seems not to be a file!");
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         link.setProperty("premium_directlink", dllink);
         dl.startDownload();
+    }
+
+    @Override
+    public boolean canHandle(final DownloadLink downloadLink, final Account account) throws Exception {
+        /* TODO */
+        return account != null || true;
+    }
+
+    public boolean allowHandle(final DownloadLink downloadLink, final PluginForHost plugin) {
+        final boolean is_this_plugin = downloadLink.getHost().equalsIgnoreCase(plugin.getHost());
+        if (is_this_plugin) {
+            /* The original plugin is always allowed to download. */
+            return true;
+        } else if (!downloadLink.isEnabled() && "".equals(downloadLink.getPluginPatternMatcher())) {
+            /*
+             * setMultiHostSupport uses a dummy DownloadLink, with isEnabled == false. we must set to true for the host to be added to the
+             * supported host array.
+             */
+            return true;
+        } else {
+            /* Multihosts can only download 'trailer' URLs */
+            return jd.plugins.decrypter.RealityKingsCom.isVideoURL(downloadLink.getDownloadURL());
+        }
     }
 
     @Override
@@ -274,7 +446,7 @@ public class RealityKingsCom extends PluginForHost {
 
     @Override
     public int getMaxSimultanPremiumDownloadNum() {
-        return ACCOUNT_PREMIUM_MAXDOWNLOADS;
+        return ACCOUNT_MAXDOWNLOADS;
     }
 
     @Override
@@ -289,5 +461,4 @@ public class RealityKingsCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

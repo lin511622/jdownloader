@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.File;
@@ -25,6 +24,12 @@ import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
+
+import org.appwork.utils.formatter.SizeFormatter;
+import org.appwork.utils.formatter.TimeFormatter;
+import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+import org.jdownloader.plugins.components.antiDDoSForHost;
 
 import jd.PluginWrapper;
 import jd.config.Property;
@@ -44,34 +49,24 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.Plugin;
 import jd.plugins.PluginException;
-import jd.plugins.PluginForHost;
 import jd.plugins.components.SiteType.SiteTemplate;
 import jd.plugins.components.UserAgents;
 import jd.utils.locale.JDL;
 
-import org.appwork.utils.formatter.SizeFormatter;
-import org.appwork.utils.formatter.TimeFormatter;
-import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "filescdn.com" }, urls = { "https?://(www\\.)?filescdn\\.com/(?:embed\\-)?[a-z0-9]{12}" })
-public class FilescdnCom extends PluginForHost {
-
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "filescdn.com" }, urls = { "https?://(www\\.)?filescdn\\.(com|net)/(?:embed\\-)?[a-z0-9]{12}" })
+public class FilescdnCom extends antiDDoSForHost {
     /* Some HTML code to identify different (error) states */
     private static final String            HTML_PASSWORDPROTECTED          = "<br><b>Passwor(d|t):</b> <input";
     private static final String            HTML_MAINTENANCE_MODE           = ">This server is in maintenance mode";
-
     /* Here comes our XFS-configuration */
     /* primary website url, take note of redirects */
-    private static final String            COOKIE_HOST                     = "http://filescdn.com";
+    private static final String            COOKIE_HOST                     = "https://filescdn.net";
     private static final String            NICE_HOST                       = COOKIE_HOST.replaceAll("(https://|http://)", "");
     private static final String            NICE_HOSTproperty               = COOKIE_HOST.replaceAll("(https://|http://|\\.|\\-)", "");
     /* domain names used within download links */
-    private static final String            DOMAINS                         = "(filescdn\\.com)";
-
+    private static final String            DOMAINS                         = "(filescdn\\.com|filescdn\\.net)";
     /* Errormessages inside URLs */
     private static final String            URL_ERROR_PREMIUMONLY           = "/?op=login&redirect=";
-
     /* All kinds of XFS-plugin-configuration settings - be sure to configure this correctly when developing new XFS plugins! */
     /*
      * If activated, filename can be null - fuid will be used instead then. Also the code will check for imagehosts-continue-POST-forms and
@@ -84,40 +79,34 @@ public class FilescdnCom extends PluginForHost {
     private static final boolean           VIDEOHOSTER_2                   = false;
     /* Enable this for imagehosts */
     private static final boolean           IMAGEHOSTER                     = false;
-
     private static final boolean           SUPPORTS_HTTPS                  = true;
     private static final boolean           SUPPORTS_HTTPS_FORCED           = false;
     private static final boolean           SUPPORTS_AVAILABLECHECK_ALT     = true;
     private static final boolean           SUPPORTS_AVAILABLECHECK_ABUSE   = true;
     private static final boolean           ENABLE_RANDOM_UA                = false;
     private static final boolean           ENABLE_HTML_FILESIZE_CHECK      = true;
-
     /* Waittime stuff */
     private static final boolean           WAITFORCED                      = false;
     private static final int               WAITSECONDSMIN                  = 3;
     private static final int               WAITSECONDSMAX                  = 100;
     private static final int               WAITSECONDSFORCED               = 5;
-
     /* Supported linktypes */
     private static final String            TYPE_EMBED                      = "https?://[A-Za-z0-9\\-\\.]+/embed\\-[a-z0-9]{12}";
     private static final String            TYPE_NORMAL                     = "https?://[A-Za-z0-9\\-\\.]+/[a-z0-9]{12}";
-
     /* Texts displaed to the user in some errorcases */
     private static final String            USERTEXT_ALLWAIT_SHORT          = "Waiting till new downloads can be started";
     private static final String            USERTEXT_MAINTENANCE            = "This server is under maintenance";
     private static final String            USERTEXT_PREMIUMONLY_LINKCHECK  = "Only downloadable via premium or registered";
-
     /* Properties */
     private static final String            PROPERTY_DLLINK_FREE            = "freelink";
     private static final String            PROPERTY_DLLINK_ACCOUNT_FREE    = "freelink2";
     private static final String            PROPERTY_DLLINK_ACCOUNT_PREMIUM = "premlink";
     private static final String            PROPERTY_PASS                   = "pass";
-
     /* Used variables */
     private String                         correctedBR                     = "";
+    private String                         dllink                          = null;
     private String                         fuid                            = null;
     private String                         passCode                        = null;
-
     private static AtomicReference<String> agent                           = new AtomicReference<String>(null);
     /* note: CAN NOT be negative or zero! (ie. -1 or 0) Otherwise math sections fail. .:. use [1-20] */
     private static AtomicInteger           totalMaxSimultanFreeDownload    = new AtomicInteger(1);
@@ -127,7 +116,7 @@ public class FilescdnCom extends PluginForHost {
 
     /**
      * DEV NOTES XfileSharingProBasic Version 2.7.1.9<br />
-     * mods: requestFileInformation[Offline RegEx]<br />
+     * mods: requestFileInformation[Offline RegEx], https://svn.jdownloader.org/issues/86084<br />
      * limit-info: premium untested, set FREE account limits<br />
      * General maintenance mode information: If an XFS website is in FULL maintenance mode (e.g. not only one url is in maintenance mode but
      * ALL) it is usually impossible to get any filename/filesize/status information!<br />
@@ -135,7 +124,6 @@ public class FilescdnCom extends PluginForHost {
      * captchatype: null<br />
      * other:<br />
      */
-
     @SuppressWarnings({ "deprecation", "unused" })
     @Override
     public void correctDownloadLink(final DownloadLink link) {
@@ -176,13 +164,31 @@ public class FilescdnCom extends PluginForHost {
         correctDownloadLink(link);
         prepBrowser(this.br);
         setFUID(link);
+        URLConnectionAdapter con = null;
+        try {
+            con = br.openHeadConnection(link.getDownloadURL());
+            if (con.getContentType().contains("html")) {
+                con.disconnect();
+            } else if (con.getResponseCode() == 404) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            } else if (con.isOK() && (con.getLongContentLength() > 0 || con.isContentDisposition())) {
+                link.setFinalFileName(getFileNameFromHeader(con));
+                link.setDownloadSize(con.getLongContentLength());
+                dllink = link.getDownloadURL();
+                return AvailableStatus.TRUE;
+            } else {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            }
+        } finally {
+            if (con != null) {
+                con.disconnect();
+            }
+        }
         getPage(link.getDownloadURL());
         if (new Regex(correctedBR, "(No such file|>File Not Found<|>The file was removed by|Reason for deletion:\n|File Not Found|>The file expired|The file you are trying to download is no longer|The file has been removed because of)").matches()) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-
         altbr = this.br.cloneBrowser();
-
         if (new Regex(correctedBR, HTML_MAINTENANCE_MODE).matches() || this.br.getHttpConnection().getResponseCode() == 404) {
             if (SUPPORTS_AVAILABLECHECK_ABUSE) {
                 fileInfo[0] = this.getFnameViaAbuseLink(altbr, link);
@@ -225,9 +231,7 @@ public class FilescdnCom extends PluginForHost {
             logger.warning("Alternative linkcheck failed!");
             return AvailableStatus.UNCHECKABLE;
         }
-
         scanInfo(fileInfo);
-
         /* Filename abbreviated over x chars long */
         if (!inValidate(fileInfo[0]) && fileInfo[0].endsWith("&#133;") && SUPPORTS_AVAILABLECHECK_ABUSE) {
             logger.warning("filename length is larrrge");
@@ -235,6 +239,9 @@ public class FilescdnCom extends PluginForHost {
         } else if (inValidate(fileInfo[0]) && SUPPORTS_AVAILABLECHECK_ABUSE) {
             logger.info("Failed to find filename, trying getFnameViaAbuseLink");
             fileInfo[0] = this.getFnameViaAbuseLink(altbr, link);
+            if (br.containsHTML(">No such file<")) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
         }
         if (inValidate(fileInfo[0]) && IMAGEHOSTER) {
             /* Imagehosts often do not show any filenames, at least not on the first page plus they often have their abuse-url disabled. */
@@ -270,14 +277,13 @@ public class FilescdnCom extends PluginForHost {
     private String[] scanInfo(final String[] fileInfo) {
         final String sharebox0 = "copy\\(this\\);.+>(.+) - ([\\d\\.]+ (?:B|KB|MB|GB))</a></textarea>";
         final String sharebox1 = "copy\\(this\\);.*?\\](.+) - ([\\d\\.]+ (?:B|KB|MB|GB))\\[/URL\\]";
-
         /* standard traits from base page */
         if (inValidate(fileInfo[0])) {
             fileInfo[0] = new Regex(correctedBR, "You have requested.*?https?://(www\\.)?" + DOMAINS + "/" + fuid + "/(.*?)</font>").getMatch(2);
             if (inValidate(fileInfo[0])) {
                 fileInfo[0] = new Regex(correctedBR, "fname\"( type=\"hidden\")? value=\"(.*?)\"").getMatch(1);
                 if (inValidate(fileInfo[0])) {
-                    fileInfo[0] = new Regex(correctedBR, "<h6[^>]*><i [^>]*></i>\\s*(.*?)\\s*</h6>").getMatch(0);
+                    fileInfo[0] = new Regex(correctedBR, "<h6[^>]*><i [^>]*></i>\\s*(.*?)\\s*<").getMatch(0);
                     /* traits from download1 page below */
                     if (inValidate(fileInfo[0])) {
                         fileInfo[0] = new Regex(correctedBR, "Filename:? ?(<[^>]+> ?)+?([^<>\"\\']+)").getMatch(1);
@@ -370,7 +376,9 @@ public class FilescdnCom extends PluginForHost {
         br.setFollowRedirects(false);
         passCode = downloadLink.getStringProperty(PROPERTY_PASS);
         /* 1, bring up saved final links */
-        String dllink = checkDirectLink(downloadLink, directlinkproperty);
+        if (dllink == null) {
+            dllink = checkDirectLink(downloadLink, directlinkproperty);
+        }
         /* 2, check for streaming/direct links on the first page */
         if (dllink == null) {
             dllink = getDllink();
@@ -556,7 +564,6 @@ public class FilescdnCom extends PluginForHost {
                     skipWaittime = true;
                 } else if (br.containsHTML("solvemedia\\.com/papi/")) {
                     logger.info("Detected captcha method \"solvemedia\" for this host");
-
                     final org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia sm = new org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia(br);
                     File cf = null;
                     try {
@@ -716,14 +723,11 @@ public class FilescdnCom extends PluginForHost {
     private void correctBR() throws NumberFormatException, PluginException {
         correctedBR = br.toString();
         ArrayList<String> regexStuff = new ArrayList<String>();
-
         // remove custom rules first!!! As html can change because of generic cleanup rules.
-
         /* generic cleanup */
         regexStuff.add("<\\!(\\-\\-.*?\\-\\-)>");
         regexStuff.add("(display: ?none;\">.*?</div>)");
         regexStuff.add("(visibility:hidden>.*?<)");
-
         for (String aRegex : regexStuff) {
             String results[] = new Regex(correctedBR, aRegex).getColumn(0);
             if (results != null) {
@@ -781,26 +785,21 @@ public class FilescdnCom extends PluginForHost {
 
     private String decodeDownloadLink(final String s) {
         String decoded = null;
-
         try {
             Regex params = new Regex(s, "\\'(.*?[^\\\\])\\',(\\d+),(\\d+),\\'(.*?)\\'");
-
             String p = params.getMatch(0).replaceAll("\\\\", "");
             int a = Integer.parseInt(params.getMatch(1));
             int c = Integer.parseInt(params.getMatch(2));
             String[] k = params.getMatch(3).split("\\|");
-
             while (c != 0) {
                 c--;
                 if (k[c].length() != 0) {
                     p = p.replaceAll("\\b" + Integer.toString(c, a) + "\\b", k[c]);
                 }
             }
-
             decoded = p;
         } catch (Exception e) {
         }
-
         String finallink = null;
         if (decoded != null) {
             /* Open regex is possible because in the unpacked JS there are usually only 1 links */
@@ -809,34 +808,34 @@ public class FilescdnCom extends PluginForHost {
         return finallink;
     }
 
-    private void getPage(final String page) throws Exception {
+    public void getPage(final String page) throws Exception {
         getPage(br, page, true);
     }
 
     private void getPage(final Browser br, final String page, final boolean correctBr) throws Exception {
-        br.getPage(page);
+        super.getPage(page);
         if (correctBr) {
             correctBR();
         }
     }
 
-    private void postPage(final String page, final String postdata) throws Exception {
+    public void postPage(final String page, final String postdata) throws Exception {
         postPage(br, page, postdata, true);
     }
 
     private void postPage(final Browser br, final String page, final String postdata, final boolean correctBr) throws Exception {
-        br.postPage(page, postdata);
+        super.postPage(page, postdata);
         if (correctBr) {
             correctBR();
         }
     }
 
-    private void submitForm(final Form form) throws Exception {
+    public void submitForm(final Form form) throws Exception {
         submitForm(br, form, true);
     }
 
     private void submitForm(final Browser br, final Form form, final boolean correctBr) throws Exception {
-        br.submitForm(form);
+        super.submitForm(form);
         if (correctBr) {
             correctBR();
         }
@@ -874,29 +873,12 @@ public class FilescdnCom extends PluginForHost {
             }
             wait = i;
         }
-
         wait -= passedTime;
         if (wait > 0) {
             logger.info("Waiting waittime: " + wait);
             sleep(wait * 1000l, downloadLink);
         } else {
             logger.info("Found no waittime");
-        }
-    }
-
-    /**
-     * Validates string to series of conditions, null, whitespace, or "". This saves effort factor within if/for/while statements
-     *
-     * @param s
-     *            Imported String to match against.
-     * @return <b>true</b> on valid rule match. <b>false</b> on invalid rule match.
-     * @author raztoki
-     */
-    private boolean inValidate(final String s) {
-        if (s == null || s != null && (s.matches("[\r\n\t ]+") || s.equals(""))) {
-            return true;
-        } else {
-            return false;
         }
     }
 
@@ -1185,7 +1167,7 @@ public class FilescdnCom extends PluginForHost {
                 prepBrowser(br);
                 final Cookies cookies = account.loadCookies("");
                 if (cookies != null && !force) {
-                    this.br.setCookies(this.getHost(), cookies);
+                    this.br.setCookies(COOKIE_HOST, cookies);
                     return;
                 }
                 br.setFollowRedirects(true);
@@ -1220,7 +1202,7 @@ public class FilescdnCom extends PluginForHost {
                 } else {
                     account.setType(AccountType.PREMIUM);
                 }
-                account.saveCookies(this.br.getCookies(this.getHost()), "");
+                account.saveCookies(this.br.getCookies(COOKIE_HOST), "");
             } catch (final PluginException e) {
                 account.clearCookies("");
                 throw e;
@@ -1238,7 +1220,9 @@ public class FilescdnCom extends PluginForHost {
             requestFileInformation(downloadLink);
             doFree(downloadLink, true, -2, PROPERTY_DLLINK_ACCOUNT_FREE);
         } else {
-            String dllink = checkDirectLink(downloadLink, PROPERTY_DLLINK_ACCOUNT_PREMIUM);
+            if (dllink == null) {
+                dllink = checkDirectLink(downloadLink, PROPERTY_DLLINK_ACCOUNT_PREMIUM);
+            }
             if (dllink == null) {
                 br.setFollowRedirects(false);
                 getPage(downloadLink.getDownloadURL());
@@ -1289,5 +1273,4 @@ public class FilescdnCom extends PluginForHost {
     public SiteTemplate siteTemplateType() {
         return SiteTemplate.SibSoft_XFileShare;
     }
-
 }

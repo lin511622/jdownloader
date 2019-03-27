@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -29,6 +28,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import javax.script.Invocable;
 import javax.script.ScriptEngine;
 import javax.script.ScriptEngineManager;
+
+import org.appwork.storage.TypeRef;
+import org.appwork.utils.formatter.SizeFormatter;
+import org.appwork.utils.formatter.TimeFormatter;
 
 import jd.PluginWrapper;
 import jd.http.Browser;
@@ -52,18 +55,14 @@ import jd.plugins.PluginForHost;
 import jd.plugins.components.UserAgents;
 import jd.plugins.components.UserAgents.BrowserName;
 
-import org.appwork.storage.TypeRef;
-import org.appwork.utils.formatter.SizeFormatter;
-import org.appwork.utils.formatter.TimeFormatter;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "yunfile.com" }, urls = { "http://(www|(p(?:age)?\\d|share)\\.)?(?:yunfile|filemarkets|yfdisk|needisk|5xpan|dix3|dfpan)\\.com/(file/(down/)?[a-z0-9]+/[a-z0-9]+|fs/[a-z0-9]+/?)" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "yunfile.com" }, urls = { "https?://(www|(p(?:age)?\\d|share)\\.)?(?:yunfile|filemarkets|yfdisk|needisk|5xpan|dix3|dfpan|pwpan|srcpan|skpan|gmpan|tadown|putpan)\\.com/(file/(down/)?[a-z0-9]+/[a-z0-9]+|fs/[a-z0-9]+/?)" })
 public class YunFileCom extends PluginForHost {
-
-    private static final String            MAINPAGE    = "http://yunfile.com/";
-    private static final String            CAPTCHAPART = "/verifyimg/getPcv";
-    private static Object                  LOCK        = new Object();
-    private static AtomicReference<String> agent       = new AtomicReference<String>();
-    private static final String            DOMAINS     = "(?:yunfile|filemarkets|yfdisk|needisk|5xpan|dix3|dfpan)\\.com";
+    private static final String            MAINPAGE       = "http://www.dfpan.com/";
+    private static final String            CAPTCHAPART    = "/verifyimg/getPcv";
+    private static Object                  LOCK           = new Object();
+    private static AtomicReference<String> agent          = new AtomicReference<String>();
+    private static final String            DOMAINS        = "(?:yunfile|filemarkets|yfdisk|needisk|5xpan|dix3|dfpan|pwpan|srcpan|skpan|gmpan|tadown|putpan)\\.com";
+    private static final String            domain_current = "dfpan.com";
 
     // Works like HowFileCom
     public YunFileCom(PluginWrapper wrapper) {
@@ -72,10 +71,34 @@ public class YunFileCom extends PluginForHost {
         // this.setStartIntervall(15 * 1000l);
     }
 
-    @SuppressWarnings("deprecation")
-    public void correctDownloadLink(final DownloadLink link) {
-        link.setUrlDownload(link.getDownloadURL().replace("share.yunfile.com/", "yunfile.com/").replaceFirst("(?:filemarkets|yfdisk|needisk|5xpan|dix3|dfpan)\\.com/", "yunfile.com/"));
+    @Override
+    public String getLinkID(final DownloadLink link) {
+        String linkid = new Regex(link.getPluginPatternMatcher(), "/fs/([^/]+)").getMatch(0);
+        if (linkid == null) {
+            linkid = new Regex(link.getPluginPatternMatcher(), "/file/(.+)").getMatch(0);
+        }
+        if (linkid != null) {
+            return linkid;
+        } else {
+            return super.getLinkID(link);
+        }
+    }
 
+    public void correctDownloadLink(final DownloadLink link) {
+        String url = link.getPluginPatternMatcher();
+        final String domain_original = new Regex(link.getPluginPatternMatcher(), "https?://(?:www\\.)?([^/]+)/").getMatch(0);
+        /*
+         * 2019-01-24: Do NOT correct urls with '/fs/' as they need their domain to redirect to the final one e.g.
+         * 'filemarkets.com/fs/blabla/' --> 'page1.dfpan.com/fs/blabla/'
+         */
+        if (!url.contains("/fs/")) {
+            // standard
+            url = url.replace(domain_original, domain_current);
+        }
+        url = url.replace("/file/down/", "/file/");
+        /* 2019-01-24: Enforce http, https does not yet work */
+        url = url.replace("https://", "http://");
+        link.setPluginPatternMatcher(url);
     }
 
     @Override
@@ -126,15 +149,14 @@ public class YunFileCom extends PluginForHost {
     }
 
     // Works like MountFileCom and HowFileCom
-    @SuppressWarnings("deprecation")
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
         br = new Browser();
-        // need to correct links that are added prior to fixing!
+        /* They often change domains */
         correctDownloadLink(link);
         prepBrowser(br);
         br.setFollowRedirects(true);
-        final URLConnectionAdapter con = br.openGetConnection(link.getDownloadURL());
+        final URLConnectionAdapter con = br.openGetConnection(link.getPluginPatternMatcher());
         if (con.getResponseCode() == 503 || con.getResponseCode() == 404) {
             con.disconnect();
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
@@ -162,17 +184,14 @@ public class YunFileCom extends PluginForHost {
             filename = br.getRegex("<title>(.*?)\\s*-\\s*(?:Yunfile|Dix3)[^<]*</title>").getMatch(0);
         }
         if (filename == null) {
-            filename = br.getRegex("<h2 class=\"title\">文件下载&nbsp;&nbsp;([^<>\"]*?)</h2>").getMatch(0);
+            filename = br.getRegex("<h2 class=\"title\">文件下载\\&nbsp;\\&nbsp;([^<>\"]*?)</h2>").getMatch(0);
         }
         filesize = br.getRegex("文件大小: <b>([^<>\"]*?)</b>").getMatch(0);
         if (filesize == null) {
             filesize = br.getRegex("File Size: <b>([^<>\"]*?)</b>").getMatch(0);
         }
         if (filesize == null) {
-            filesize = br.getRegex("Downloading:&nbsp;<a></a>&nbsp;[^<>]+ - (\\d*(\\.\\d*)? (K|M|G)?B)[\t\n\r ]*?<").getMatch(0);
-        }
-        if (filesize == null) {
-            filesize = br.getRegex("class=\"file_title\">\\&nbsp;Downloading:\\&nbsp;\\&nbsp;[^<>\"]*? \\- ([^<>\"]*?) </h2>").getMatch(0);
+            filesize = br.getRegex("id=\"file_show_filename\">[^<>]+</span> \\- ([^<>\"]+) <").getMatch(0);
         }
         if (filename == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -224,15 +243,18 @@ public class YunFileCom extends PluginForHost {
             final Regex siteInfo = br.getRegex("<span style=\"font-weight:bold;\">&nbsp;&nbsp;<a href=\"(https?://[a-z0-9]+\\." + DOMAINS + "/ls/([A-Za-z0-9\\-_]+)/)\"");
             userid = siteInfo.getMatch(1);
             if (userid == null) {
-                userid = new Regex(downloadLink.getDownloadURL(), "/file/(.*?)/").getMatch(0);
+                userid = br.getRegex("userId=([A-Za-z0-9]+)").getMatch(0);
             }
             if (fileid == null) {
-                fileid = br.getRegex("&fileId=([A-Za-z0-9]+)&").getMatch(0);
+                fileid = br.getRegex("fileId=([A-Za-z0-9]+)").getMatch(0);
             }
-            if (userid == null || fileid == null) {
+            String freelink = this.br.getRegex("var url\\s*?=\\s*?\"(/file/down/[^<>\"\\']+\\.html)\";").getMatch(0);
+            if (freelink == null && userid != null && fileid != null) {
+                freelink = Request.getLocation("/file/down/" + userid + "/" + fileid + ".html", br.getRequest());
+            }
+            if (freelink == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-            String freelink = Request.getLocation("/file/down/" + userid + "/" + fileid + ".html", br.getRequest());
             // Check if captcha needed
             if (br.containsHTML(CAPTCHAPART)) {
                 String captchalink = br.getRegex("cvimgvip2\\.setAttribute\\(\"src\",(.*?)\\)").getMatch(0);
@@ -275,8 +297,9 @@ public class YunFileCom extends PluginForHost {
         final String vid1 = br.getRegex("name=\"vid1\" value=\"([a-z0-9]+)\"").getMatch(0);
         final String vid = br.getRegex("var vericode = \"([a-z0-9]+)\";").getMatch(0);
         final String md5 = br.getRegex("name=\"md5\" value=\"([a-z0-9]{32})\"").getMatch(0);
-        logger.info("vid = " + vid + " vid1 = " + vid1 + " action = " + action + " md5 = " + md5);
-        if (vid1 == null || vid == null || md5 == null || savecdnurl == null || finalurl_pt2 == null) {
+        final String cs = br.getRegex("name=\"cs\" value=\"([a-z0-9]+)\"").getMatch(0);
+        logger.info("vid = " + vid + " vid1 = " + vid1 + " userid = " + userid + " action = " + action + " md5 = " + md5 + " cs = " + cs);
+        if (vid1 == null || vid == null || userid == null || md5 == null || cs == null || savecdnurl == null || finalurl_pt2 == null) {
             if (br.containsHTML(CAPTCHAPART)) {
                 throw new PluginException(LinkStatus.ERROR_CAPTCHA);
             }
@@ -284,7 +307,7 @@ public class YunFileCom extends PluginForHost {
         }
         action = savecdnurl + finalurl_pt2;
         br.setFollowRedirects(true);
-        postData = "module=fileService&userId=" + userid + "&fileId=" + fileid + "&vid=" + vid + "&vid1=" + vid1 + "&md5=" + md5;
+        postData = "module=fileService&userId=" + userid + "&fileId=" + fileid + "&vid=" + vid + "&vid1=" + vid1 + "&md5=" + md5 + "&cs=" + cs;
         dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, action, postData, false, 1);
         if (dl.getConnection().getContentType().contains("html")) {
             handleServerErrors();
@@ -295,6 +318,7 @@ public class YunFileCom extends PluginForHost {
             }
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
+        dl.setFilenameFix(true);
         dl.startDownload();
     }
 
@@ -322,7 +346,7 @@ public class YunFileCom extends PluginForHost {
                 br.setCookie(br.getURL(), "language", language);
                 br.getPage(br.getURL());
                 final String vid1 = br.getRegex("\"vid1\", \"([a-z0-9]+)\"").getMatch(0);
-                for (String dllink : br.getRegex("\"(https?://dl\\d+\\." + DOMAINS + "/downfile/[^<>\"]*?)\"").getColumn(0)) {
+                for (String dllink : br.getRegex("\"(https?://[^/]+/downfile/[^<>\"]*?)\"").getColumn(0)) {
                     dllinkVidMap.put(dllink, vid1);
                 }
                 if (dllinkVidMap.size() == 0) { // try to login if not found
@@ -330,7 +354,6 @@ public class YunFileCom extends PluginForHost {
                 }
                 // dllink = br.getRegex("<td align=center>[\t\n\r ]+<a href=\"(http://.*?)\"").getMatch(0);
             }
-
             final String[] counter = br.getRegex("document.getElementById\\('.*?'\\)\\.src = \"([^\"]+)").getColumn(0);
             if (counter != null && counter.length > 0) {
                 for (String count : counter) {
@@ -349,7 +372,6 @@ public class YunFileCom extends PluginForHost {
                 logger.warning("Final downloadlink (String is \"dllink\") regex didn't match!");
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-
             final java.util.List<String> dllinks = new ArrayList<String>(dllinkVidMap.keySet());
             java.util.Collections.shuffle(dllinks); // Shuffle for load balancing
             final Iterator<String> it = dllinks.iterator();
@@ -373,6 +395,7 @@ public class YunFileCom extends PluginForHost {
                     throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 } else {
                     // success
+                    dl.setFilenameFix(true);
                     dl.startDownload();
                     return;
                 }
@@ -386,7 +409,6 @@ public class YunFileCom extends PluginForHost {
         try {
             login(account, true);
         } catch (final PluginException e) {
-            account.setValid(false);
             throw e;
         }
         if (!br.getURL().contains("/user/edit.html")) {
@@ -435,7 +457,7 @@ public class YunFileCom extends PluginForHost {
                 br.setFollowRedirects(true);
                 if (br.getURL() == null) {
                     // only load page if page hasn't already been requested
-                    br.getPage(MAINPAGE);
+                    br.getPage("http://www.yfpan.com/");
                 }
                 Form login = br.getFormbyProperty("id", "login_form");
                 final String lang = System.getProperty("user.language");
@@ -452,7 +474,7 @@ public class YunFileCom extends PluginForHost {
                 login.put("remember", "on");
                 login.put("returnPath", Encoding.urlEncode(br.getURL()));
                 br.submitForm(login);
-                if (br.getCookie(MAINPAGE, "jforumUserHash") == null || br.getCookie(MAINPAGE, "membership") == null) {
+                if (br.getCookie(br.getHost(), "jforumUserHash") == null || br.getCookie(br.getHost(), "membership") == null) {
                     if ("de".equalsIgnoreCase(lang)) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     } else {
@@ -465,6 +487,36 @@ public class YunFileCom extends PluginForHost {
                 account.setProperty("pass", account.getPass());
             } finally {
                 br.setFollowRedirects(ifr);
+            }
+        }
+    }
+
+    private void simulateBrowser(final String url) {
+        this.simulateBrowser(br, url, null);
+    }
+
+    private void simulateBrowser(final Browser br, final String url, final String referer) {
+        if (br == null || url == null) {
+            return;
+        }
+        Browser rb = br.cloneBrowser();
+        // javascript
+        if (url.contains(".js?") || url.contains(".jsp?")) {
+            rb.getHeaders().put("Accept", "*/*");
+        } else if (url.contains(".css?")) {
+            rb.getHeaders().put("Accept", "*text/css,*/*;q=0.1");
+        }
+        if (referer != null) {
+            rb.getHeaders().put("Referer", referer);
+        }
+        URLConnectionAdapter con = null;
+        try {
+            con = rb.openGetConnection(url);
+        } catch (final Throwable e) {
+        } finally {
+            try {
+                con.disconnect();
+            } catch (final Exception e) {
             }
         }
     }
@@ -508,37 +560,6 @@ public class YunFileCom extends PluginForHost {
             cookies.put(domain, cs);
         }
         return cookies;
-    }
-
-    private void simulateBrowser(final String url) {
-        this.simulateBrowser(br, url, null);
-    }
-
-    private void simulateBrowser(final Browser br, final String url, final String referer) {
-        if (br == null || url == null) {
-            return;
-        }
-        Browser rb = br.cloneBrowser();
-        // javascript
-        if (url.contains(".js?") || url.contains(".jsp?")) {
-            rb.getHeaders().put("Accept", "*/*");
-        } else if (url.contains(".css?")) {
-            rb.getHeaders().put("Accept", "*text/css,*/*;q=0.1");
-        }
-        if (referer != null) {
-            rb.getHeaders().put("Referer", referer);
-        }
-
-        URLConnectionAdapter con = null;
-        try {
-            con = rb.openGetConnection(url);
-        } catch (final Throwable e) {
-        } finally {
-            try {
-                con.disconnect();
-            } catch (final Exception e) {
-            }
-        }
     }
 
     @Override

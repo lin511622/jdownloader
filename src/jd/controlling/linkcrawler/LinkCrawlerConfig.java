@@ -14,7 +14,6 @@ import org.appwork.storage.config.annotations.RequiresRestart;
 import org.appwork.storage.config.annotations.SpinnerValidator;
 
 public interface LinkCrawlerConfig extends ConfigInterface {
-
     @DefaultIntValue(12)
     @AboutConfig
     @RequiresRestart("A JDownloader Restart is Required")
@@ -41,12 +40,21 @@ public interface LinkCrawlerConfig extends ConfigInterface {
 
     void setDeepDecryptLoadLimit(int l);
 
-    @DefaultBooleanValue(true)
+    @DefaultIntValue(2 * 1024 * 1024)
     @AboutConfig
-    @DescriptionForConfigEntry("A Offline Link created to indicate to the users when unknown Exceptions are thrown or plugin returns null results.")
-    boolean isAddDefectiveCrawlerTasksAsOfflineInLinkgrabber();
+    @RequiresRestart("A JDownloader Restart is Required")
+    @DescriptionForConfigEntry("max. file size in bytes during deep decrypt")
+    @SpinnerValidator(min = -1, max = 50 * 1024 * 1024)
+    int getDeepDecryptFileSizeLimit();
 
-    void setAddDefectiveCrawlerTasksAsOfflineInLinkgrabber(boolean b);
+    void setDeepDecryptFileSizeLimit(int l);
+
+    @DefaultStringArrayValue({ "PLUGIN_DEFECT", "CAPTCHA", "NO_ACCOUNT", "PASSWORD" })
+    @AboutConfig
+    @DescriptionForConfigEntry("Add a retry task for following crawling errors")
+    String[] getAddRetryCrawlerTasks();
+
+    public void setAddRetryCrawlerTasks(String[] origins);
 
     @DefaultBooleanValue(true)
     @AboutConfig
@@ -83,5 +91,4 @@ public interface LinkCrawlerConfig extends ConfigInterface {
     boolean isAutoImportContainer();
 
     public void setAutoImportContainer(boolean b);
-
 }

@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.File;
@@ -51,15 +50,15 @@ import org.appwork.utils.formatter.SizeFormatter;
 import org.appwork.utils.formatter.TimeFormatter;
 import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
 import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "lunaticfiles.com" }, urls = { "https?://(?:www\\.)?lunaticfiles\\.com/(?:vidembed\\-)?[a-z0-9]{12}" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "lunaticfiles.com" }, urls = { "https?://(?:www\\.)?lunaticfiles\\.com/(?:vidembed\\-)?[a-z0-9]{12}" })
 public class LunaticFilesCom extends PluginForHost {
-
     private String               correctedBR                  = "";
     private String               passCode                     = null;
     private static final String  PASSWORDTEXT                 = "<br><b>Passwor(d|t):</b> <input";
     // primary website url, take note of redirects
-    private static final String  COOKIE_HOST                  = "http://lunaticfiles.com";
+    private static final String  COOKIE_HOST                  = "https://lunaticfiles.com";
     // domain names used within download links.
     private static final String  DOMAINS                      = "(lunaticfiles\\.com)";
     private static final String  MAINTENANCE                  = ">This server is in maintenance mode";
@@ -68,7 +67,6 @@ public class LunaticFilesCom extends PluginForHost {
     private static final String  PREMIUMONLY1                 = JDL.L("hoster.xfilesharingprobasic.errors.premiumonly1", "Max downloadable filesize for free users:");
     private static final String  PREMIUMONLY2                 = JDL.L("hoster.xfilesharingprobasic.errors.premiumonly2", "Only downloadable via premium or registered");
     private static final boolean VIDEOHOSTER                  = false;
-    private static final boolean SUPPORTSHTTPS                = false;
     // note: CAN NOT be negative or zero! (ie. -1 or 0) Otherwise math sections fail. .:. use [1-20]
     private static AtomicInteger totalMaxSimultanFreeDownload = new AtomicInteger(1);
     // don't touch the following!
@@ -85,13 +83,10 @@ public class LunaticFilesCom extends PluginForHost {
     // protocol: no https
     // captchatype: solvemedia
     // other:
-
     @Override
     public void correctDownloadLink(final DownloadLink link) {
         // link cleanup, but respect users protocol choosing.
-        if (!SUPPORTSHTTPS) {
-            link.setUrlDownload(link.getDownloadURL().replaceFirst("https://", "http://"));
-        }
+        link.setUrlDownload(link.getDownloadURL().replaceFirst("http://", "https://"));
         // strip video hosting url's to reduce possible duped links.
         link.setUrlDownload(link.getDownloadURL().replace("/vidembed-", "/"));
         // output the hostmask as we wish based on COOKIE_HOST url!
@@ -284,7 +279,12 @@ public class LunaticFilesCom extends PluginForHost {
                     }
                 }
                 /* Captcha START */
-                if (correctedBR.contains(";background:#ccc;text-align")) {
+                if (correctedBR.contains("class=\"g-recaptcha\"") || correctedBR.contains("grecaptcha.render")) {
+                    logger.info("Detected captcha method \"RecaptchaV2\" for this host");
+                    final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
+                    dlForm.put("g-recaptcha-response", Encoding.urlEncode(recaptchaV2Response));
+                    logger.info("Put captchacode " + recaptchaV2Response + " obtained by captcha metod \"RecaptchaV2\" in the form.");
+                } else if (correctedBR.contains(";background:#ccc;text-align")) {
                     logger.info("Detected captcha method \"plaintext captchas\" for this host");
                     /** Captcha method by ManiacMansion */
                     final String[][] letters = new Regex(br, "<span style=\\'position:absolute;padding\\-left:(\\d+)px;padding\\-top:\\d+px;\\'>(&#\\d+;)</span>").getMatches();
@@ -337,7 +337,6 @@ public class LunaticFilesCom extends PluginForHost {
                     skipWaittime = true;
                 } else if (br.containsHTML("solvemedia\\.com/papi/")) {
                     logger.info("Detected captcha method \"solvemedia\" for this host");
-
                     final org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia sm = new org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia(br);
                     final File cf = sm.downloadCaptcha(getLocalCaptchaFile());
                     final String code = getCaptchaCode("solvemedia", cf, downloadLink);
@@ -440,14 +439,11 @@ public class LunaticFilesCom extends PluginForHost {
     public void correctBR() throws NumberFormatException, PluginException {
         correctedBR = br.toString();
         ArrayList<String> regexStuff = new ArrayList<String>();
-
         // remove custom rules first!!! As html can change because of generic cleanup rules.
-
         // generic cleanup
         regexStuff.add("<\\!(\\-\\-.*?\\-\\-)>");
         regexStuff.add("(display: ?none;\">.*?</div>)");
         regexStuff.add("(visibility:hidden>.*?<)");
-
         for (String aRegex : regexStuff) {
             String results[] = new Regex(correctedBR, aRegex).getColumn(0);
             if (results != null) {
@@ -460,7 +456,7 @@ public class LunaticFilesCom extends PluginForHost {
 
     public String getDllink() {
         String dllink = br.getRedirectLocation();
-        if (dllink == null) {
+        if (dllink == null || new Regex(dllink, this.getSupportedLinks()).matches()) {
             dllink = new Regex(correctedBR, "(\"|\\')(https?://(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|([\\w\\-]+\\.)?" + DOMAINS + ")(:\\d{1,4})?/(files|d|cgi\\-bin/dl\\.cgi)/(\\d+/)?[a-z0-9]+/[^<>\"/]*?)(\"|\\')").getMatch(1);
             if (dllink == null) {
                 final String cryptedScripts[] = new Regex(correctedBR, "p\\}\\((.*?)\\.split\\('\\|'\\)").getColumn(0);
@@ -479,26 +475,21 @@ public class LunaticFilesCom extends PluginForHost {
 
     private String decodeDownloadLink(final String s) {
         String decoded = null;
-
         try {
             Regex params = new Regex(s, "\\'(.*?[^\\\\])\\',(\\d+),(\\d+),\\'(.*?)\\'");
-
             String p = params.getMatch(0).replaceAll("\\\\", "");
             int a = Integer.parseInt(params.getMatch(1));
             int c = Integer.parseInt(params.getMatch(2));
             String[] k = params.getMatch(3).split("\\|");
-
             while (c != 0) {
                 c--;
                 if (k[c].length() != 0) {
                     p = p.replaceAll("\\b" + Integer.toString(c, a) + "\\b", k[c]);
                 }
             }
-
             decoded = p;
         } catch (Exception e) {
         }
-
         String finallink = null;
         if (decoded != null) {
             finallink = new Regex(decoded, "name=\"src\"value=\"(.*?)\"").getMatch(0);
@@ -897,6 +888,9 @@ public class LunaticFilesCom extends PluginForHost {
                 dllink = getDllink();
                 if (dllink == null) {
                     Form dlform = br.getFormbyProperty("name", "F1");
+                    if (dlform == null) {
+                        dlform = br.getFormbyProperty("name", "op");
+                    }
                     if (dlform != null && new Regex(correctedBR, PASSWORDTEXT).matches()) {
                         passCode = handlePassword(dlform, downloadLink);
                     }
@@ -949,5 +943,4 @@ public class LunaticFilesCom extends PluginForHost {
     public SiteTemplate siteTemplateType() {
         return SiteTemplate.SibSoft_XFileShare;
     }
-
 }

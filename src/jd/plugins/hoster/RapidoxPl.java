@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.File;
@@ -21,6 +20,11 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.concurrent.atomic.AtomicReference;
+
+import org.appwork.utils.StringUtils;
+import org.appwork.utils.formatter.SizeFormatter;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
 
 import jd.PluginWrapper;
 import jd.config.Property;
@@ -40,18 +44,12 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.utils.JDUtilities;
 
-import org.appwork.utils.formatter.SizeFormatter;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
-import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "rapidox.pl" }, urls = { "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsfs2133" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "rapidox.pl" }, urls = { "" })
 public class RapidoxPl extends PluginForHost {
-
     private final String                                   DOMAIN                       = "http://rapidox.pl/";
     private final String                                   NICE_HOST                    = "rapidox.pl";
     private final String                                   NICE_HOSTproperty            = NICE_HOST.replaceAll("(\\.|\\-)", "");
     private final String                                   NORESUME                     = NICE_HOSTproperty + "NORESUME";
-
     /* Connection limits */
     private final boolean                                  ACCOUNT_PREMIUM_RESUME       = true;
     private final int                                      ACCOUNT_PREMIUM_MAXCHUNKS    = 0;
@@ -61,7 +59,6 @@ public class RapidoxPl extends PluginForHost {
     private int                                            maxreloads                   = 200;
     private int                                            wait_between_reload          = 3;
     private final String                                   default_UA                   = "JDownloader";
-
     private static AtomicReference<String>                 agent                        = new AtomicReference<String>(null);
     private static Object                                  LOCK                         = new Object();
     private int                                            statuscode                   = 0;
@@ -124,12 +121,10 @@ public class RapidoxPl extends PluginForHost {
         return new FEATURE[] { FEATURE.MULTIHOST };
     }
 
-    @SuppressWarnings("deprecation")
     @Override
     public void handleMultiHost(final DownloadLink link, final Account account) throws Exception {
         this.br = newBrowser();
         setConstants(account, link);
-
         synchronized (hostUnavailableMap) {
             HashMap<String, Long> unavailableMap = hostUnavailableMap.get(account);
             if (unavailableMap != null) {
@@ -145,11 +140,11 @@ public class RapidoxPl extends PluginForHost {
                 }
             }
         }
-
         login(account, false);
         String dllink = checkDirectLink(link, NICE_HOSTproperty + "directlink");
         if (dllink == null) {
-            this.postAPISafe("http://rapidox.pl/panel/pobierz-plik", "check_links=" + Encoding.urlEncode(link.getDownloadURL()));
+            final String downloadURL = link.getDefaultPlugin().buildExternalDownloadURL(link, this);
+            this.postAPISafe("http://rapidox.pl/panel/pobierz-plik", "check_links=" + Encoding.urlEncode(downloadURL));
             final String requestId = br.getRegex("rapidox.pl/panel/pobierz\\-plik/(\\d+)").getMatch(0);
             if (requestId == null) {
                 handleErrorRetries("requestIdnull", 5, 2 * 60 * 1000l);
@@ -170,7 +165,11 @@ public class RapidoxPl extends PluginForHost {
             /* Modify name so we can actually find our final downloadlink. */
             String fname = link.getName();
             fname = fname.replace(" ", "_");
+            fname = fname.replace("'", "");
             fname = fname.replaceAll("(;|\\&)", "");
+            fname = fname.replaceAll("ä", "a").replaceAll("Ä", "A");
+            fname = fname.replaceAll("ü", "u").replaceAll("Ü", "U");
+            fname = fname.replaceAll("ö", "o").replaceAll("Ö", "O");
             /* File is on their servers --> Chose download method */
             this.postAPISafe("/panel/lista-plikow", "download%5B%5D=" + dlid + "&form_hash=" + hash + "&download_files=Pobierz%21&pobieranie=posrednie");
             /* Access list of downloadable files/links & find correct final downloadlink */
@@ -178,11 +177,14 @@ public class RapidoxPl extends PluginForHost {
                 this.sleep(wait_between_reload * 1000l, link);
                 this.getAPISafe("/panel/lista-plikow");
                 /* TODO: Maybe find a more reliable way to get the final downloadlink... */
-                final String[] alldirectlinks = br.getRegex("\"(http://[a-z0-9]+\\.rapidox\\.pl/[A-Za-z0-9]+/[^<>\"]*?)\"").getColumn(0);
-                if (alldirectlinks != null && alldirectlinks.length > 1) {
-                    for (final String directlink : alldirectlinks) {
-                        if (directlink.contains(fname)) {
-                            dllink = directlink;
+                final String[][] results = br.getRegex("<span title=\"(https?://.*?)\">(.*?)</span>.*?<a href=\"(https?://[a-z0-9]+\\.rapidox\\.pl/[A-Za-z0-9]+/[^<>\"]*?)\"").getMatches();
+                if (results != null && results.length >= 1) {
+                    for (final String[] result : results) {
+                        if (StringUtils.equals(downloadURL, result[0])) {
+                            dllink = result[2];
+                            break;
+                        } else if (StringUtils.equals(fname, result[1])) {
+                            dllink = result[2];
                             break;
                         }
                     }
@@ -223,8 +225,9 @@ public class RapidoxPl extends PluginForHost {
                 handleErrorRetries("unknowndlerror", 5, 2 * 60 * 1000l);
             }
             this.dl.startDownload();
-        } catch (final Throwable e) {
+        } catch (final Exception e) {
             link.setProperty(NICE_HOSTproperty + "directlink", Property.NULL);
+            throw e;
         }
     }
 
@@ -296,7 +299,6 @@ public class RapidoxPl extends PluginForHost {
         account.setValid(true);
         /* Only add hosts which are listed as 'on' (working) */
         this.getAPISafe("http://rapidox.pl/panel/status_hostingow");
-        final String[] possible_domains = { "to", "de", "com", "net", "co.nz", "in", "co", "me", "biz", "ch", "pl", "cc" };
         final ArrayList<String> supportedHosts = new ArrayList<String>();
         final String hosttable = br.getRegex("</tr></thead><tr>(.*?)</tr></table>").getMatch(0);
         final String[] hostDomainsInfo = hosttable.split("<td width=\"50px\"");
@@ -315,20 +317,13 @@ public class RapidoxPl extends PluginForHost {
                 supportedHosts.add("share-online.biz");
             } else if (crippledhost.equals("ul.to") || crippledhost.equals("uploaded")) {
                 supportedHosts.add("uploaded.net");
-            } else if (crippledhost.equals("vipfile")) {
-                supportedHosts.add("vip-file.com");
             } else if (crippledhost.equals("_4shared")) {
                 supportedHosts.add("4shared.com");
             } else {
-                /* Finally, go insane... */
-                for (final String possibledomain : possible_domains) {
-                    final String full_possible_host = crippledhost + "." + possibledomain;
-                    supportedHosts.add(full_possible_host);
-                }
+                supportedHosts.add(crippledhost);
             }
         }
         ai.setMultiHostSupport(this, supportedHosts);
-
         return ai;
     }
 
@@ -358,7 +353,6 @@ public class RapidoxPl extends PluginForHost {
                 br.setFollowRedirects(true);
                 String postData = "login83=" + Encoding.urlEncode(currAcc.getUser()) + "&password83=" + Encoding.urlEncode(currAcc.getPass());
                 this.getAPISafe("http://rapidox.pl/zaloguj_sie");
-
                 /*
                  * Captcha is shown on too many failed login attempts. Shoud usually not happen inside JD - especially as it is bound to the
                  * current session (cookies) + User-Agent.This small function should try to prevent login captchas in case one appears.
@@ -377,7 +371,6 @@ public class RapidoxPl extends PluginForHost {
                     this.getAPISafe("/zaloguj_sie");
                     captcha_prevention_counter++;
                 }
-
                 if (br.containsHTML("(api\\.recaptcha\\.net|google\\.com/recaptcha/api/)")) {
                     logger.info("Failed to prevent captcha - asking user!");
                     /* Handle stupid login captcha */
@@ -394,22 +387,10 @@ public class RapidoxPl extends PluginForHost {
                     final String c = getCaptchaCode("recaptcha", cf, dummyLink);
                     postData += "&recaptcha_challenge_field=" + rc.getChallenge() + "&recaptcha_response_field=" + Encoding.urlEncode(c) + "&redirect=";
                 }
-
                 this.postAPISafe("/panel/login", postData);
                 final String userLanguage = System.getProperty("user.language");
                 if (br.containsHTML(">Wystąpił błąd\\! Nieprawidłowy login lub hasło\\.")) {
                     if ("de".equalsIgnoreCase(userLanguage)) {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername, Passwort oder login Captcha!\r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen? Versuche folgendes:\r\n1. Falls dein Passwort Sonderzeichen enthält, ändere es (entferne diese) und versuche es erneut!\r\n2. Gib deine Zugangsdaten per Hand (ohne kopieren/einfügen) ein.", PluginException.VALUE_ID_PREMIUM_DISABLE);
-                    } else if ("pl".equalsIgnoreCase(userLanguage)) {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nBłędny użytkownik/hasło lub kod Captcha wymagany do zalogowania!\r\nUpewnij się, że prawidłowo wprowadziłes hasło i nazwę użytkownika. Dodatkowo:\r\n1. Jeśli twoje hasło zawiera znaki specjalne, zmień je (usuń) i spróbuj ponownie!\r\n2. Wprowadź hasło i nazwę użytkownika ręcznie bez użycia opcji Kopiuj i Wklej.", PluginException.VALUE_ID_PREMIUM_DISABLE);
-                    } else {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password or login captcha!\r\nYou're sure that the username and password you entered are correct? Some hints:\r\n1. If your password contains special characters, change it (remove them) and try again!\r\n2. Type in your username/password by hand without copy & paste.", PluginException.VALUE_ID_PREMIUM_DISABLE);
-                    }
-                }
-                this.getAPISafe("/panel/index");
-                /* Double check */
-                if (!br.containsHTML(">Wyloguj się<")) {
-                    if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername, Passwort oder login Captcha!\r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen? Versuche folgendes:\r\n1. Falls dein Passwort Sonderzeichen enthält, ändere es (entferne diese) und versuche es erneut!\r\n2. Gib deine Zugangsdaten per Hand (ohne kopieren/einfügen) ein.", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     } else if ("pl".equalsIgnoreCase(userLanguage)) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nBłędny użytkownik/hasło lub kod Captcha wymagany do zalogowania!\r\nUpewnij się, że prawidłowo wprowadziłes hasło i nazwę użytkownika. Dodatkowo:\r\n1. Jeśli twoje hasło zawiera znaki specjalne, zmień je (usuń) i spróbuj ponownie!\r\n2. Wprowadź hasło i nazwę użytkownika ręcznie bez użycia opcji Kopiuj i Wklej.", PluginException.VALUE_ID_PREMIUM_DISABLE);
@@ -531,5 +512,4 @@ public class RapidoxPl extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

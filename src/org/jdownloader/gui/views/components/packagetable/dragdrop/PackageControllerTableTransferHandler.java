@@ -5,14 +5,11 @@ import java.awt.datatransfer.Transferable;
 import java.awt.event.InputEvent;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import javax.swing.JComponent;
 import javax.swing.JTable;
 import javax.swing.TransferHandler;
-
-import jd.controlling.packagecontroller.AbstractNode;
-import jd.controlling.packagecontroller.AbstractPackageChildrenNode;
-import jd.controlling.packagecontroller.AbstractPackageNode;
 
 import org.appwork.exceptions.WTFException;
 import org.appwork.utils.event.queue.Queue.QueuePriority;
@@ -21,8 +18,11 @@ import org.jdownloader.gui.views.SelectionInfo;
 import org.jdownloader.gui.views.SelectionInfo.PackageView;
 import org.jdownloader.gui.views.components.packagetable.PackageControllerTable;
 
-public abstract class PackageControllerTableTransferHandler<PackageType extends AbstractPackageNode<ChildrenType, PackageType>, ChildrenType extends AbstractPackageChildrenNode<PackageType>> extends TransferHandler {
+import jd.controlling.packagecontroller.AbstractNode;
+import jd.controlling.packagecontroller.AbstractPackageChildrenNode;
+import jd.controlling.packagecontroller.AbstractPackageNode;
 
+public abstract class PackageControllerTableTransferHandler<PackageType extends AbstractPackageNode<ChildrenType, PackageType>, ChildrenType extends AbstractPackageChildrenNode<PackageType>> extends TransferHandler {
     /**
      *
      */
@@ -39,17 +39,25 @@ public abstract class PackageControllerTableTransferHandler<PackageType extends 
         return TransferHandler.COPY_OR_MOVE;
     }
 
+    private final AtomicReference<String> transferableStringContent = new AtomicReference<String>(null);
+
+    public void setTransferableStringContent(String content) {
+        transferableStringContent.set(content);
+    }
+
     @Override
     protected Transferable createTransferable(JComponent c) {
         /*
          * get all selected packages and children and create a transferable if possible
          */
         final SelectionInfo<PackageType, ChildrenType> selectionInfo = table.getSelectionInfo(true, true);
+        final String transferableStringContent = this.transferableStringContent.getAndSet(null);
         if (selectionInfo.getPackageViews().size() > 0) {
-            final PackageControllerTableTransferable<PackageType, ChildrenType> ret2 = new PackageControllerTableTransferable<PackageType, ChildrenType>(selectionInfo, table);
+            final PackageControllerTableTransferable<PackageType, ChildrenType> ret2 = new PackageControllerTableTransferable<PackageType, ChildrenType>(selectionInfo, table, transferableStringContent);
             return customizeTransferable(ret2);
+        } else {
+            return null;
         }
-        return null;
     }
 
     /* here you can customize the Transferable or create new one if needed */
@@ -298,7 +306,6 @@ public abstract class PackageControllerTableTransferHandler<PackageType extends 
             if (afterElement != null && afterElement instanceof AbstractPackageNode) {
                 final Object element = afterElement;
                 table.getController().getQueue().add(new QueueAction<Void, RuntimeException>(prio) {
-
                     @Override
                     protected Void run() throws RuntimeException {
                         if (((PackageType) element).getCurrentSorter() == null) {
@@ -306,7 +313,6 @@ public abstract class PackageControllerTableTransferHandler<PackageType extends 
                         } else {
                             // we have a sorter.neither top nor bottom but sorted insert
                             table.getController().merge((PackageType) element, links, packages, MergePosition.SORTED);
-
                         }
                         return null;
                     }
@@ -329,7 +335,6 @@ public abstract class PackageControllerTableTransferHandler<PackageType extends 
                     dest = null;
                 }
                 table.getController().getQueue().add(new QueueAction<Void, RuntimeException>(prio) {
-
                     @Override
                     protected Void run() throws RuntimeException {
                         table.getController().move(packages, dest);
@@ -356,7 +361,6 @@ public abstract class PackageControllerTableTransferHandler<PackageType extends 
                     destP = null;
                 }
                 table.getController().getQueue().add(new QueueAction<Void, RuntimeException>(prio) {
-
                     @Override
                     protected Void run() throws RuntimeException {
                         table.getController().move(links, destP, afterL);
@@ -366,7 +370,6 @@ public abstract class PackageControllerTableTransferHandler<PackageType extends 
             }
         }
         return true;
-
     }
 
     @Override
@@ -377,5 +380,4 @@ public abstract class PackageControllerTableTransferHandler<PackageType extends 
         }
         return ret;
     }
-
 }

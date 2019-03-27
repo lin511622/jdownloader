@@ -9,10 +9,14 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
+import jd.controlling.linkcrawler.CrawledLink;
 import jd.controlling.linkcrawler.LinkCrawler;
+import jd.controlling.linkcrawler.LinkCrawlerLock;
 import jd.controlling.proxy.ProxyController;
 import jd.http.Browser;
 import jd.http.BrowserSettingsThread;
@@ -22,20 +26,25 @@ import jd.http.SocketConnectionFactory;
 import jd.nutils.SimpleFTP;
 import jd.nutils.SimpleFTP.SimpleFTPListEntry;
 import jd.plugins.CryptedLink;
+import jd.plugins.DecrypterException;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
 import jd.plugins.PluginForDecrypt;
 
+import org.appwork.exceptions.WTFException;
+import org.appwork.storage.config.WeakHashSet;
 import org.appwork.utils.Regex;
 import org.appwork.utils.StringUtils;
 import org.appwork.utils.net.httpconnection.HTTPProxy;
 import org.appwork.utils.net.httpconnection.HTTPProxyException;
 import org.jdownloader.auth.Login;
+import org.jdownloader.plugins.controller.crawler.LazyCrawlerPlugin;
 
-@DecrypterPlugin(revision = "$Revision: 32330$", interfaceVersion = 2, names = { "ftp" }, urls = { "ftp://.*?\\.[a-zA-Z0-9]{1,}(:\\d+)?/([^\"\r\n ]+|$)" }) public class Ftp extends PluginForDecrypt {
-
-    private static final HashMap<String, Integer> LOCKS = new HashMap<String, Integer>();
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "ftp" }, urls = { "ftp://.*?\\.[\\p{L}\\p{Nd}a-zA-Z0-9]{1,}(:\\d+)?/([^\"\r\n ]+|$)" })
+public class Ftp extends PluginForDecrypt {
+    private static Map<String, Integer>     LIMITS = new HashMap<String, Integer>();
+    private static Map<String, Set<Thread>> LOCKS  = new HashMap<String, Set<Thread>>();
 
     public Ftp(PluginWrapper wrapper) {
         super(wrapper);
@@ -44,20 +53,58 @@ import org.jdownloader.auth.Login;
     @Override
     public ArrayList<DownloadLink> decryptIt(CryptedLink cLink, ProgressController progress) throws Exception {
         final String lockHost = Browser.getHost(cLink.getCryptedUrl());
-        final Integer lock;
+        final Set<Thread> hostLocks;
         synchronized (LOCKS) {
-            lock = LOCKS.get(lockHost);
+            Set<Thread> tmp = LOCKS.get(lockHost);
+            if (tmp == null) {
+                tmp = new WeakHashSet<Thread>();
+                LOCKS.put(lockHost, tmp);
+            }
+            hostLocks = tmp;
         }
-        if (lock == null) {
-            return internalDecryptIt(cLink, progress, -1);
-        } else {
-            synchronized (lock) {
-                return internalDecryptIt(cLink, progress, lock);
+        final Thread thread = Thread.currentThread();
+        while (true) {
+            try {
+                int limit = -1;
+                while (true) {
+                    synchronized (LIMITS) {
+                        final Integer l = LIMITS.get(lockHost);
+                        if (l == null) {
+                            limit = -1;
+                        } else {
+                            limit = l;
+                        }
+                    }
+                    synchronized (hostLocks) {
+                        if (isAbort()) {
+                            throw new InterruptedException();
+                        } else if (limit == -1 || hostLocks.size() < limit) {
+                            hostLocks.add(thread);
+                            break;
+                        } else if (hostLocks.size() > limit) {
+                            hostLocks.wait(5000);
+                        }
+                    }
+                }
+                try {
+                    return internalDecryptIt(cLink, progress, limit);
+                } catch (WTFException e) {
+                    if ("retry".equals(e.getMessage())) {
+                        continue;
+                    } else {
+                        throw e;
+                    }
+                }
+            } finally {
+                synchronized (hostLocks) {
+                    hostLocks.remove(thread);
+                    hostLocks.notifyAll();
+                }
             }
         }
     }
 
-    private ArrayList<DownloadLink> internalDecryptIt(CryptedLink cLink, ProgressController progress, final int maxFTPConnections) throws Exception {
+    private ArrayList<DownloadLink> internalDecryptIt(final CryptedLink cLink, ProgressController progress, final int maxFTPConnections) throws Exception {
         final ArrayList<DownloadLink> ret = new ArrayList<DownloadLink>() {
             @Override
             public boolean add(final DownloadLink link) {
@@ -80,30 +127,56 @@ import org.jdownloader.auth.Login;
             try {
                 ftp.connect(url);
             } catch (IOException e) {
+                logger.log(e);
                 final String message = e.getMessage();
-                if ((StringUtils.containsIgnoreCase(message, "Sorry, the maximum number of clients") || StringUtils.startsWithCaseInsensitive(message, "421")) && maxFTPConnections == -1) {
+                final Integer limit = jd.plugins.hoster.Ftp.getConnectionLimit(e);
+                if (limit != null && maxFTPConnections == -1) {
                     final String lockHost = Browser.getHost(cLink.getCryptedUrl());
-                    final String maxConnections = new Regex(e.getMessage(), "Sorry, the maximum number of clients \\((\\d+)\\)").getMatch(0);
-                    synchronized (LOCKS) {
-                        if (maxConnections != null) {
-                            LOCKS.put(lockHost, Integer.parseInt(maxConnections));
-                        } else {
-                            LOCKS.put(lockHost, new Integer(1));
-                        }
+                    final int maxConcurrency = Math.max(1, limit);
+                    synchronized (LIMITS) {
+                        LIMITS.put(lockHost, maxConcurrency);
                     }
-                    return decryptIt(cLink, progress);
+                    getCrawler().addSequentialLockObject(new LinkCrawlerLock() {
+                        @Override
+                        public int maxConcurrency() {
+                            return 1;
+                        }
+
+                        private final String pluginID = getPluginID(Ftp.this.getLazyC());
+                        private final String host     = Browser.getHost(cLink.getCryptedUrl());
+
+                        @Override
+                        public String toString() {
+                            return pluginID + "|" + host + "|" + maxConcurrency;
+                        }
+
+                        @Override
+                        public boolean matches(LazyCrawlerPlugin plugin, CrawledLink crawledLink) {
+                            return StringUtils.equals(pluginID, getPluginID(plugin)) && StringUtils.equalsIgnoreCase(host, Browser.getHost(crawledLink.getURL()));
+                        }
+                    });
+                    sleep(5000, cLink);
+                    throw new WTFException("retry", e);
                 } else if (StringUtils.contains(message, "was unable to log in with the supplied") || StringUtils.contains(message, "530 Login or Password incorrect")) {
                     final DownloadLink dummyLink = new DownloadLink(null, null, url.getHost(), cLink.getCryptedUrl(), true);
-                    final Login login = requestLogins(org.jdownloader.translate._JDT.T.DirectHTTP_getBasicAuth_message(), dummyLink);
+                    final Login login = requestLogins(org.jdownloader.translate._JDT.T.DirectHTTP_getBasicAuth_message(), null, dummyLink);
                     if (login != null) {
                         final String host = url.getHost();
                         int port = url.getPort();
                         if (port <= 0) {
                             port = 21;
                         }
-                        ftp.connect(host, port, login.getUsername(), login.getPassword());
+                        try {
+                            ftp.connect(host, port, login.getUsername(), login.getPassword());
+                        } catch (IOException e2) {
+                            if (StringUtils.contains(message, "was unable to log in with the supplied") || StringUtils.contains(message, "530 Login or Password incorrect")) {
+                                throw new DecrypterException(DecrypterException.PASSWORD, e2);
+                            } else {
+                                throw e2;
+                            }
+                        }
                     } else {
-                        throw e;
+                        throw new DecrypterException(DecrypterException.PASSWORD, e);
                     }
                 } else {
                     throw e;
@@ -145,8 +218,8 @@ import org.jdownloader.auth.Login;
             // ftp.listFeatures();
             // ftp.sendClientID("JDownloader");
             // ftp.setUTF8(true);
-
-            if (ftp.cwd(filePath)) {
+            final DownloadLink direct = checkLinkFile(ftp, nameString, auth, url, finalFilePath);
+            if (direct == null && ftp.ascii() && ftp.cwd(filePath)) {
                 SimpleFTPListEntry[] entries = ftp.listEntries();
                 if (entries != null) {
                     /*
@@ -173,15 +246,12 @@ import org.jdownloader.auth.Login;
                         }
                     }
                     if (found != null) {
-                        if (found.isFile()) {
-                            final DownloadLink link = createDownloadlink("ftpviajd://" + auth + url.getHost() + (url.getPort() != -1 ? (":" + url.getPort()) : "") + found.getFullPath());
-                            link.setAvailable(true);
-                            if (found.getSize() >= 0) {
-                                link.setVerifiedFileSize(found.getSize());
-                            }
-                            link.setFinalFileName(SimpleFTP.BestEncodingGuessingURLDecode(found.getName()));
-                            ret.add(link);
-                        } else {
+                        final DownloadLink linkFile = found.isLink() ? checkLinkFile(ftp, found) : null;
+                        if (linkFile != null) {
+                            ret.add(linkFile);
+                        } else if (found.isFile()) {
+                            ret.add(createDirectFile(found));
+                        } else if (found.isDir()) {
                             if (ftp.cwd(found.getName())) {
                                 entries = ftp.listEntries();
                             } else {
@@ -200,31 +270,17 @@ import org.jdownloader.auth.Login;
                             packageName = nameString;
                         }
                         for (final SimpleFTPListEntry entry : entries) {
-                            if (entry.isFile()) {
-                                final DownloadLink link = createDownloadlink("ftpviajd://" + auth + url.getHost() + (url.getPort() != -1 ? (":" + url.getPort()) : "") + entry.getFullPath());
-                                link.setAvailable(true);
-                                if (entry.getSize() >= 0) {
-                                    link.setVerifiedFileSize(entry.getSize());
-                                }
-                                link.setFinalFileName(SimpleFTP.BestEncodingGuessingURLDecode(entry.getName()));
-                                ret.add(link);
+                            final DownloadLink linkFile = entry.isLink() ? checkLinkFile(ftp, entry) : null;
+                            if (linkFile != null) {
+                                ret.add(linkFile);
+                            } else if (entry.isFile()) {
+                                ret.add(createDirectFile(entry));
                             }
                         }
                     }
                 }
-            }
-            if (ret.size() == 0 && nameString != null) {
-                // sometimes dir listing/changing is not allowed but direct access is still possible
-                if (ftp.bin()) {
-                    final long size = ftp.getSize(finalFilePath);
-                    if (size >= 0) {
-                        final DownloadLink link = createDownloadlink("ftpviajd://" + auth + url.getHost() + (url.getPort() != -1 ? (":" + url.getPort()) : "") + finalFilePath);
-                        link.setAvailable(true);
-                        link.setVerifiedFileSize(size);
-                        link.setFinalFileName(SimpleFTP.BestEncodingGuessingURLDecode(nameString));
-                        ret.add(link);
-                    }
-                }
+            } else if (direct != null) {
+                ret.add(direct);
             }
             if (ret.size() > 0 && packageName != null) {
                 final FilePackage fp = FilePackage.getInstance();
@@ -242,6 +298,47 @@ import org.jdownloader.auth.Login;
         } finally {
             ftp.disconnect();
         }
+        return ret;
+    }
+
+    private DownloadLink checkLinkFile(SimpleFTP ftp, final String nameString, final String auth, final URL url, final String finalFilePath) throws IOException {
+        if (nameString != null && ftp.bin()) {
+            final long size = ftp.getSize(finalFilePath);
+            if (size >= 0) {
+                final DownloadLink link = createDownloadlink("ftpviajd://" + auth + url.getHost() + (url.getPort() != -1 ? (":" + url.getPort()) : "") + finalFilePath);
+                link.setAvailable(true);
+                link.setVerifiedFileSize(size);
+                link.setFinalFileName(SimpleFTP.BestEncodingGuessingURLDecode(nameString));
+                return link;
+            }
+        }
+        return null;
+    }
+
+    private DownloadLink checkLinkFile(final SimpleFTP ftp, final SimpleFTPListEntry entry) throws IOException {
+        if (entry != null && ftp.bin()) {
+            final String path = entry.getURL().getPath();
+            final long size = ftp.getSize(path);
+            if (size >= 0) {
+                final String url = entry.getURL().toString();
+                final DownloadLink ret = createDownloadlink(url.replace("ftp://", "ftpviajd://"));
+                ret.setAvailable(true);
+                ret.setVerifiedFileSize(size);
+                ret.setFinalFileName(SimpleFTP.BestEncodingGuessingURLDecode(entry.getName()));
+                return ret;
+            }
+        }
+        return null;
+    }
+
+    private DownloadLink createDirectFile(SimpleFTPListEntry entry) throws IOException {
+        final String url = entry.getURL().toString();
+        final DownloadLink ret = createDownloadlink(url.replace("ftp://", "ftpviajd://"));
+        ret.setAvailable(true);
+        if (entry.getSize() >= 0) {
+            ret.setVerifiedFileSize(entry.getSize());
+        }
+        ret.setFinalFileName(SimpleFTP.BestEncodingGuessingURLDecode(entry.getName()));
         return ret;
     }
 

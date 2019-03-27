@@ -13,15 +13,11 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package org.jdownloader.extensions.extraction.multi;
 
-import java.io.BufferedReader;
 import java.io.Closeable;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.io.RandomAccessFile;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -30,10 +26,13 @@ import java.util.Date;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import jd.controlling.downloadcontroller.IfFileExistsDialogInterface;
+import jd.plugins.DownloadLink;
+import jd.plugins.FilePackage;
 import net.sf.sevenzipjbinding.ArchiveFormat;
 import net.sf.sevenzipjbinding.ExtractOperationResult;
 import net.sf.sevenzipjbinding.IArchiveExtractCallback;
@@ -71,18 +70,18 @@ import org.jdownloader.extensions.extraction.IExtraction;
 import org.jdownloader.extensions.extraction.Item;
 import org.jdownloader.extensions.extraction.MissingArchiveFile;
 import org.jdownloader.extensions.extraction.Signature;
+import org.jdownloader.extensions.extraction.bindings.downloadlink.DownloadLinkArchiveFactory;
 import org.jdownloader.extensions.extraction.content.ContentView;
 import org.jdownloader.extensions.extraction.content.PackedFile;
 import org.jdownloader.extensions.extraction.gui.iffileexistsdialog.IfFileExistsDialog;
 import org.jdownloader.settings.IfFileExistsAction;
 
 public class Multi extends IExtraction {
-
     private volatile int               crack = 0;
-
     private SevenZipArchiveWrapper     inArchive;
     private IInStream                  inStream;
     private Closeable                  closable;
+    private final ExtractionExtension  extension;
     private final static ArchiveType[] SUPPORTED_ARCHIVE_TYPES;
     static {
         final ArrayList<ArchiveType> archiveTypes = new ArrayList<ArchiveType>();
@@ -94,8 +93,12 @@ public class Multi extends IExtraction {
         SUPPORTED_ARCHIVE_TYPES = archiveTypes.toArray(new ArchiveType[0]);
     }
 
-    public Multi() {
+    public Multi(ExtractionExtension extension) {
         crack = 0;
+        this.extension = extension;
+        if (extension != null) {
+            setLogger(extension.getLogger());
+        }
         inArchive = null;
     }
 
@@ -198,41 +201,6 @@ public class Multi extends IExtraction {
         }
     }
 
-    private static boolean useARMPiLibrary() {
-        if (CrossSystem.isRaspberryPi()) {
-            return true;
-        }
-        if (CrossSystem.isUnix() && ARCHFamily.ARM.equals(CrossSystem.getARCHFamily())) {
-            FileInputStream fis = null;
-            try {
-                fis = new FileInputStream("/proc/cpuinfo");
-                final BufferedReader is = new BufferedReader(new InputStreamReader(fis, "UTF-8"));
-                try {
-                    String line = null;
-                    while ((line = is.readLine()) != null) {
-                        if (line.contains("Oxsemi NAS")) {
-                            return true;
-                        } else if (line.contains("ARM926EJ-S")) {
-                            return true;
-                        }
-                    }
-                } finally {
-                    is.close();
-                }
-            } catch (final Throwable e) {
-                e.printStackTrace();
-            } finally {
-                try {
-                    if (fis != null) {
-                        fis.close();
-                    }
-                } catch (final Throwable e) {
-                }
-            }
-        }
-        return false;
-    }
-
     private boolean initLibrary(final String libID) {
         File tmp = null;
         try {
@@ -293,6 +261,34 @@ public class Multi extends IExtraction {
         return false;
     }
 
+    private Set<String> filter(Set<String> values) {
+        final Set<String> ret = new LinkedHashSet<String>();
+        for (final String value : values) {
+            final OperatingSystem os = CrossSystem.getOS();
+            switch (os.getFamily()) {
+            case MAC:
+                if (!StringUtils.startsWithCaseInsensitive(value, "Mac-")) {
+                    continue;
+                }
+                break;
+            case LINUX:
+                if (!StringUtils.startsWithCaseInsensitive(value, "Linux-")) {
+                    continue;
+                }
+                break;
+            case WINDOWS:
+                if (!StringUtils.startsWithCaseInsensitive(value, "Windows-")) {
+                    continue;
+                }
+                break;
+            default:
+                break;
+            }
+            ret.add(value);
+        }
+        return ret;
+    }
+
     private boolean hasLibrarySupport(final ExtractionExtension extractionExtension) {
         final String customLibID = System.getProperty("sevenzipLibID");
         if (StringUtils.isNotEmpty(customLibID)) {
@@ -304,7 +300,7 @@ public class Multi extends IExtraction {
             }
             return false;
         } else {
-            final LinkedHashSet<String> libIDs = new LinkedHashSet<String>();
+            final Set<String> libIDs = new LinkedHashSet<String>();
             final String lastWorkingLibID = extractionExtension.getSettings().getLastWorkingLibID();
             if (StringUtils.isNotEmpty(lastWorkingLibID)) {
                 libIDs.add(lastWorkingLibID);
@@ -325,9 +321,11 @@ public class Multi extends IExtraction {
                     case FREEBSD:
                         if (Application.is64BitJvm()) {
                             libIDs.add("FreeBSD-amd64");
+                            libIDs.remove("FreeBSD-i386");
                             // libIDs.add("FreeBSD-amd64-2");// untested
                         } else {
                             libIDs.add("FreeBSD-i386");
+                            libIDs.remove("FreeBSD-amd64");
                         }
                         break;
                     default:
@@ -346,7 +344,7 @@ public class Multi extends IExtraction {
                     if (Application.is64BitJvm()) {
                         libIDs.add("Linux-aarch64");
                     } else {
-                        if (useARMPiLibrary()) {
+                        if (CrossSystem.isRaspberryPi()) {
                             libIDs.add("Linux-armpi");
                             libIDs.add("Linux-armpi2");
                         } else {
@@ -359,8 +357,10 @@ public class Multi extends IExtraction {
                 case X86:
                     if (Application.is64BitJvm()) {
                         libIDs.add("Linux-amd64");
+                        libIDs.remove("Linux-i386");
                     } else {
                         libIDs.add("Linux-i386");
+                        libIDs.remove("Linux-amd64");
                     }
                     break;
                 case PPC:
@@ -374,22 +374,43 @@ public class Multi extends IExtraction {
             case MAC:
                 if (Application.is64BitJvm()) {
                     libIDs.add("Mac-x86_64");
+                    libIDs.remove("Mac-i386");
                 } else {
                     libIDs.add("Mac-i386");
+                    libIDs.remove("Mac-x86_64");
                 }
                 break;
             case WINDOWS:
                 if (Application.is64BitJvm()) {
                     libIDs.add("Windows-amd64");
+                    libIDs.remove("Windows-x86");
                 } else {
                     libIDs.add("Windows-x86");
+                    libIDs.remove("Windows-amd64");
                 }
                 break;
             default:
                 // Not supported
                 break;
             }
-            return checkLibraries(extractionExtension, libIDs);
+            return checkLibraries(extractionExtension, filter(libIDs));
+        }
+    }
+
+    public static final String getSevenZipJBindingVersion() {
+        try {
+            final Method method = SevenZip.class.getMethod("getSevenZipJBindingVersion");
+            return (String) method.invoke(null, new Object[0]);
+        } catch (Throwable e) {
+            return "4.65";
+        }
+    }
+
+    public static boolean isRAR5Supported() {
+        try {
+            return ArchiveFormat.valueOf("RAR5") != null;
+        } catch (Throwable e) {
+            return false;
         }
     }
 
@@ -399,7 +420,7 @@ public class Multi extends IExtraction {
         if (!ret) {
             logger.info("Unsupported SevenZipJBinding|CPU_ARCH=" + CrossSystem.getARCHFamily() + "|OS_FAM=" + CrossSystem.getOSFamily() + "|OS=" + CrossSystem.getOS() + "|64Bit_JVM=" + Application.is64BitJvm() + "|64Bit_ARCH=" + CrossSystem.is64BitArch());
         } else {
-            logger.info("Supported SevenZipJBinding|CPU_ARCH=" + CrossSystem.getARCHFamily() + "|OS_FAM=" + CrossSystem.getOSFamily() + "|OS=" + CrossSystem.getOS() + "|64Bit_JVM=" + Application.is64BitJvm() + "|64Bit_ARCH=" + CrossSystem.is64BitArch());
+            logger.info("Supported SevenZipJBinding|Version=" + getSevenZipJBindingVersion() + "|RAR5=" + isRAR5Supported() + "|CPU_ARCH=" + CrossSystem.getARCHFamily() + "|OS_FAM=" + CrossSystem.getOSFamily() + "|OS=" + CrossSystem.getOS() + "|64Bit_JVM=" + Application.is64BitJvm() + "|64Bit_ARCH=" + CrossSystem.is64BitArch());
         }
         return ret;
     }
@@ -408,23 +429,58 @@ public class Multi extends IExtraction {
     public DummyArchive checkComplete(Archive archive) throws CheckException {
         if (archive.getArchiveType() != null) {
             try {
-                final DummyArchive ret = new DummyArchive(archive, archive.getArchiveType().name());
-                boolean hasMissingArchiveFiles = false;
-                for (ArchiveFile archiveFile : archive.getArchiveFiles()) {
-                    if (archiveFile instanceof MissingArchiveFile) {
-                        hasMissingArchiveFiles = true;
-                    }
-                    ret.add(new DummyArchiveFile(archiveFile));
+                final DummyArchive dummyArchive = new DummyArchive(archive, archive.getArchiveType());
+                for (final ArchiveFile archiveFile : archive.getArchiveFiles()) {
+                    dummyArchive.add(new DummyArchiveFile(archiveFile));
                 }
-                if (hasMissingArchiveFiles == false) {
+                if (dummyArchive.isComplete()) {
                     final ArchiveType archiveType = archive.getArchiveType();
                     final String firstArchiveFile = archive.getArchiveFiles().get(0).getFilePath();
                     final String partNumberOfFirstArchiveFile = archiveType.getPartNumberString(firstArchiveFile);
                     if (archiveType.getFirstPartIndex() != archiveType.getPartNumber(partNumberOfFirstArchiveFile)) {
                         throw new CheckException("Wrong firstArchiveFile(" + firstArchiveFile + ") for Archive(" + archive.getName() + ")");
                     }
+                    final ArchiveFile lastArchiveFile = archive.getLastArchiveFile();
+                    if (lastArchiveFile != null) {
+                        final DownloadLinkArchiveFactory factory;
+                        if (archive.getFactory() instanceof DownloadLinkArchiveFactory) {
+                            factory = (DownloadLinkArchiveFactory) archive.getFactory();
+                        } else if (archive.getParentArchive() != null && archive.getParentArchive().getFactory() instanceof DownloadLinkArchiveFactory) {
+                            factory = (DownloadLinkArchiveFactory) archive.getParentArchive().getFactory();
+                        } else {
+                            factory = null;
+                        }
+                        if (factory != null) {
+                            final int nextIndex = archiveType.getPartNumber(archiveType.getPartNumberString(lastArchiveFile.getFilePath())) + 1;
+                            final List<ArchiveFile> maybeMissingArchiveFiles = ArchiveType.getMissingArchiveFiles(archive, archiveType, nextIndex);
+                            if (maybeMissingArchiveFiles.size() > 0) {
+                                final Set<String> archiveIDs = new HashSet<String>();
+                                factoryLoop: for (final DownloadLink downloadLink : factory.getDownloadLinks()) {
+                                    final FilePackage fp = downloadLink.getFilePackage();
+                                    final boolean readL = fp.getModifyLock().readLock();
+                                    try {
+                                        final List<Archive> searchArchives = extension.getArchivesFromPackageChildren(fp.getChildren(), archiveIDs, -1);
+                                        if (searchArchives != null) {
+                                            for (final Archive searchArchive : searchArchives) {
+                                                if (archiveIDs.add(searchArchive.getArchiveID())) {
+                                                    for (ArchiveFile maybeMissingArchiveFile : maybeMissingArchiveFiles) {
+                                                        if (StringUtils.equals(maybeMissingArchiveFile.getName(), searchArchive.getName())) {
+                                                            dummyArchive.add(new DummyArchiveFile(new MissingArchiveFile(searchArchive, maybeMissingArchiveFile.getFilePath())));
+                                                            break factoryLoop;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } finally {
+                                        fp.getModifyLock().readUnlock(readL);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                return ret;
+                return dummyArchive;
             } catch (CheckException e) {
                 throw e;
             } catch (Throwable e) {
@@ -436,35 +492,18 @@ public class Multi extends IExtraction {
 
     @Override
     public void close() {
-        try {
-            final Archive archive = getExtractionController().getArchive();
-            if (archive.getExitCode() == ExtractionControllerConstants.EXIT_CODE_SUCCESS && ArchiveType.RAR_MULTI.equals(archive.getArchiveType())) {
-                // Deleteing rar recovery volumes
-                final HashSet<String> done = new HashSet<String>();
-                for (ArchiveFile link : archive.getArchiveFiles()) {
-                    if (done.add(link.getName())) {
-                        final String filePath = link.getFilePath().replaceFirst("(?i)\\.rar$", ".rev");
-                        final File file = new File(filePath);
-                        if (file.exists() && file.isFile()) {
-                            logger.info("Deleting rar recovery volume " + file.getAbsolutePath());
-                            if (!file.delete()) {
-                                logger.warning("Could not deleting rar recovery volume " + file.getAbsolutePath());
-                            }
-                        }
-                    }
-                }
-            }
-        } finally {
+        if (inArchive != null) {
             try {
                 inArchive.close();
             } catch (final Throwable e) {
             }
+        }
+        if (closable != null) {
             try {
                 closable.close();
             } catch (final Throwable e) {
             }
         }
-
     }
 
     @Override
@@ -513,7 +552,7 @@ public class Multi extends IExtraction {
                             throw new MultiSevenZipException("Extraction has been aborted", ExtractionControllerConstants.EXIT_CODE_USER_BREAK);
                         }
                         if (callback.hasError()) {
-                            throw new SevenZipException("callback encountered an error!");
+                            throw new SevenZipException("callback encountered an error!", callback.getError());
                         }
                         if (callback.isResultMissing()) {
                             throw new SevenZipException("callback is missing results!");
@@ -534,7 +573,7 @@ public class Multi extends IExtraction {
                     final File extractTo = getExtractFilePath(item, ctrl, skippedFlag);
                     if (skippedFlag.get()) {
                         if (size != null && size >= 0) {
-                            ctrl.addAndGetProcessedBytes(size);
+                            ctrl.addProcessedBytesAndPauseIfNeeded(size);
                         }
                         continue;
                     } else if (extractTo == null) {
@@ -544,19 +583,18 @@ public class Multi extends IExtraction {
                     ctrl.setCurrentActiveItem(new Item(item.getPath(), size, extractTo));
                     try {
                         final MultiCallback call = new MultiCallback(extractTo, getExtractionController(), getConfig()) {
-
                             @Override
                             public int write(final byte[] data) throws SevenZipException {
                                 if (ctrl.gotKilled()) {
                                     throw new MultiSevenZipException("Extraction has been aborted", ExtractionControllerConstants.EXIT_CODE_USER_BREAK);
                                 }
                                 final int ret = super.write(data);
-                                ctrl.addAndGetProcessedBytes(ret);
+                                ctrl.addProcessedBytesAndPauseIfNeeded(ret);
                                 return ret;
                             }
                         };
                         archive.addExtractedFiles(extractTo);
-                        ExtractOperationResult res;
+                        final ExtractOperationResult res;
                         try {
                             if (item.isEncrypted()) {
                                 String pw = archive.getFinalPassword();
@@ -571,20 +609,21 @@ public class Multi extends IExtraction {
                             /* always close files, thats why its best in finally branch */
                             call.close();
                         }
+                        logger.info("Extracted:" + item.getPath() + "|BytesWritten:" + call.getWritten() + "|FileSize(OnDisk):" + extractTo.length() + "|FileSize(InArchive):" + size + "|Result:" + res);
                         setLastModifiedDate(item, extractTo);
                         setPermissions(item, extractTo);
-                        if (size != null && size != extractTo.length()) {
-                            if (ExtractOperationResult.OK == res) {
-                                logger.info("Size missmatch for " + item.getPath() + "(" + size + "!=" + extractTo.length() + "), but Extraction returned OK?! Archive seems incomplete");
-                                archive.setExitCode(ExtractionControllerConstants.EXIT_CODE_INCOMPLETE_ERROR);
-                                return;
-                            }
-                            logger.info("Size missmatch for " + item.getPath() + "(" + size + "!=" + extractTo.length() + ")");
-                            archive.setExitCode(ExtractionControllerConstants.EXIT_CODE_INCOMPLETE_ERROR);
-                            return;
-                        }
                         switch (res) {
                         case OK:
+                            if (size != null && size < extractTo.length()) {
+                                if (extractTo.length() < size) {
+                                    logger.info("Size missmatch for " + item.getPath() + "(" + extractTo.length() + "<" + size + ")");
+                                    archive.setExitCode(ExtractionControllerConstants.EXIT_CODE_INCOMPLETE_ERROR);
+                                    return;
+                                }
+                                if (extractTo.length() > size) {
+                                    logger.info("Ignore Size missmatch for " + item.getPath() + "(" + extractTo.length() + ">" + size + ")");
+                                }
+                            }
                             /* extraction successfully ,continue with next file */
                             break;
                         case CRCERROR:
@@ -803,9 +842,7 @@ public class Multi extends IExtraction {
             propIDLastWriteTime = propID;
             final boolean slowDownWorkaroundNeeded = propID != null && !"LAST_MODIFICATION_TIME".equals(propID.name());
             final Method extract = archive.getClass().getMethod("extract", new Class[] { int[].class, boolean.class, IArchiveExtractCallback.class });
-
             return new SevenZipArchiveWrapper() {
-
                 private final AtomicBoolean closedFlag = new AtomicBoolean(false);
 
                 @Override
@@ -930,7 +967,6 @@ public class Multi extends IExtraction {
                 public Object getArchiveProperty(PropID propID) {
                     return invoke(getArchiveProperty, propID);
                 }
-
             };
         } catch (NoSuchMethodException e) {
             throw new SevenZipException(e);
@@ -979,13 +1015,13 @@ public class Multi extends IExtraction {
                     inStream = rarOpener.getStream(firstArchiveFile);
                     break;
                 case SEVENZIP_PARTS:
-                    final MultiOpener sevenZipPartsOpener = new MultiOpener(archive, password);
+                    final MultiOpener sevenZipPartsOpener = new MultiOpener(archive, password, getLogger());
                     closable = sevenZipPartsOpener;
                     callBack = sevenZipPartsOpener;
                     inStream = new ModdedVolumedArchiveInStream(firstArchiveFile.getFilePath(), sevenZipPartsOpener);
                     break;
                 default:
-                    final MultiOpener multiOpener = new MultiOpener(archive, password);
+                    final MultiOpener multiOpener = new MultiOpener(archive, password, getLogger());
                     closable = multiOpener;
                     callBack = multiOpener;
                     inStream = multiOpener.getStream(firstArchiveFile);
@@ -1110,6 +1146,7 @@ public class Multi extends IExtraction {
             if (e.getMessage().contains("HRESULT: 0x80004005") || e.getMessage().contains("HRESULT: 0x1 (FALSE)") || e.getMessage().contains("can't be opened") || e.getMessage().contains("No password was provided")) {
                 /* password required */
                 logger.info("SevenZipException: " + e.getMessage());
+                archive.setProtected(true);
                 archive.setPasswordRequiredToOpen(true);
                 return false;
             }
@@ -1142,7 +1179,7 @@ public class Multi extends IExtraction {
                     final String signatureString = FileSignatures.readFileSignature(new File(firstArchiveFile.getFilePath()), 14);
                     if (signatureString.length() >= 16 && StringUtils.startsWithCaseInsensitive(signatureString, "526172211a070100")) {
                         /* check for rar5 */
-                        if (ArchiveType.isRAR5Supported()) {
+                        if (isRAR5Supported()) {
                             logger.severe("RAR5 is supported:" + signatureString);
                         } else {
                             logger.severe("RAR5 is not supported:" + signatureString);
@@ -1174,7 +1211,6 @@ public class Multi extends IExtraction {
                          * 0x0200 EncryptedVerion
                          */
                         // final String headerBitFlags2 = "" + signatureString.charAt(22) + signatureString.charAt(23);
-
                         final int headerByte1 = Integer.parseInt(headerBitFlags1, 16);
                         // final int headerByte2 = Integer.parseInt(headerBitFlags2, 16);
                         if (BinaryLogic.containsAll(headerByte1, 1 << 7) && !format.name().startsWith("RAR5")) {
@@ -1214,7 +1250,6 @@ public class Multi extends IExtraction {
             } catch (Throwable e) {
                 getLogger().log(e);
             }
-
             final IArchiveOpenCallback callBack;
             if (archive.getArchiveFiles().size() == 1) {
                 final RandomAccessFile raf = new RandomAccessFile(firstArchiveFile.getFilePath(), "r");
@@ -1231,13 +1266,13 @@ public class Multi extends IExtraction {
                     break;
                 case SEVENZIP_PARTS:
                 case ZIP_MULTI:
-                    final MultiOpener sevenZipPartsOpener = new MultiOpener(archive);
+                    final MultiOpener sevenZipPartsOpener = new MultiOpener(archive, getLogger());
                     closable = sevenZipPartsOpener;
                     callBack = sevenZipPartsOpener;
                     inStream = new ModdedVolumedArchiveInStream(firstArchiveFile.getFilePath(), sevenZipPartsOpener);
                     break;
                 default:
-                    final MultiOpener multiOpener = new MultiOpener(archive);
+                    final MultiOpener multiOpener = new MultiOpener(archive, getLogger());
                     closable = multiOpener;
                     callBack = multiOpener;
                     inStream = multiOpener.getStream(firstArchiveFile);
@@ -1266,9 +1301,21 @@ public class Multi extends IExtraction {
             if (inArchive.getNumberOfItems() == 0) {
                 throw new SevenZipException("No Items found in \"" + firstArchiveFile.getFilePath() + "\"! Maybe unsupported archive type?");
             }
-            initFilters();
             updateContentView(inArchive.getSimpleInterface());
         } catch (SevenZipException e) {
+            if (StringUtils.containsIgnoreCase(e.getMessage(), "can't be opened")) {
+                try {
+                    if (!validateArchiveParts(archive)) {
+                        if (archive.getCrcError().size() > 0) {
+                            archive.setExitCode(ExtractionControllerConstants.EXIT_CODE_CRC_ERROR);
+                        }
+                        return false;
+                    }
+                } catch (final IOException e2) {
+                    logger.log(e);
+                    throw new ExtractionException(e2, null);
+                }
+            }
             if (e.getMessage() != null && (e.getMessage().contains("HRESULT: 0x80004005") || e.getMessage().contains("HRESULT: 0x1 (FALSE)") || e.getMessage().contains("can't be opened") || e.getMessage().contains("No password was provided"))) {
                 /* password required */
                 archive.setProtected(true);
@@ -1285,10 +1332,72 @@ public class Multi extends IExtraction {
         return true;
     }
 
+    private boolean validateArchiveParts(final Archive archive) throws IOException {
+        final ArchiveType type = archive.getArchiveType();
+        switch (type) {
+        case RAR_SINGLE:
+        case RAR_MULTI:
+        case RAR_MULTI2:
+        case RAR_MULTI3:
+        case RAR_MULTI4:
+            for (final ArchiveFile archiveFile : archive.getArchiveFiles()) {
+                if (!ArchiveType.RAR_SINGLE.isValidPart(0, archiveFile)) {
+                    archive.addCrcError(archiveFile);
+                    logger.severe("Missing/Broken" + type + " Signature: " + archiveFile);
+                }
+            }
+            break;
+        case ZIP_SINGLE:
+            for (final ArchiveFile archiveFile : archive.getArchiveFiles()) {
+                final String sig = FileSignatures.readFileSignature(new File(archiveFile.getFilePath()));
+                final Signature signature = new FileSignatures().getSignature(sig);
+                if (!"ZIP".equalsIgnoreCase(signature.getId())) {
+                    archive.addCrcError(archiveFile);
+                    logger.severe("Missing/Broken" + type + " Signature: " + archiveFile);
+                }
+            }
+            break;
+        case GZIP_SINGLE:
+            for (final ArchiveFile archiveFile : archive.getArchiveFiles()) {
+                final String sig = FileSignatures.readFileSignature(new File(archiveFile.getFilePath()));
+                final Signature signature = new FileSignatures().getSignature(sig);
+                if (!"GZ".equalsIgnoreCase(signature.getId())) {
+                    archive.addCrcError(archiveFile);
+                    logger.severe("Missing/Broken" + type + " Signature: " + archiveFile);
+                }
+            }
+            break;
+        case BZIP2_SINGLE:
+            for (final ArchiveFile archiveFile : archive.getArchiveFiles()) {
+                final String sig = FileSignatures.readFileSignature(new File(archiveFile.getFilePath()));
+                final Signature signature = new FileSignatures().getSignature(sig);
+                if (!"BZ2".equalsIgnoreCase(signature.getId())) {
+                    archive.addCrcError(archiveFile);
+                    logger.severe("Missing/Broken" + type + " Signature: " + archiveFile);
+                }
+            }
+            break;
+        case SEVENZIP_SINGLE:
+            for (final ArchiveFile archiveFile : archive.getArchiveFiles()) {
+                final String sig = FileSignatures.readFileSignature(new File(archiveFile.getFilePath()));
+                final Signature signature = new FileSignatures().getSignature(sig);
+                if (!"7Z".equalsIgnoreCase(signature.getId())) {
+                    archive.addCrcError(archiveFile);
+                    logger.severe("Missing/Broken" + type + " Signature: " + archiveFile);
+                }
+            }
+            break;
+        default:
+            break;
+        }
+        return archive.getCrcError().size() == 0;
+    }
+
     private void updateContentView(ISimpleInArchive simpleInterface) {
         final Archive archive = getExtractionController().getArchive();
         try {
             if (archive != null) {
+                initFilters();
                 final ContentView newView = new ContentView();
                 for (ISimpleInArchiveItem item : simpleInterface.getArchiveItems()) {
                     try {

@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.io.File;
@@ -28,23 +27,22 @@ import jd.nutils.encoding.Base64;
 import jd.parser.Regex;
 import jd.parser.html.Form;
 import jd.plugins.CryptedLink;
-import jd.plugins.DecrypterException;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
+import jd.plugins.LinkStatus;
+import jd.plugins.PluginException;
 import jd.plugins.PluginForDecrypt;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "mov-world.net", "xxx-4-free.net" }, urls = { "http://(www\\.)?mov-world\\.net/(\\?id=\\d+|.*?/.*?\\d+\\.html|[a-z]{2}-[a-zA-Z0-9]+/)", "http://(www\\.)?xxx-4-free\\.net/.*?/.*?\\.html" })
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "mov-world.net" }, urls = { "http://(www\\.)?mov-world\\.net/(\\?id=\\d+|.*?/.*?\\d+\\.html|[a-z]{2}-[a-zA-Z0-9]+/)" })
 public class MvWrldNt extends PluginForDecrypt {
-
     public MvWrldNt(final PluginWrapper wrapper) {
         super(wrapper);
     }
 
     private static final String redirectLinks            = "http://(www\\.)?mov\\-world\\.net/[a-z]{2}-[a-zA-Z0-9]+/";
-    private static final String UNSUPPORTEDLINKS         = "http://(www\\.)?(xxx-4\\-free\\.net|mov\\-world\\.net)//?(news/|topliste/|premium_zugang|suche/|faq|pics/index|clips/index|movies/index|movies/seite|streams/index|stories/index|partner/anmelden|kontakt|tv-serien/[^/]+/(seite-\\d+|index))\\.html";
+    private static final String UNSUPPORTEDLINKS         = "http://(www\\.)?(mov\\-world\\.net)//?(news/|topliste/|premium_zugang|suche/|faq|pics/index|clips/index|movies/index|movies/seite|streams/index|stories/index|partner/anmelden|kontakt|tv-serien/[^/]+/(seite-\\d+|index))\\.html";
     private static final String SPECIALUNSUPPORTEDLINKS  = "http://(www\\.)?[^/]+/.*?seite\\-\\d+\\.html";
     private static final String SPECIALUNSUPPORTEDLINKS2 = "http://(www\\.)?[^/]+/(stories/[a-z0-9\\-]+|news/[a-z0-9\\-]+|topliste/.+|suche/.+)\\.html";
-    private static final String XXX4FREESTREAMLINK       = "http://(www\\.)?xxx\\-4\\-free\\.net/streams/[a-z0-9\\-]+\\.html";
 
     @Override
     public ArrayList<DownloadLink> decryptIt(final CryptedLink param, final ProgressController progress) throws Exception {
@@ -75,7 +73,6 @@ public class MvWrldNt extends PluginForDecrypt {
             decryptedLinks.add(createOfflinelink(parameter));
             return decryptedLinks;
         }
-
         if (parameter.contains("/streams/")) {
             String externID = br.getRegex("name=\"FlashVars\" value=\"options=(http://(www\\.)?pornhub\\.com/embed_player(_v\\d+)?\\.php\\?id=\\d+)\"").getMatch(0);
             if (externID != null) {
@@ -93,7 +90,6 @@ public class MvWrldNt extends PluginForDecrypt {
                 return decryptedLinks;
             }
         }
-
         final String MAINPAGE = "http://" + br.getHost();
         final String password = br.getRegex("class=\"password\">Password: (.*?)</p>").getMatch(0);
         ArrayList<String> pwList = null;
@@ -104,7 +100,7 @@ public class MvWrldNt extends PluginForDecrypt {
                 return null;
             }
             captchaUrl = captchaForm.getRegex("img src=\"(.*?)\"").getMatch(0);
-            Browser brc = br.cloneBrowser();
+            final Browser brc = getCaptchaBrowser(br);
             captchaUrl = MAINPAGE + captchaUrl;
             final File captchaFile = getLocalCaptchaFile();
             brc.getDownload(captchaFile, captchaUrl);
@@ -124,7 +120,7 @@ public class MvWrldNt extends PluginForDecrypt {
                 break;
             }
             if (br.containsHTML("\"Der Sicherheits Code")) {
-                throw new DecrypterException(DecrypterException.CAPTCHA);
+                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
             }
         }
         /* Base64 Decode */
@@ -240,5 +236,4 @@ public class MvWrldNt extends PluginForDecrypt {
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return true;
     }
-
 }

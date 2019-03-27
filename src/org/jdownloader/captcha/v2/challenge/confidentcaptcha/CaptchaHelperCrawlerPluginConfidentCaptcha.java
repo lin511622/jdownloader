@@ -5,6 +5,7 @@ import java.awt.Rectangle;
 import jd.controlling.captcha.SkipException;
 import jd.controlling.downloadcontroller.SingleDownloadController;
 import jd.controlling.linkcollector.LinkCollector;
+import jd.controlling.linkcollector.LinkCollector.JobLinkCrawler;
 import jd.controlling.linkcrawler.CrawledLink;
 import jd.controlling.linkcrawler.LinkCrawler;
 import jd.controlling.linkcrawler.LinkCrawlerThread;
@@ -26,7 +27,6 @@ import org.jdownloader.captcha.v2.solver.browser.BrowserViewport;
 import org.jdownloader.captcha.v2.solver.browser.BrowserWindow;
 
 public class CaptchaHelperCrawlerPluginConfidentCaptcha extends AbstractCaptchaHelperConfidentCaptcha<PluginForDecrypt> {
-
     public CaptchaHelperCrawlerPluginConfidentCaptcha(final PluginForDecrypt plugin, final Browser br, final String siteKey) {
         super(plugin, br, siteKey);
     }
@@ -50,16 +50,14 @@ public class CaptchaHelperCrawlerPluginConfidentCaptcha extends AbstractCaptchaH
         final LinkCrawler currentCrawler = plugin.getCrawler();
         final CrawledLink currentOrigin = plugin.getCurrentLink().getOriginLink();
         ConfidentCaptchaChallenge c = new ConfidentCaptchaChallenge(plugin, sitekey) {
-
             @Override
             public BrowserViewport getBrowserViewport(BrowserWindow screenResource, Rectangle elementBounds) {
                 return null;
             }
         };
-        int ct = plugin.getCaptchaTimeout();
-        c.setTimeout(ct);
+        c.setTimeout(plugin.getChallengeTimeout(c));
         plugin.invalidateLastChallengeResponse();
-        final BlacklistEntry blackListEntry = CaptchaBlackList.getInstance().matches(c);
+        final BlacklistEntry<?> blackListEntry = CaptchaBlackList.getInstance().matches(c);
         if (blackListEntry != null) {
             logger.warning("Cancel. Blacklist Matching");
             throw new CaptchaException(blackListEntry);
@@ -84,11 +82,23 @@ public class CaptchaHelperCrawlerPluginConfidentCaptcha extends AbstractCaptchaH
             case REFRESH:
                 // refresh is not supported from the pluginsystem right now.
                 return "";
+            case TIMEOUT:
+                plugin.onCaptchaTimeout(plugin.getCurrentLink(), c);
+                // TIMEOUT may fallthrough to SINGLE
+            case SINGLE:
+                break;
             case STOP_CURRENT_ACTION:
                 if (Thread.currentThread() instanceof LinkCrawlerThread) {
-                    LinkCollector.getInstance().abort();
-                    // Just to be sure
-                    CaptchaBlackList.getInstance().add(new BlockAllCrawlerCaptchasEntry(plugin.getCrawler()));
+                    final LinkCrawler linkCrawler = ((LinkCrawlerThread) Thread.currentThread()).getCurrentLinkCrawler();
+                    if (linkCrawler instanceof JobLinkCrawler) {
+                        final JobLinkCrawler jobLinkCrawler = ((JobLinkCrawler) linkCrawler);
+                        logger.info("Abort JobLinkCrawler:" + jobLinkCrawler.getUniqueAlltimeID().toString());
+                        jobLinkCrawler.abort();
+                    } else {
+                        logger.info("Abort global LinkCollector");
+                        LinkCollector.getInstance().abort();
+                    }
+                    CaptchaBlackList.getInstance().add(new BlockAllCrawlerCaptchasEntry(getPlugin().getCrawler()));
                 }
                 break;
             default:
@@ -97,9 +107,8 @@ public class CaptchaHelperCrawlerPluginConfidentCaptcha extends AbstractCaptchaH
             throw new CaptchaException(e.getSkipRequest());
         }
         if (!c.isSolved()) {
-            throw new DecrypterException(DecrypterException.CAPTCHA);
+            throw new PluginException(LinkStatus.ERROR_CAPTCHA);
         }
         return c.getResult().getValue();
     }
-
 }

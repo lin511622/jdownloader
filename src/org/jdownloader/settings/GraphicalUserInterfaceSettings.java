@@ -2,12 +2,16 @@ package org.jdownloader.settings;
 
 import java.awt.event.KeyEvent;
 import java.net.URL;
+import java.text.DecimalFormat;
 import java.util.HashMap;
+import java.util.Map;
 
 import org.appwork.storage.Storable;
 import org.appwork.storage.config.ConfigInterface;
 import org.appwork.storage.config.annotations.AboutConfig;
+import org.appwork.storage.config.annotations.AbstractCustomValueGetter;
 import org.appwork.storage.config.annotations.ConfigEntryKeywords;
+import org.appwork.storage.config.annotations.CustomValueGetter;
 import org.appwork.storage.config.annotations.DefaultBooleanValue;
 import org.appwork.storage.config.annotations.DefaultEnumValue;
 import org.appwork.storage.config.annotations.DefaultIntArrayValue;
@@ -17,9 +21,11 @@ import org.appwork.storage.config.annotations.DefaultStringValue;
 import org.appwork.storage.config.annotations.DescriptionForConfigEntry;
 import org.appwork.storage.config.annotations.EnumLabel;
 import org.appwork.storage.config.annotations.LabelInterface;
-import org.appwork.storage.config.annotations.LookUpKeys;
 import org.appwork.storage.config.annotations.RequiresRestart;
 import org.appwork.storage.config.annotations.SpinnerValidator;
+import org.appwork.storage.config.handler.KeyHandler;
+import org.appwork.utils.Application;
+import org.appwork.utils.os.CrossSystem;
 import org.appwork.utils.swing.dialog.View;
 import org.appwork.utils.swing.windowmanager.WindowManager.FrameState;
 import org.jdownloader.gui.translate._GUI;
@@ -28,6 +34,27 @@ import org.jdownloader.settings.staticreferences.CFG_GENERAL;
 import org.jdownloader.translate._JDT;
 
 public interface GraphicalUserInterfaceSettings extends ConfigInterface {
+    public static enum DownloadFolderChooserDialogSubfolder {
+        AUTO,
+        ENABLED,
+        DISABLED
+    }
+
+    @DefaultEnumValue("AUTO")
+    @AboutConfig
+    DownloadFolderChooserDialogSubfolder getDownloadFolderChooserDialogSubfolder();
+
+    void setDownloadFolderChooserDialogSubfolder(DownloadFolderChooserDialogSubfolder value);
+
+    public static class CustomIsConfigViewVisible extends AbstractCustomValueGetter<Boolean> {
+        @Override
+        public Boolean getValue(KeyHandler<Boolean> keyHandler, Boolean value) {
+            if (CrossSystem.isMac() && Application.getJavaVersion() < Application.JAVA17) {
+                return Boolean.TRUE;
+            }
+            return value;
+        }
+    }
 
     /**
      * How many ms the speedmeter shall show/record. Please note that big Timeframes and high fps values may cause high CPU usage
@@ -47,6 +74,7 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
      */
     @AboutConfig
     @DefaultIntValue(4)
+    @SpinnerValidator(min = 1, max = 10, step = 1)
     int getSpeedMeterFramesPerSecond();
 
     void setSpeedMeterFramesPerSecond(int i);
@@ -104,7 +132,6 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
     // @DefaultBooleanValue(true)
     // @RequiresRestart("A JDownloader Restart is Required")
     // boolean isDownloadViewSidebarVisible();
-
     @AboutConfig
     @DefaultBooleanValue(true)
     boolean isBalloonNotificationEnabled();
@@ -121,7 +148,7 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
     }
 
     @AboutConfig
-    @DefaultEnumValue("NEVER")
+    @DefaultEnumValue("ON_STARTUP")
     CLIPBOARD_SKIP_MODE getClipboardSkipMode();
 
     void setClipboardSkipMode(CLIPBOARD_SKIP_MODE mode);
@@ -147,6 +174,7 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
     boolean isColoredIconsForDisabledHosterColumnEnabled();
 
     @DefaultBooleanValue(false)
+    @CustomValueGetter(CustomIsConfigViewVisible.class)
     boolean isConfigViewVisible();
 
     @DefaultBooleanValue(true)
@@ -157,14 +185,6 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
     @DefaultBooleanValue(true)
     @RequiresRestart("A JDownloader Restart is Required")
     boolean isFilterHighlightEnabled();
-
-    @AboutConfig
-    @DefaultBooleanValue(true)
-    @LookUpKeys({ "linkgrabberhighlighonnewlinksenabled" })
-    @DescriptionForConfigEntry("If enabled, JDownloader GUI switch to Linkgrabber Tab when new links are added")
-    boolean isSwitchToLinkgrabberTabOnNewLinksAddedEnabled();
-
-    public void setSwitchToLinkgrabberTabOnNewLinksAddedEnabled(boolean b);
 
     @AboutConfig
     @DescriptionForConfigEntry("Enable/Disable the DownloadPanel Overview panel ")
@@ -240,6 +260,7 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
 
     @DefaultBooleanValue(true)
     @RequiresRestart("A JDownloader Restart is Required")
+    @AboutConfig
     boolean isLinkgrabberSidebarVisible();
 
     @DefaultBooleanValue(false)
@@ -306,7 +327,6 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
     // void setDownloadViewSidebarToggleButtonEnabled(boolean b);
     //
     // void setDownloadViewSidebarVisible(boolean b);
-
     void setActiveConfigPanel(String name);
 
     void setActiveMyJDownloaderPanel(String name);
@@ -314,9 +334,7 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
     void setActivePluginConfigPanel(String name);
 
     // void setActiveCESConfigPanel(String name);
-
     // String getActiveCESConfigPanel();
-
     void setBalloonNotificationEnabled(boolean b);
 
     void setCaptchaScaleFactor(int b);
@@ -409,22 +427,84 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
     void setFileCountInSizeColumnVisible(boolean b);
 
     public static enum SIZEUNIT {
-        TiB(1024 * 1024 * 1024 * 1024l),
-        GiB(1024 * 1024 * 1024l),
-        MiB(1024 * 1024l),
-        KiB(1024),
+        TiB(1024 * 1024 * 1024 * 1024l, true),
+        TB(1000 * 1000 * 1000 * 1000l),
+        GiB(1024 * 1024 * 1024l, true),
+        GB(1000 * 1000 * 1000l),
+        MiB(1024 * 1024l, true),
+        MB(1000 * 1000l),
+        KiB(1024, true),
+        KB(1000l),
         B(1);
+        private final long    divider;
+        private final boolean iecPrefix;
 
-        private final long divider;
+        public final boolean isIECPrefix() {
+            return iecPrefix;
+        }
 
         public final long getDivider() {
             return divider;
         }
 
-        private SIZEUNIT(long divider) {
+        private SIZEUNIT(long divider, boolean isIECPrefix) {
             this.divider = divider;
+            this.iecPrefix = isIECPrefix;
         }
 
+        private SIZEUNIT(long divider) {
+            this(divider, false);
+        }
+
+        public static final String formatValue(SIZEUNIT maxSizeUnit, final long fileSize) {
+            return formatValue(maxSizeUnit, new DecimalFormat("0.00"), fileSize);
+        }
+
+        public static final String formatValue(SIZEUNIT maxSizeUnit, final DecimalFormat formatter, final long fileSize) {
+            final boolean isIECPrefix = maxSizeUnit.isIECPrefix();
+            switch (maxSizeUnit) {
+            case TiB:
+                if (fileSize >= 1024 * 1024 * 1024 * 1024l) {
+                    return formatter.format(fileSize / (1024 * 1024 * 1024 * 1024.0)).concat(" TiB");
+                }
+            case TB:
+                if (!isIECPrefix && fileSize >= 1000 * 1000 * 1000 * 1000l) {
+                    return formatter.format(fileSize / (1000 * 1000 * 1000 * 1000.0)).concat(" TB");
+                }
+            case GiB:
+                if (isIECPrefix && fileSize >= 1024 * 1024 * 1024l) {
+                    return formatter.format(fileSize / (1024 * 1024 * 1024.0)).concat(" GiB");
+                }
+            case GB:
+                if (!isIECPrefix && fileSize >= 1000 * 1000 * 1000l) {
+                    return formatter.format(fileSize / (1000 * 1000 * 1000.0)).concat(" GB");
+                }
+            case MiB:
+                if (isIECPrefix && fileSize >= 1024 * 1024l) {
+                    return formatter.format(fileSize / (1024 * 1024.0)).concat(" MiB");
+                }
+            case MB:
+                if (!isIECPrefix && fileSize >= 1000 * 1000l) {
+                    return formatter.format(fileSize / (1000 * 1000.0)).concat(" MB");
+                }
+            case KiB:
+                if (isIECPrefix && fileSize >= 1024l) {
+                    return formatter.format(fileSize / 1024.0).concat(" KiB");
+                }
+            case KB:
+                if (!isIECPrefix && fileSize >= 1000l) {
+                    return formatter.format(fileSize / 1000.0).concat(" KB");
+                }
+            default:
+                if (fileSize == 0) {
+                    return "0 B";
+                }
+                if (fileSize < 0) {
+                    return "~";
+                }
+                return fileSize + " B";
+            }
+        }
     }
 
     @AboutConfig
@@ -435,16 +515,12 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
 
     public static enum MacDockProgressDisplay implements LabelInterface {
         TOTAL_PROGRESS() {
-
             @Override
             public String getLabel() {
                 return _GUI.T.DockProgressDisplay_total_progress();
             }
-
         },
-
         NOTHING() {
-
             @Override
             public String getLabel() {
                 return _GUI.T.DockProgressDisplay_nothing();
@@ -460,23 +536,18 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
 
     public static enum WindowsTaskBarProgressDisplay implements LabelInterface {
         TOTAL_PROGRESS() {
-
             @Override
             public String getLabel() {
                 return _GUI.T.DockProgressDisplay_total_progress();
             }
-
         },
-
         NOTHING() {
-
             @Override
             public String getLabel() {
                 return _GUI.T.DockProgressDisplay_nothing();
             }
         },
         TOTAL_PROGRESS_AND_CONNECTIONS() {
-
             @Override
             public String getLabel() {
                 return _GUI.T.DockProgressDisplay_connections_and_progress();
@@ -557,7 +628,6 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
 
     // org.jdownloader.gui.laf.jddefault.JDDefaultLookAndFeel
     public static enum LookAndFeelType {
-
         ALU_OXIDE("synthetica-themes", "de.javasoft.plaf.synthetica.SyntheticaAluOxideLookAndFeel"),
         BLACK_EYE("synthetica-themes", "de.javasoft.plaf.synthetica.SyntheticaBlackEyeLookAndFeel"),
         BLACK_MOON("synthetica-themes", "de.javasoft.plaf.synthetica.SyntheticaBlackMoonLookAndFeel"),
@@ -578,7 +648,6 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
         WHITE_VISION("synthetica-themes", "de.javasoft.plaf.synthetica.SyntheticaWhiteVisionLookAndFeel"),
         JD_PLAIN("theme-plain", "org.jdownloader.gui.laf.plain.PlainLookAndFeel"),
         DEFAULT(null, "org.jdownloader.gui.laf.jddefault.JDDefaultLookAndFeel");
-
         private final String clazz;
         private final String extensionID;
 
@@ -615,16 +684,17 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
     void setNewDialogFrameState(FrameState state);
 
     public static enum NewLinksInLinkgrabberAction {
+        SWITCH,
         NOTHING,
         TO_FRONT,
         FOCUS
     }
 
     @AboutConfig
-    @DefaultEnumValue("NOTHING")
-    NewLinksInLinkgrabberAction getNewLinksAction();
+    @DefaultEnumValue("SWITCH")
+    NewLinksInLinkgrabberAction getNewLinksActionV2();
 
-    void setNewLinksAction(NewLinksInLinkgrabberAction action);
+    void setNewLinksActionV2(NewLinksInLinkgrabberAction action);
 
     @AboutConfig
     @DescriptionForConfigEntry("JDownloader uses a workaround to bring it's window or dialogs to focused to front. It simulates an ALT key shortcut. \r\nIf disabled, you will get focus problems")
@@ -684,7 +754,6 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
         DONT_GROUP,
         @EnumLabel("Group supported Accounts")
         GROUP_BY_SUPPORTED_ACCOUNTS
-
     }
 
     @AboutConfig
@@ -713,7 +782,6 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
     void setPackageDoubleClickAction(PackageDoubleClickAction action);
 
     public static enum LinkDoubleClickAction {
-
         @EnumLabel("Open Downloadfolder")
         OPEN_FOLDER,
         @EnumLabel("Open File")
@@ -781,7 +849,6 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
     void setLinkPropertiesPanelDownloadFromVisible(boolean v);
 
     //
-
     @AboutConfig
     @DefaultBooleanValue(true)
     boolean isDownloadsPropertiesPanelCommentVisible();
@@ -833,7 +900,6 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
     public static enum RlyWarnLevel {
         @EnumLabel("HIGH! Show all 'Are you sure?' dialogs!")
         HIGH,
-
         @EnumLabel("NORMAL! Show the most important 'Are you sure?' dialogs!")
         NORMAL,
         @EnumLabel("LOW! Show only severe 'Are you sure?' dialogs!")
@@ -851,33 +917,28 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
     public void setRlyWarnLevel(RlyWarnLevel level);
 
     public static enum DeleteFileOptions implements LabelInterface {
-
         REMOVE_LINKS_ONLY() {
             @Override
             public String getLabel() {
                 return org.jdownloader.gui.translate._GUI.T.ConfirmDeleteLinksDialog_layoutDialogContent_no_filedelete2();
             }
         },
-
         REMOVE_LINKS_AND_RECYCLE_FILES() {
             @Override
             public String getLabel() {
                 return org.jdownloader.gui.translate._GUI.T.ConfirmDeleteLinksDialog_layoutDialogContent_Recycle_2();
             }
         },
-
         REMOVE_LINKS_AND_DELETE_FILES() {
             @Override
             public String getLabel() {
                 return org.jdownloader.gui.translate._GUI.T.ConfirmDeleteLinksDialog_layoutDialogContent_delete_2();
             }
         };
-
         @Override
         public String getLabel() {
             return null;
         }
-
     }
 
     @DescriptionForConfigEntry("Placeholders: |#TITLE|, | - #SPEED/s|, | - #UPDATENOTIFY|, | - #AVGSPEED|, | - #RUNNING_DOWNLOADS|")
@@ -916,7 +977,6 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
     // boolean isOSRSurveyEnabled();
     //
     // void setOSRSurveyEnabled(boolean b);
-
     @AboutConfig
     @DefaultBooleanValue(true)
     boolean isSpecialDealsEnabled();
@@ -925,9 +985,13 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
 
     @AboutConfig
     @DefaultBooleanValue(true)
-    boolean isULBannerEnabled();
+    boolean isBannerEnabled();
 
-    void setULBannerEnabled(boolean b);
+    void setBannerEnabled(boolean b);
+
+    long getBannerChangeTimestamp();
+
+    void setBannerChangeTimestamp(long timestamp);
 
     //
     @AboutConfig
@@ -1040,34 +1104,28 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
 
     public static enum ConfirmIncompleteArchiveAction implements LabelInterface {
         ASK() {
-
             @Override
             public String getLabel() {
                 return _GUI.T.GraphicalUserInterfaceSettings_getLabel_ask_();
             }
-
         },
         KEEP_IN_LINKGRABBER() {
-
             @Override
             public String getLabel() {
                 return _GUI.T.GraphicalUserInterfaceSettings_getLabel_do_not_move();
             }
-
         },
         MOVE_TO_DOWNLOADLIST() {
             @Override
             public String getLabel() {
                 return _GUI.T.GraphicalUserInterfaceSettings_getLabel_move_anyway();
             }
-
         },
         DELETE() {
             @Override
             public String getLabel() {
                 return _GUI.T.GraphicalUserInterfaceSettings_getLabel_delete();
             }
-
         }
     }
 
@@ -1110,9 +1168,9 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
 
     @RequiresRestart("Restart is Required")
     @AboutConfig
-    HashMap<String, Long> getPremiumExpireWarningMapV2();
+    Map<String, Long> getPremiumExpireWarningMapV2();
 
-    void setPremiumExpireWarningMapV2(HashMap<String, Long> value);
+    void setPremiumExpireWarningMapV2(Map<String, Long> value);
 
     @AboutConfig
     @DefaultBooleanValue(true)
@@ -1143,7 +1201,7 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
 
     @DescriptionForConfigEntry("If enabled ctrl+A first of all selects all children in all current packages, and in a second step all packages")
     @AboutConfig
-    @DefaultBooleanValue(true)
+    @DefaultBooleanValue(false)
     boolean isTwoStepCtrlASelectionEnabled();
 
     void setTwoStepCtrlASelectionEnabled(boolean b);
@@ -1177,7 +1235,6 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
 
     public static class Position implements Storable {
         public Position(/* storable */) {
-
         }
 
         private int x = -1;
@@ -1344,5 +1401,4 @@ public interface GraphicalUserInterfaceSettings extends ConfigInterface {
     boolean isMainWindowAlwaysOnTop();
 
     void setMainWindowAlwaysOnTop(boolean b);
-
 }

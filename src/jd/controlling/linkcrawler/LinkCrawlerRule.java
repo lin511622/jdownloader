@@ -1,11 +1,13 @@
 package jd.controlling.linkcrawler;
 
+import java.net.URL;
+import java.util.List;
 import java.util.regex.Pattern;
 
+import org.appwork.utils.net.URLHelper;
 import org.jdownloader.controlling.UniqueAlltimeID;
 
 public class LinkCrawlerRule {
-
     public static enum RULE {
         REWRITE,
         SUBMITFORM,
@@ -14,9 +16,27 @@ public class LinkCrawlerRule {
         FOLLOWREDIRECT
     }
 
-    protected boolean enabled         = true;
+    protected boolean        enabled       = true;
+    protected List<String[]> cookies       = null;
+    protected boolean        updateCookies = true;
 
-    protected int     maxDecryptDepth = 0;
+    public boolean isUpdateCookies() {
+        return updateCookies;
+    }
+
+    public void setUpdateCookies(boolean updateCookies) {
+        this.updateCookies = updateCookies;
+    }
+
+    public List<String[]> getCookies() {
+        return cookies;
+    }
+
+    public void setCookies(List<String[]> cookies) {
+        this.cookies = cookies;
+    }
+
+    protected int maxDecryptDepth = 0;
 
     public int getMaxDecryptDepth() {
         return maxDecryptDepth;
@@ -65,7 +85,22 @@ public class LinkCrawlerRule {
 
     public boolean matches(final String input) {
         final Pattern lPattern = _getPattern();
-        return lPattern != null && lPattern.matcher(input).matches();
+        if (lPattern == null) {
+            return false;
+        } else if (lPattern.matcher(input).matches()) {
+            return true;
+        } else {
+            try {
+                final URL url = new URL(input);
+                if (url.getUserInfo() != null) {
+                    return lPattern.matcher(URLHelper.getURL(url, true, false, true).toString()).matches();
+                } else {
+                    return false;
+                }
+            } catch (final Throwable ignore) {
+                return false;
+            }
+        }
     }
 
     public Pattern _getPattern() {
@@ -100,11 +135,32 @@ public class LinkCrawlerRule {
     protected String                name               = null;
     protected Pattern               pattern            = null;
     protected RULE                  rule               = null;
-
     protected Pattern               packageNamePattern = null;
+    protected Pattern               passwordPattern    = null;
     protected Pattern               formPattern        = null;
     protected Pattern               deepPattern        = null;
     protected String                rewriteReplaceWith = null;
+
+    public Pattern _getPasswordPattern() {
+        return passwordPattern;
+    }
+
+    public String getPasswordPattern() {
+        final Pattern lPattern = _getPasswordPattern();
+        if (lPattern != null) {
+            return lPattern.pattern();
+        } else {
+            return null;
+        }
+    }
+
+    public void setPasswordPattern(String pattern) {
+        if (pattern == null) {
+            this.passwordPattern = null;
+        } else {
+            this.passwordPattern = Pattern.compile(pattern);
+        }
+    }
 
     public String getRewriteReplaceWith() {
         return rewriteReplaceWith;

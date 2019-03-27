@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.text.DecimalFormat;
@@ -21,6 +20,7 @@ import java.util.ArrayList;
 
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
+import jd.http.Browser;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.plugins.CryptedLink;
@@ -30,48 +30,41 @@ import jd.plugins.FilePackage;
 import jd.plugins.PluginForDecrypt;
 
 //Decrypts embedded videos from liveleak.com
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "liveleak.com" }, urls = { "http://(www\\.)?liveleak\\.com/(view\\?i=[a-z0-9]+_\\d+|ll_embed\\?f=[a-z0-9]+)" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "liveleak.com" }, urls = { "https?://(www\\.)?liveleak\\.com/(view\\?(?:i|t)=[a-z0-9]+_\\d+|(?:ll_embed\\?f=|e/)[a-z0-9_]+)" })
 public class LiveLeakComDecrypter extends PluginForDecrypt {
-
     public LiveLeakComDecrypter(PluginWrapper wrapper) {
         super(wrapper);
     }
 
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
         ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
-        String parameter = param.toString();
+        String parameter = param.toString().replace("http://", "https://");
         br.setCookie("http://liveleak.com/", "liveleak_safe_mode", "0");
-        br.getPage(parameter);
-        // Handle embedded links
-        if (parameter.matches("http://(www\\.)?liveleak\\.com/ll_embed\\?f=[a-z0-9]+")) {
-            if (br.containsHTML("File not found or deleted\\!")) {
-                final DownloadLink dl = createDownloadlink("http://liveleakvideodecrypted.com/" + new Regex(parameter, "([a-z0-9]+)$").getMatch(0));
-                dl.setAvailable(false);
-                decryptedLinks.add(dl);
-                return decryptedLinks;
-            }
-            final String originalID = br.getRegex("\\&item_token=([a-z0-9]+_\\d+)\\&embed=").getMatch(0);
-            if (originalID == null) {
-                logger.warning("Decrypter broken for link: " + parameter);
-                return null;
-            }
-            parameter = "http://www.liveleak.com/view?i=" + originalID;
-            br.getPage(parameter);
-        }
-        if (br.containsHTML(">This item has been deleted because of a possible violation of our terms of service")) {
-            final DownloadLink dl = createDownloadlink(parameter.replace("liveleak.com/", "liveleakdecrypted.com/"));
-            dl.setAvailable(false);
+        br.setFollowRedirects(true);
+        /* Embedded URL --> Will not contain external embed urls! --> Just pass that to our hosterplugin! */
+        if (parameter.matches("https?://(www\\.)?liveleak\\.com/ll_embed\\?f=[a-z0-9]+")) {
+            final String singleEmbedID = new Regex(parameter, "ll_embed\\?f=([a-z0-9]+)$").getMatch(0);
+            final DownloadLink dl = createDownloadlink("http://liveleakvideodecrypted.com/" + singleEmbedID);
             decryptedLinks.add(dl);
             return decryptedLinks;
         }
-        String externID = br.getRegex("\"(http://(www\\.)?prochan\\.com/embed\\?f=[^<>\"/]*?)\"").getMatch(0);
+        br.getPage(parameter);
+        if (isOffline(br)) {
+            /* e.g. 'a possible violation of our terms of service' or 'a copyright violation' */
+            decryptedLinks.add(createOfflinelink(parameter));
+            return decryptedLinks;
+        }
+        String externID = br.getRegex("\"(https?://(www\\.)?prochan\\.com/embed\\?f=[^<>\"/]*?)\"").getMatch(0);
         if (externID != null) {
             decryptedLinks.add(createDownloadlink(externID));
             return decryptedLinks;
         }
-        externID = br.getRegex("\"(http://(www\\.)?youtube\\.com/embed/[^<>\"]*?)\"").getMatch(0);
-        if (externID != null) {
-            decryptedLinks.add(createDownloadlink(externID));
+        /* Page can contain multiple embedded YouTube videos. */
+        final String[] embedURLs = br.getRegex("\"[^\"]+(youtube\\.com/embed/[^<>\"]*?)\"").getColumn(0);
+        if (embedURLs.length > 0) {
+            for (final String embedURLPart : embedURLs) {
+                decryptedLinks.add(createDownloadlink("https://www." + embedURLPart));
+            }
             return decryptedLinks;
         }
         String filename = br.getRegex("class=\"section_title\" style=\"vertical\\-align:top; padding\\-right:10px\">([^<>\"]*?)<img").getMatch(0);
@@ -83,7 +76,8 @@ public class LiveLeakComDecrypter extends PluginForDecrypt {
         }
         filename = Encoding.htmlDecode(filename.trim());
         // There can also be multiple videos on one page
-        final String[] allEmbedcodes = br.getRegex("generate_embed_code_generator_html\\(\\'([a-z0-9]+)\\'\\)\\)").getColumn(0);
+        // final String[] allEmbedcodes = br.getRegex("ll_embed\\?f=([A-Za-z0-9]+)").getColumn(0);
+        final String[] allEmbedcodes = br.getRegex("liveleak.com/e/([a-z0-9_]+)").getColumn(0);
         if (allEmbedcodes != null && allEmbedcodes.length != 0) {
             int counter = 1;
             final DecimalFormat df = new DecimalFormat("000");
@@ -100,7 +94,7 @@ public class LiveLeakComDecrypter extends PluginForDecrypt {
             }
         }
         // ...or do we have (multiple) pixtures?
-        final String[] allPics = br.getRegex("\"(http://[a-z0-9\\-_]+\\.liveleak\\.com/[^<>\"]*?)\" target=\"_blank\"><img").getColumn(0);
+        final String[] allPics = br.getRegex("\"(https?://[a-z0-9\\-_]+\\.liveleak\\.com/[^<>\"]*?)\" target=\"_blank\"><img").getColumn(0);
         if (allPics != null && allPics.length != 0) {
             int counter = 1;
             final DecimalFormat df = new DecimalFormat("000");
@@ -117,8 +111,13 @@ public class LiveLeakComDecrypter extends PluginForDecrypt {
             }
         }
         if (decryptedLinks == null || decryptedLinks.size() == 0) {
+            if (!br.containsHTML("<video")) {
+                logger.info("Seems like our object contains only text --> Nothing we want to download --> Adding URL as offline");
+                decryptedLinks.add(createOfflinelink(parameter));
+                return decryptedLinks;
+            }
             logger.warning("Decrypter broken for link: " + parameter);
-            return decryptedLinks;
+            return null;
         }
         final FilePackage fp = FilePackage.getInstance();
         fp.setName(filename);
@@ -126,9 +125,12 @@ public class LiveLeakComDecrypter extends PluginForDecrypt {
         return decryptedLinks;
     }
 
+    public static boolean isOffline(final Browser br) {
+        return br.containsHTML(">This item has been deleted because of|>Item not found") || br.getHttpConnection().getResponseCode() == 404;
+    }
+
     /* NO OVERRIDE!! */
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

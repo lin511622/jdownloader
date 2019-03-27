@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.File;
@@ -25,6 +24,13 @@ import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
+
+import org.appwork.utils.formatter.SizeFormatter;
+import org.appwork.utils.formatter.TimeFormatter;
+import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
+import org.jdownloader.plugins.components.antiDDoSForHost;
 
 import jd.PluginWrapper;
 import jd.config.Property;
@@ -38,6 +44,7 @@ import jd.parser.html.Form;
 import jd.parser.html.HTMLParser;
 import jd.parser.html.InputField;
 import jd.plugins.Account;
+import jd.plugins.Account.AccountType;
 import jd.plugins.AccountInfo;
 import jd.plugins.CaptchaException;
 import jd.plugins.DownloadLink;
@@ -49,15 +56,8 @@ import jd.plugins.PluginException;
 import jd.plugins.components.SiteType.SiteTemplate;
 import jd.utils.locale.JDL;
 
-import org.appwork.utils.formatter.SizeFormatter;
-import org.appwork.utils.formatter.TimeFormatter;
-import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
-import org.jdownloader.plugins.components.antiDDoSForHost;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "uploadboy.com" }, urls = { "https?://(?:www\\.)?uploadboy\\.(?:com|me)/(?:vidembed\\-)?[a-z0-9]{12}(?:\\.html)?(?:\\?ref=[a-zA-Z0-9\\%\\.]+)?" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "uploadboy.com" }, urls = { "https?://(?:www\\.)?uploadboy\\.(?:com|me)/(?:vidembed\\-)?[a-z0-9]{12}(?:\\.html)?(?:\\?ref=[a-zA-Z0-9\\%\\.]+)?" })
 public class UploadBoyCom extends antiDDoSForHost {
-
     public static final long     trust_cookie_age             = 300000l;
     private String               correctedBR                  = "";
     private String               passCode                     = null;
@@ -77,7 +77,6 @@ public class UploadBoyCom extends antiDDoSForHost {
     private static AtomicInteger totalMaxSimultanFreeDownload = new AtomicInteger(2);
     // don't touch the following!
     private static AtomicInteger maxFree                      = new AtomicInteger(1);
-    private static AtomicInteger maxPrem                      = new AtomicInteger(1);
     private static Object        LOCK                         = new Object();
 
     // DEV NOTES
@@ -89,7 +88,6 @@ public class UploadBoyCom extends antiDDoSForHost {
     // protocol: no https
     // captchatype: null
     // other: Free mode: 100 KB/s, Free Accound Mode: 150 KB/s
-
     @SuppressWarnings("deprecation")
     @Override
     public void correctDownloadLink(final DownloadLink link) {
@@ -121,7 +119,6 @@ public class UploadBoyCom extends antiDDoSForHost {
             link.setProperty("LINKDUPEID", linkID);
         }
         link.setUrlDownload(link.getDownloadURL().replaceAll(importedHost, desiredHost));
-
     }
 
     @Override
@@ -145,7 +142,7 @@ public class UploadBoyCom extends antiDDoSForHost {
             /* no account, yes we can expect captcha */
             return true;
         }
-        if (Boolean.TRUE.equals(acc.getBooleanProperty("nopremium"))) {
+        if (acc.getType() == AccountType.FREE) {
             /* free accounts also have captchas */
             return true;
         }
@@ -254,7 +251,7 @@ public class UploadBoyCom extends antiDDoSForHost {
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception, PluginException {
         requestFileInformation(downloadLink);
-        doFree(downloadLink, true, -2, "freelink");
+        doFree(downloadLink, true, 1, "freelink");
     }
 
     @SuppressWarnings("unused")
@@ -319,7 +316,11 @@ public class UploadBoyCom extends antiDDoSForHost {
                     }
                 }
                 /* Captcha START */
-                if (correctedBR.contains(";background:#ccc;text-align")) {
+                if (correctedBR.contains("g-recaptcha-response")) {
+                    logger.info("Detected captcha method \"reCaptchaV2\" for this host");
+                    final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
+                    dlForm.put("g-recaptcha-response", Encoding.urlEncode(recaptchaV2Response));
+                } else if (correctedBR.contains(";background:#ccc;text-align")) {
                     logger.info("Detected captcha method \"plaintext captchas\" for this host");
                     /** Captcha method by ManiacMansion */
                     final String[][] letters = new Regex(br, "<span style=\\'position:absolute;padding\\-left:(\\d+)px;padding\\-top:\\d+px;\\'>(&#\\d+;)</span>").getMatches();
@@ -372,7 +373,6 @@ public class UploadBoyCom extends antiDDoSForHost {
                     skipWaittime = true;
                 } else if (br.containsHTML("solvemedia\\.com/papi/")) {
                     logger.info("Detected captcha method \"solvemedia\" for this host");
-
                     final org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia sm = new org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia(br);
                     final File cf = sm.downloadCaptcha(getLocalCaptchaFile());
                     final String code = getCaptchaCode("solvemedia", cf, downloadLink);
@@ -475,14 +475,11 @@ public class UploadBoyCom extends antiDDoSForHost {
     public void correctBR() throws NumberFormatException, PluginException {
         correctedBR = br.toString();
         ArrayList<String> regexStuff = new ArrayList<String>();
-
         // remove custom rules first!!! As html can change because of generic cleanup rules.
-
         // generic cleanup
         regexStuff.add("<\\!(\\-\\-.*?\\-\\-)>");
         regexStuff.add("(display: ?none;\">.*?</div>)");
         regexStuff.add("(visibility:hidden>.*?<)");
-
         for (String aRegex : regexStuff) {
             String results[] = new Regex(correctedBR, aRegex).getColumn(0);
             if (results != null) {
@@ -514,26 +511,21 @@ public class UploadBoyCom extends antiDDoSForHost {
 
     private String decodeDownloadLink(final String s) {
         String decoded = null;
-
         try {
             Regex params = new Regex(s, "\\'(.*?[^\\\\])\\',(\\d+),(\\d+),\\'(.*?)\\'");
-
             String p = params.getMatch(0).replaceAll("\\\\", "");
             int a = Integer.parseInt(params.getMatch(1));
             int c = Integer.parseInt(params.getMatch(2));
             String[] k = params.getMatch(3).split("\\|");
-
             while (c != 0) {
                 c--;
                 if (k[c].length() != 0) {
                     p = p.replaceAll("\\b" + Integer.toString(c, a) + "\\b", k[c]);
                 }
             }
-
             decoded = p;
         } catch (Exception e) {
         }
-
         String finallink = null;
         if (decoded != null) {
             finallink = new Regex(decoded, "name=\"src\"value=\"(.*?)\"").getMatch(0);
@@ -698,7 +690,7 @@ public class UploadBoyCom extends antiDDoSForHost {
             }
         }
         /** Wait time reconnect handling */
-        if (new Regex(correctedBR, "(You have reached the download(\\-| )limit|You have to wait)").matches()) {
+        if (new Regex(correctedBR, "(You have reached the download(\\-| )limit|You have to wait|You downloaded \\d+ files? in last \\d+ day\\(s\\))").matches()) {
             // adjust this regex to catch the wait time string for COOKIE_HOST
             String WAIT = new Regex(correctedBR, "((You have reached the download(\\-| )limit|You have to wait)[^<>]+)").getMatch(0);
             String tmphrs = new Regex(WAIT, "\\s+(\\d+)\\s+hours?").getMatch(0);
@@ -749,24 +741,10 @@ public class UploadBoyCom extends antiDDoSForHost {
             if (filesizelimit != null) {
                 filesizelimit = filesizelimit.trim();
                 logger.info("As free user you can download files up to " + filesizelimit + " only");
-                try {
-                    throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
-                } catch (final Throwable e) {
-                    if (e instanceof PluginException) {
-                        throw (PluginException) e;
-                    }
-                }
-                throw new PluginException(LinkStatus.ERROR_FATAL, PREMIUMONLY1 + " " + filesizelimit);
+                throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
             } else {
                 logger.info("Only downloadable via premium");
-                try {
-                    throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
-                } catch (final Throwable e) {
-                    if (e instanceof PluginException) {
-                        throw (PluginException) e;
-                    }
-                }
-                throw new PluginException(LinkStatus.ERROR_FATAL, PREMIUMONLY2);
+                throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
             }
         }
         if (br.getURL().contains("/?op=login&redirect=")) {
@@ -790,8 +768,6 @@ public class UploadBoyCom extends antiDDoSForHost {
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         final AccountInfo ai = new AccountInfo();
-        /* reset maxPrem workaround on every fetchaccount info */
-        maxPrem.set(1);
         try {
             login(account, true);
         } catch (final PluginException e) {
@@ -811,7 +787,6 @@ public class UploadBoyCom extends antiDDoSForHost {
         }
         account.setValid(true);
         String availabletraffic = new Regex(correctedBR, ">\\s*Traffic available today:\\s*(?:<[^>]+>)*(-?[0-9\\.]+\\s*(KB|MB|GB|TB)?|Unlimited)\\s*<").getMatch(0);
-
         if (availabletraffic != null && !availabletraffic.contains("nlimited") && !availabletraffic.equalsIgnoreCase(" Mb")) {
             availabletraffic.trim();
             // need to set 0 traffic left, as getSize returns positive result, even when negative value supplied.
@@ -830,16 +805,14 @@ public class UploadBoyCom extends antiDDoSForHost {
         final boolean is_free = new Regex(correctedBR, ">User Type</small>[\t\n\r ]*?<h1>Free").matches();
         if ((expire == null || !ai.isExpired()) && !is_free) {
             ai.setStatus("Premium Account");
-            maxPrem.set(1);
-            account.setMaxSimultanDownloads(maxPrem.get());
+            account.setMaxSimultanDownloads(1);
             account.setConcurrentUsePossible(true);
+            account.setType(AccountType.PREMIUM);
         } else {
             ai.setStatus("Free Account");
-            maxPrem.set(2);
-            // free accounts can still have captcha.
-            totalMaxSimultanFreeDownload.set(maxPrem.get());
-            account.setMaxSimultanDownloads(maxPrem.get());
+            account.setMaxSimultanDownloads(2);
             account.setConcurrentUsePossible(false);
+            account.setType(AccountType.FREE);
         }
         return ai;
     }
@@ -909,9 +882,9 @@ public class UploadBoyCom extends antiDDoSForHost {
         passCode = downloadLink.getStringProperty("pass");
         requestFileInformation(downloadLink);
         login(account, false);
-        if (account.getBooleanProperty("nopremium")) {
+        if (account.getType() == AccountType.FREE) {
             requestFileInformation(downloadLink);
-            doFree(downloadLink, true, -2, "freelink2");
+            doFree(downloadLink, true, 1, "freelink2");
         } else {
             String dllink = checkDirectLink(downloadLink, "premlink");
             if (dllink == null) {
@@ -984,7 +957,6 @@ public class UploadBoyCom extends antiDDoSForHost {
             form.put("code", code.toString());
         } else if (form.containsHTML("/captchas/")) {
             logger.info("Detected captcha method \"Standard Captcha\"");
-
             final ArrayList<String> sitelinks = new ArrayList<String>();
             final HashSet<String> captchaDupe = new HashSet<String>();
             {
@@ -1046,7 +1018,6 @@ public class UploadBoyCom extends antiDDoSForHost {
         } else if (form.containsHTML("solvemedia\\.com/papi/")) {
             logger.info("Detected captcha method \"Solve Media\"");
             final Browser captcha = br.cloneBrowser();
-
             final org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia sm = new org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia(captcha);
             final File cf = sm.downloadCaptcha(getLocalCaptchaFile());
             String code = "";
@@ -1060,9 +1031,7 @@ public class UploadBoyCom extends antiDDoSForHost {
         } else if (form.containsHTML("id=\"capcode\" name= \"capcode\"")) {
             logger.info("Detected captcha method \"Key Captcha\"");
             final Browser captcha = br.cloneBrowser();
-
             final String result = handleCaptchaChallenge(downloadLink, new KeyCaptcha(this, captcha, downloadLink).createChallenge(this));
-
             if (result != null && "CANCEL".equals(result)) {
                 throw new PluginException(LinkStatus.ERROR_FATAL);
             }
@@ -1073,23 +1042,15 @@ public class UploadBoyCom extends antiDDoSForHost {
     }
 
     @Override
-    public int getMaxSimultanPremiumDownloadNum() {
-        /* workaround for free/premium issue on stable 09581 */
-        return maxPrem.get();
-    }
-
-    @Override
     public void reset() {
     }
 
     @Override
     public void resetDownloadlink(DownloadLink link) {
-
     }
 
     @Override
     public SiteTemplate siteTemplateType() {
         return SiteTemplate.SibSoft_XFileShare;
     }
-
 }

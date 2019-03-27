@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
@@ -22,7 +21,6 @@ import java.util.Random;
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
 import jd.http.Browser;
-import jd.http.Browser.BrowserException;
 import jd.http.Request;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
@@ -31,18 +29,16 @@ import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
 import jd.plugins.PluginForDecrypt;
+import jd.plugins.components.SiteType.SiteTemplate;
 
 import org.appwork.utils.formatter.SizeFormatter;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "kumpulbagi.id" }, urls = { "http://(?:kbagi\\.com|kumpulbagi\\.(?:id|com))/[a-z0-9\\-_]+/[a-z0-9\\-_]+(?:/[^\\s]+)?" })
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "kbagi.com" }, urls = { "http://(?:k-?bagi\\.com|kumpulbagi\\.(?:id|com))/[a-z0-9\\-_\\.]+/[a-z0-9\\-_]+(?:/[^\\s]+)?" })
 public class KumpulbagiId extends PluginForDecrypt {
-
     @SuppressWarnings("deprecation")
     public KumpulbagiId(PluginWrapper wrapper) {
         super(wrapper);
     }
-
-    /* ChomikujPlScript */
 
     private DownloadLink getDecryptedDownloadlink() {
         return createDownloadlink("http://kumpulbagidecrypted.com/" + System.currentTimeMillis() + new Random().nextInt(1000000));
@@ -52,14 +48,10 @@ public class KumpulbagiId extends PluginForDecrypt {
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
         String passCode = null;
         final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
-        final String parameter = param.toString().replaceAll("(?:kbagi\\.com|kumpulbagi\\.(?:id|com))/", "kbagi.com/");
+        final String parameter = param.toString().replaceAll("(?:k-?bagi\\.com|kumpulbagi\\.(?:id|com))/", "k-bagi.com/");
+        br.setAllowedResponseCodes(500);
         br.setFollowRedirects(true);
-        try {
-            br.getPage(parameter);
-        } catch (final BrowserException e) {
-            decryptedLinks.add(this.createOfflinelink(parameter));
-            return decryptedLinks;
-        }
+        br.getPage(parameter);
         if (br.containsHTML(">Você não tem permissão para ver este arquivo<"))
         /* No permission to see file/folder */{
             decryptedLinks.add(this.createOfflinelink(parameter));
@@ -70,7 +62,6 @@ public class KumpulbagiId extends PluginForDecrypt {
             decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
         }
-
         /* Differ between single links and folders */
         if (br.containsHTML("id=\"fileDetails\"")) {
             String filename = br.getRegex("Gratis:</span>([^<>\"]*?)</h2>").getMatch(0);
@@ -83,7 +74,6 @@ public class KumpulbagiId extends PluginForDecrypt {
             }
             filename = Encoding.htmlDecode(filename).trim();
             final DownloadLink dl = getDecryptedDownloadlink();
-
             dl.setProperty("plain_filename", filename);
             dl.setProperty("plain_filesize", filesize);
             dl.setProperty("plain_fid", fid);
@@ -199,12 +189,15 @@ public class KumpulbagiId extends PluginForDecrypt {
                     currentPage++;
                 }
             } while (nextPage != null);
-
             final FilePackage fp = FilePackage.getInstance();
             fp.setName(Encoding.htmlDecode(fpName.trim()));
             fp.addLinks(decryptedLinks);
         }
-
         return decryptedLinks;
+    }
+
+    @Override
+    public SiteTemplate siteTemplateType() {
+        return SiteTemplate.ChomikujPlScript;
     }
 }

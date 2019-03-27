@@ -10,16 +10,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.appwork.storage.config.JsonConfig;
 import org.appwork.utils.Application;
+import org.appwork.utils.Files17;
+import org.appwork.utils.ProcMounts;
 import org.appwork.utils.StringUtils;
 import org.appwork.utils.os.CrossSystem;
-import org.jdownloader.api.system.ProcMounts;
 import org.jdownloader.logging.LogController;
 import org.jdownloader.settings.GeneralSettings;
 
-import de.javasoft.util.OS;
-
 public class DiskSpaceManager {
-
     public static enum DISKSPACERESERVATIONRESULT {
         UNSUPPORTED,
         OK,
@@ -114,13 +112,21 @@ public class DiskSpaceManager {
             return DISKSPACERESERVATIONRESULT.INVALIDDESTINATION;
         }
         String bestRootMatch = null;
-        if (Application.getJavaVersion() >= Application.JAVA17 && (CrossSystem.isUnix() || CrossSystem.isMac())) {
+        if (Application.getJavaVersion() >= Application.JAVA17 && Application.getJavaVersion() < Application.JAVA19 && (CrossSystem.isUnix() || CrossSystem.isMac())) {
             try {
-                bestRootMatch = FileStoreHacks.getRootFor(reservation.getDestination());
+                final File guessRootMatch = Files17.guessRoot(reservation.getDestination(), true);
+                if (guessRootMatch != null) {
+                    bestRootMatch = guessRootMatch.getAbsolutePath();
+                }
+            } catch (final IllegalArgumentException e) {
+                LogController.CL().log(e);
+                SUPPORTED.set(false);
+                return DISKSPACERESERVATIONRESULT.UNSUPPORTED;
             } catch (final IOException e) {
                 LogController.CL().log(e);
-                if (OS.FreeBSD.equals(CrossSystem.getOS()) && StringUtils.containsIgnoreCase(e.getMessage(), "mount point not found")) {
-                    LogController.CL().info("Possible FreeBSD Jail detected! Disable DiskSpaceManager!");
+                // https://bugs.openjdk.java.net/browse/JDK-8165852
+                // https://bugs.openjdk.java.net/browse/JDK-8166162
+                if (StringUtils.containsIgnoreCase(e.getMessage(), "mount point not found")) {
                     SUPPORTED.set(false);
                     return DISKSPACERESERVATIONRESULT.UNSUPPORTED;
                 }
@@ -218,5 +224,4 @@ public class DiskSpaceManager {
     public synchronized boolean isReserved(DiskSpaceReservation reservation) {
         return reservations.containsKey(reservation);
     }
-
 }

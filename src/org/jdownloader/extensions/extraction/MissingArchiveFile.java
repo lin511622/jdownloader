@@ -2,13 +2,18 @@ package org.jdownloader.extensions.extraction;
 
 import java.awt.Color;
 
+import org.appwork.utils.StringUtils;
 import org.jdownloader.controlling.FileCreationManager.DeleteOption;
 
 public class MissingArchiveFile implements ArchiveFile {
+    private final String  name;
+    private final String  filePath;
+    private String        archiveID = null;
+    private final Archive missingOrIncompleteArchive;
 
-    private final String name;
-    private final String filePath;
-    private String       archiveID = null;
+    public Archive getMissingOrIncompleteArchive() {
+        return missingOrIncompleteArchive;
+    }
 
     @Override
     public Boolean isComplete() {
@@ -28,10 +33,37 @@ public class MissingArchiveFile implements ArchiveFile {
     public MissingArchiveFile(final String name, final String filePath) {
         this.name = name;
         this.filePath = filePath;
+        this.missingOrIncompleteArchive = null;
+    }
+
+    public MissingArchiveFile(Archive missingArchive, final String filePath) {
+        this.name = missingArchive.getName();
+        this.missingOrIncompleteArchive = missingArchive;
+        this.filePath = filePath;
     }
 
     @Override
     public void deleteFile(DeleteOption option) {
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (obj == this) {
+            return true;
+        } else if (obj instanceof MissingArchiveFile) {
+            return StringUtils.equals(getName(), ((MissingArchiveFile) obj).getName());
+        } else {
+            return false;
+        }
+    }
+
+    @Override
+    public String toString() {
+        if (missingOrIncompleteArchive != null) {
+            return "MissingArchiveFile:" + missingOrIncompleteArchive + "|" + missingOrIncompleteArchive.getArchiveFiles();
+        } else {
+            return "MissingArchiveFile:" + getName();
+        }
     }
 
     @Override
@@ -90,5 +122,4 @@ public class MissingArchiveFile implements ArchiveFile {
     public String getArchiveID() {
         return archiveID;
     }
-
 }

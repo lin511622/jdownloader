@@ -13,10 +13,9 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.IOException;
+import org.jdownloader.controlling.filter.CompiledFiletypeFilter;
 
 import jd.PluginWrapper;
 import jd.http.URLConnectionAdapter;
@@ -29,9 +28,8 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "slutload.com" }, urls = { "http://(www\\.)?slutload\\.com/(video/[A-Za-z0-9\\-_]+/[A-Za-z0-9]+|(embed_player|watch)/[A-Za-z0-9]+)" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "slutload.com" }, urls = { "https?://(www\\.)?slutload\\.com/(video/[A-Za-z0-9\\-_]+/[A-Za-z0-9]+|(embed_player|watch)/[A-Za-z0-9]+)" })
 public class SlutLoadCom extends PluginForHost {
-
     public SlutLoadCom(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -56,7 +54,7 @@ public class SlutLoadCom extends PluginForHost {
     }
 
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         final URLConnectionAdapter con = br.openGetConnection(downloadLink.getDownloadURL());
@@ -64,7 +62,7 @@ public class SlutLoadCom extends PluginForHost {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         br.followConnection();
-        if (br.getURL().equals("http://www.slutload.com/")) {
+        if (br.getURL().equals("http://www.slutload.com/") || br.containsHTML(">This video is unavailable")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         if (!br.getURL().contains("slutload.com/")) {
@@ -84,7 +82,8 @@ public class SlutLoadCom extends PluginForHost {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         filename = filename.trim();
-        downloadLink.setFinalFileName(filename + ".flv");
+        downloadLink.setFinalFileName(filename);
+        downloadLink.setMimeHint(CompiledFiletypeFilter.VideoExtensions.MP4);
         return AvailableStatus.TRUE;
     }
 
@@ -93,21 +92,21 @@ public class SlutLoadCom extends PluginForHost {
         requestFileInformation(downloadLink);
         String dllink = br.getRegex("data-url=\"(.*?)\"").getMatch(0);
         if (dllink == null) {
-            dllink = br.getRegex("\"(http://v\\-ec\\.slutload\\-media\\.com/.*?\\.flv\\?.*?)\"").getMatch(0);
+            dllink = br.getRegex("\"(http://v\\-ec\\.slutload\\-media\\.com/.*?\\.(?:flv|mp4)\\?.*?)\"").getMatch(0);
         }
         if (dllink == null) {
             /**
              * Some videos are officially not available but still work when embedded in other sites, lets try to download those too
              */
             br.getPage("http://emb.slutload.com/xplayerconfig/" + new Regex(downloadLink.getDownloadURL(), "([A-Za-z0-9]+)$").getMatch(0) + ".css");
-
             dllink = br.getRegex("\\&ec_seek=;URL: (http://[^<>\"]+);type:").getMatch(0);
             if (dllink == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
         }
         dllink = HTMLEntities.unhtmlentities(dllink);
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 0);
+        downloadLink.setFinalFileName(downloadLink.getName() + getFileNameExtensionFromString(dllink, ".mp4"));
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, true, 0);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);

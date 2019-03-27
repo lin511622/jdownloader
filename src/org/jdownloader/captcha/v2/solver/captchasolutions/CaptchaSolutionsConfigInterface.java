@@ -1,6 +1,7 @@
 package org.jdownloader.captcha.v2.solver.captchasolutions;
 
 import org.appwork.storage.config.annotations.AboutConfig;
+import org.appwork.storage.config.annotations.DefaultBooleanValue;
 import org.appwork.storage.config.annotations.DefaultIntValue;
 import org.appwork.storage.config.annotations.DescriptionForConfigEntry;
 import org.appwork.storage.config.annotations.RequiresRestart;
@@ -40,4 +41,8 @@ public interface CaptchaSolutionsConfigInterface extends ChallengeSolverConfig {
     int getThreadpoolSize();
 
     void setThreadpoolSize(int size);
+
+    @AboutConfig
+    @DefaultBooleanValue(false)
+    boolean isEnabled();
 }

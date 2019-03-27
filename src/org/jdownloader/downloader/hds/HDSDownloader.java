@@ -1,7 +1,6 @@
 package org.jdownloader.downloader.hds;
 
 import java.awt.Color;
-import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.File;
@@ -11,6 +10,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import jd.controlling.downloadcontroller.DiskSpaceReservation;
 import jd.controlling.downloadcontroller.ExceptionRunnable;
@@ -27,6 +28,7 @@ import jd.plugins.download.DownloadLinkDownloadable;
 import jd.plugins.download.Downloadable;
 
 import org.appwork.exceptions.WTFException;
+import org.appwork.utils.Regex;
 import org.appwork.utils.logging2.LogInterface;
 import org.appwork.utils.logging2.LogSource;
 import org.appwork.utils.net.throttledconnection.MeteredThrottledInputStream;
@@ -48,63 +50,60 @@ import org.jdownloader.translate._JDT;
  */
 public class HDSDownloader extends DownloadInterface {
 
-    private static final int                  PACKAGE_AUDIO          = 0x08;
-    private static final int                  PACKAGE_VIDEO          = 0x09;
-    private static final int                  PACKAGE_SCRIPT         = 0x12;
-    private static final int                  CODEC_ID_AAC           = 0x0a;
-    private static final int                  CODEC_ID_AVC           = 0x07;
-    private static final int                  AVC_SEQUENCE_HEADER    = 0x00;
-    private static final int                  AVC_NALU               = 0x01;
-    private static final int                  AVC_SEQUENCE_END       = 0x02;
-    private static final int                  FRAME_TYPE_INFO        = 0x05;
-    private static final int                  FLV_PACKET_HEADER_SIZE = 11;
-    private static final byte[]               FLV_HEADER             = new byte[] { 'F', 'L', 'V', 0x01, 0x05, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00 };
+    private static final int                        PACKAGE_AUDIO          = 0x08;
+    private static final int                        PACKAGE_VIDEO          = 0x09;
+    private static final int                        PACKAGE_SCRIPT         = 0x12;
+    private static final int                        CODEC_ID_AAC           = 0x0a;
+    private static final int                        CODEC_ID_AVC           = 0x07;
+    private static final int                        AVC_SEQUENCE_HEADER    = 0x00;
+    private static final int                        AVC_NALU               = 0x01;
+    private static final int                        AVC_SEQUENCE_END       = 0x02;
+    private static final int                        FRAME_TYPE_INFO        = 0x05;
+    private static final int                        FLV_PACKET_HEADER_SIZE = 11;
+    private static final byte[]                     FLV_HEADER             = new byte[] { 'F', 'L', 'V', 0x01, 0x05, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00 };
 
-    private DataInputStream                   stream;
-    private boolean                           finished;
+    private DataInputStream                         stream;
+    private boolean                                 finished;
 
-    private boolean                           aacHeaderWritten;
-    private boolean                           avcHeaderWritten;
-    private Browser                           br;
-    private String                            url;
-    private int                               counter;
+    private boolean                                 aacHeaderWritten       = false;
+    private boolean                                 avcHeaderWritten       = false;
+    private final Browser                           sourceBrowser;
+    private final String                            fragmentBaseURL;
+    private final AtomicInteger                     fragmentIndex          = new AtomicInteger(1);
 
-    private ByteBuffer                        buffer;
-    private long                              bytesWritten           = 0l;
-    private DownloadLinkDownloadable          downloadable;
-    private DownloadLink                      link;
-    private long                              startTimeStamp;
-    private LogInterface                      logger;
-    private URLConnectionAdapter              currentConnection;
-    private ManagedThrottledConnectionHandler connectionHandler;
-    private File                              outputCompleteFile;
-    private File                              outputFinalCompleteFile;
-    private File                              outputPartFile;
-    private OutputStream                      outStream;
-    private PluginException                   caughtPluginException;
+    private ByteBuffer                              buffer;
+    private final AtomicLong                        bytesWritten           = new AtomicLong(0);
+    private final DownloadLinkDownloadable          downloadable;
 
-    public HDSDownloader(final DownloadLink link, Browser br, String url) {
-        this.br = br;
-        this.url = url;
-        counter = 1;
+    private long                                    startTimeStamp         = -1;
+    private final LogInterface                      logger;
+    private URLConnectionAdapter                    currentConnection;
+    private final ManagedThrottledConnectionHandler connectionHandler;
+    private File                                    outputCompleteFile;
+    private File                                    outputPartFile;
+    private FileOutputStream                        outStream;
+    private PluginException                         caughtPluginException;
+    private long                                    estimatedDurationSecs  = -1;
+    private final AtomicLong                        lastTimeStampMs        = new AtomicLong(-1);
+    private final DownloadLink                      link;
+    public static final String                      RESUME_FRAGMENT        = "RESUME_FRAGMENT";
 
-        this.link = link;
-
+    public HDSDownloader(final DownloadLink link, final Browser browser, final String fragmentBaseURL) {
+        this.sourceBrowser = browser;
+        this.fragmentBaseURL = fragmentBaseURL;
         connectionHandler = new ManagedThrottledConnectionHandler();
-        downloadable = new DownloadLinkDownloadable(link) {
-            @Override
-            public boolean isResumable() {
-                return link.getBooleanProperty("RESUME", true);
-            }
-
-            @Override
-            public void setResumeable(boolean value) {
-                link.setProperty("RESUME", value);
-                super.setResumeable(value);
-            }
-        };
+        this.link = link;
+        downloadable = new DownloadLinkDownloadable(link);
         downloadable.setDownloadInterface(this);
+        downloadable.setResumeable(true);
         logger = downloadable.getLogger();
+    }
+
+    public void setEstimatedDuration(long estimatedDurationMs) {
+        this.estimatedDurationSecs = estimatedDurationMs / 1000;
+        if (estimatedDurationSecs <= 0) {
+            this.estimatedDurationSecs = -1;
+        }
     }
 
     protected void terminate() {
@@ -116,29 +115,50 @@ public class HDSDownloader extends DownloadInterface {
     }
 
     public void run() throws IOException, PluginException {
-
-        outStream.write(FLV_HEADER);
-
-        buffer = ByteBuffer.allocate(200 * 1024);
-        while (true) {
-            if (abort.get()) {
-                return;
+        buffer = ByteBuffer.allocate(512 * 1024);
+        try {
+            final String resumeInfo = link.getStringProperty(RESUME_FRAGMENT, null);
+            if (resumeInfo != null) {
+                final String resumeFragment = new Regex(resumeInfo, "(\\d+):").getMatch(0);
+                final String resumePosition = new Regex(resumeInfo, ":(\\d+)").getMatch(0);
+                if (resumeFragment != null && resumePosition != null) {
+                    final long position = Long.parseLong(resumePosition);
+                    final int fragment = Integer.parseInt(resumeFragment);
+                    if (outputPartFile.length() >= position && position > 0) {
+                        outStream.getChannel().position(position);
+                        bytesWritten.set(position);
+                        fragmentIndex.set(fragment);
+                    }
+                }
             }
-            if (finished) {
-                return;
+            if (bytesWritten.get() == 0) {
+                // outStream has end of file position because of FileInputStream(..,true)
+                outStream.getChannel().position(0);
+                aacHeaderWritten = false;
+                avcHeaderWritten = false;
+                fragmentIndex.set(1);
+                outStream.write(FLV_HEADER);
+            } else {
+                aacHeaderWritten = true;
+                avcHeaderWritten = true;
             }
-            ByteBuffer buffertoWrite = readAndWrite();
-            if (buffertoWrite != null) {
-                buffertoWrite.flip();
-                outStream.write(buffertoWrite.array(), 0, buffertoWrite.remaining());
+            while (true) {
+                if (abort.get() || finished) {
+                    return;
+                }
+                final ByteBuffer buffertoWrite = readAndWrite();
+                if (buffertoWrite != null) {
+                    buffertoWrite.flip();
+                    outStream.write(buffertoWrite.array(), 0, buffertoWrite.remaining());
 
+                }
             }
-
+        } finally {
+            closeOutputChannel();
         }
     }
 
     private ByteBuffer readAndWrite() throws IOException, PluginException {
-
         while (true) {
             if (abort.get()) {
                 return null;
@@ -175,10 +195,10 @@ public class HDSDownloader extends DownloadInterface {
             // previous Timestamp field represents the lower 24 bits
             // of the time in milliseconds.
             final int time = readInt24() | (stream.readUnsignedByte() << 24);
+            this.lastTimeStampMs.set(time);
             // StreamID UI24 Always 0.
             final int streamId = readInt24();
             int payloadToRead = dataSize + FLV_PACKET_HEADER_SIZE;
-
             payloadToRead -= write(type);
             payloadToRead -= writeInt24(dataSize);
             payloadToRead -= writeInt24(time & 0xffffff);
@@ -226,7 +246,6 @@ public class HDSDownloader extends DownloadInterface {
                 default:
                     throw new IOException("Unsupported Audio Tag: " + codecId);
                 }
-
             }
             case PACKAGE_VIDEO: {
                 final int frameInfo = stream.readUnsignedByte();
@@ -253,7 +272,6 @@ public class HDSDownloader extends DownloadInterface {
                 final int codecId = frameInfo & 0x0f;
                 switch (codecId) {
                 case VideoTag.AVC:
-
                     // AVCPacketType IF CodecID == 7
                     // UI8
                     // The following values are defined:
@@ -279,25 +297,19 @@ public class HDSDownloader extends DownloadInterface {
                 default:
                     throw new IOException("Unsupported Video Tag: " + codecId);
                 }
-
             }
             case 10:
-            case 11: {
+            case 11:
                 throw new IOException("Akamai DRM not supported");
-            }
-            case PACKAGE_SCRIPT: {
+            case PACKAGE_SCRIPT:
                 skipBytes(dataSize + 4);
                 continue;
-            }
             case 40:
-            case 41: {
+            case 41:
                 throw new IOException("FlashAccess DRM not supported");
-            }
-            default: {
+            default:
                 throw new IOException("Unknown packet type: 0x" + Integer.toHexString(type));
             }
-            }
-
         }
     }
 
@@ -315,14 +327,12 @@ public class HDSDownloader extends DownloadInterface {
             buffer.flip();
             newBuffer.put(buffer);
             buffer = newBuffer;
-
         }
     }
 
-    public int refreshFragmentStream() throws IOException {
+    public int refreshFragmentStream() throws IOException, PluginException {
         int type;
         while (stream == null || (type = stream.read()) == -1) {
-
             final InputStream stream = nextFragment();
             if (stream == null) {
                 finished = true;
@@ -337,19 +347,49 @@ public class HDSDownloader extends DownloadInterface {
         writeBytes((byte) (i >>> 24), (byte) (i >>> 16), (byte) (i >>> 8), (byte) i);
     }
 
-    private InputStream nextFragment() throws IOException {
+    protected String buildFragmentURL(final int fragmentIndex) {
+        return fragmentBaseURL + "Seg1-Frag" + fragmentIndex;
+    }
+
+    private MeteredThrottledInputStream inputStream = null;
+
+    protected void updateFileSizeEstimation() {
+        if (estimatedDurationSecs > 0 && lastTimeStampMs.get() > 1000) {
+            final long secs = lastTimeStampMs.get() / 1000;
+            if (secs > 0) {
+                final long sizePerSec = bytesWritten.get() / secs;
+                downloadable.setDownloadTotalBytes(Math.max(sizePerSec * estimatedDurationSecs, bytesWritten.get()));
+            }
+        }
+    }
+
+    private InputStream nextFragment() throws IOException, PluginException {
         if (currentConnection != null) {
             currentConnection.disconnect();
+            if (bytesWritten.get() > 0 && fragmentIndex.get() > 1) {
+                link.setProperty(RESUME_FRAGMENT, (fragmentIndex.get() - 1) + ":" + bytesWritten.get());
+            }
         }
-        currentConnection = br.openGetConnection(url + "Seg1-Frag" + (counter++));
-        if (currentConnection.isOK()) {
-
-            MeteredThrottledInputStream input = new MeteredThrottledInputStream(new F4vInputStream(currentConnection), new AverageSpeedMeter(10));
-            connectionHandler.addThrottledConnection(input);
-            return input;
+        updateFileSizeEstimation();
+        final Browser br = sourceBrowser.cloneBrowser();
+        currentConnection = br.openGetConnection(buildFragmentURL(fragmentIndex.getAndIncrement()));
+        if (currentConnection.getResponseCode() == 200) {
+            if (inputStream == null) {
+                inputStream = new MeteredThrottledInputStream(new F4vInputStream(currentConnection), new AverageSpeedMeter(10));
+                connectionHandler.addThrottledConnection(inputStream);
+            } else {
+                inputStream.setInputStream(new F4vInputStream(currentConnection));
+            }
+            return inputStream;
         } else {
             currentConnection.disconnect();
-            return null;
+            final URLConnectionAdapter missingFrameCheck = br.openGetConnection(buildFragmentURL(fragmentIndex.get() + 1));
+            missingFrameCheck.disconnect();
+            if (missingFrameCheck.getResponseCode() == 200) {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            } else {
+                return null;
+            }
         }
     }
 
@@ -385,7 +425,7 @@ public class HDSDownloader extends DownloadInterface {
     }
 
     public long getBytesLoaded() {
-        return bytesWritten;
+        return bytesWritten.get();
     }
 
     @Override
@@ -417,9 +457,9 @@ public class HDSDownloader extends DownloadInterface {
                         downloadable.checkAndReserve(reservation);
                         createOutputChannel();
                         try {
-                            downloadable.lockFiles(outputCompleteFile, outputFinalCompleteFile, outputPartFile);
+                            downloadable.lockFiles(outputCompleteFile, outputPartFile);
                         } catch (FileIsLockedException e) {
-                            downloadable.unlockFiles(outputCompleteFile, outputFinalCompleteFile, outputPartFile);
+                            downloadable.unlockFiles(outputCompleteFile, outputPartFile);
                             throw new PluginException(LinkStatus.ERROR_ALREADYEXISTS);
                         }
                     }
@@ -430,9 +470,7 @@ public class HDSDownloader extends DownloadInterface {
                 downloadPluginProgress = new DownloadPluginProgress(downloadable, this, Color.GREEN.darker());
                 downloadable.addPluginProgress(downloadPluginProgress);
                 downloadable.setAvailable(AvailableStatus.TRUE);
-
                 run();
-
             } finally {
                 try {
                     downloadable.free(reservation);
@@ -440,19 +478,20 @@ public class HDSDownloader extends DownloadInterface {
                     LogSource.exception(logger, e);
                 }
                 try {
-                    downloadable.addDownloadTime(System.currentTimeMillis() - getStartTimeStamp());
+                    final long startTimeStamp = getStartTimeStamp();
+                    if (startTimeStamp > 0) {
+                        downloadable.addDownloadTime(System.currentTimeMillis() - getStartTimeStamp());
+                    }
                 } catch (final Throwable e) {
                 }
                 downloadable.removePluginProgress(downloadPluginProgress);
             }
             onDownloadReady();
-
             return handleErrors();
         } finally {
-            downloadable.unlockFiles(outputCompleteFile, outputFinalCompleteFile, outputPartFile);
+            downloadable.unlockFiles(outputCompleteFile, outputPartFile);
             cleanupDownladInterface();
         }
-
     }
 
     protected void error(PluginException pluginException) {
@@ -470,18 +509,14 @@ public class HDSDownloader extends DownloadInterface {
     }
 
     protected void onDownloadReady() throws Exception {
-
         cleanupDownladInterface();
         if (!handleErrors()) {
             return;
         }
-
         boolean renameOkay = downloadable.rename(outputPartFile, outputCompleteFile);
         if (!renameOkay) {
-
             error(new PluginException(LinkStatus.ERROR_DOWNLOAD_FAILED, _JDT.T.system_download_errors_couldnotrename(), LinkStatus.VALUE_LOCAL_IO_ERROR));
         }
-
     }
 
     protected void cleanupDownladInterface() {
@@ -500,7 +535,7 @@ public class HDSDownloader extends DownloadInterface {
 
     private void closeOutputChannel() {
         try {
-            OutputStream loutputPartFileRaf = outStream;
+            final OutputStream loutputPartFileRaf = outStream;
             if (loutputPartFileRaf != null) {
                 logger.info("Close File. Let AV programs run");
                 loutputPartFileRaf.close();
@@ -516,9 +551,9 @@ public class HDSDownloader extends DownloadInterface {
         if (externalDownloadStop()) {
             return false;
         }
-
         if (caughtPluginException == null) {
             downloadable.setLinkStatus(LinkStatus.FINISHED);
+            downloadable.setDownloadBytesLoaded(outputCompleteFile.length());
             downloadable.setVerifiedFileSize(outputCompleteFile.length());
             return true;
         } else {
@@ -528,24 +563,14 @@ public class HDSDownloader extends DownloadInterface {
 
     private void createOutputChannel() throws SkipReasonException {
         try {
-            String fileOutput = downloadable.getFileOutput();
-            logger.info("createOutputChannel for " + fileOutput);
-            String finalFileOutput = downloadable.getFinalFileOutput();
+            final String fileOutput = downloadable.getFileOutput();
             outputCompleteFile = new File(fileOutput);
-            outputFinalCompleteFile = outputCompleteFile;
-            if (!fileOutput.equals(finalFileOutput)) {
-                outputFinalCompleteFile = new File(finalFileOutput);
-            }
             outputPartFile = new File(downloadable.getFileOutputPart());
-            outStream = new BufferedOutputStream(new FileOutputStream(outputPartFile)) {
+            outStream = new FileOutputStream(outputPartFile, true) {
                 public synchronized void write(byte[] b, int off, int len) throws IOException {
                     super.write(b, off, len);
-
-                    bytesWritten += len;
-                    downloadable.setDownloadBytesLoaded(bytesWritten);
-                    // byte[] bytes = new byte[len];
-                    // System.arraycopy(b, off, bytes, 0, len);
-                    // System.out.println(HexFormatter.byteArrayToHex(bytes));
+                    final long size = bytesWritten.addAndGet(len);
+                    downloadable.setDownloadBytesLoaded(size);
                 };
             };
         } catch (Exception e) {
@@ -567,8 +592,8 @@ public class HDSDownloader extends DownloadInterface {
         }
     }
 
-    private AtomicBoolean abort      = new AtomicBoolean(false);
-    private AtomicBoolean terminated = new AtomicBoolean(false);
+    private final AtomicBoolean abort      = new AtomicBoolean(false);
+    private final AtomicBoolean terminated = new AtomicBoolean(false);
 
     @Override
     public boolean externalDownloadStop() {

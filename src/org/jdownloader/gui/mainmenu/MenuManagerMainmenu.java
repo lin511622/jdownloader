@@ -34,6 +34,7 @@ import org.jdownloader.gui.mainmenu.container.OptionalContainer;
 import org.jdownloader.gui.mainmenu.container.SettingsMenuContainer;
 import org.jdownloader.gui.toolbar.action.CaptchaModeChangeAction;
 import org.jdownloader.gui.toolbar.action.CaptchaToogle9KWAction;
+import org.jdownloader.gui.toolbar.action.CaptchaToogleAntiCaptchaAction;
 import org.jdownloader.gui.toolbar.action.CaptchaToogleBrowserSolverAction;
 import org.jdownloader.gui.toolbar.action.CaptchaToogleCheapCaptchaAction;
 import org.jdownloader.gui.toolbar.action.CaptchaToogleDBCAction;
@@ -43,6 +44,7 @@ import org.jdownloader.gui.toolbar.action.CaptchaToogleImageTyperzAction;
 import org.jdownloader.gui.toolbar.action.CaptchaToogleJACAction;
 import org.jdownloader.gui.toolbar.action.CaptchaToogleMyJDAutoAction;
 import org.jdownloader.gui.toolbar.action.CaptchaToogleMyJDRemoteAction;
+import org.jdownloader.gui.toolbar.action.CaptchaToogleTwoCaptchaAction;
 import org.jdownloader.gui.translate._GUI;
 import org.jdownloader.gui.views.SelectionInfo;
 import org.jdownloader.gui.views.components.packagetable.context.RenameAction;
@@ -50,7 +52,6 @@ import org.jdownloader.gui.views.downloads.action.MenuManagerAction;
 import org.jdownloader.gui.views.linkgrabber.actions.AddContainerAction;
 
 public class MenuManagerMainmenu extends ContextMenuManager<FilePackage, DownloadLink> {
-
     private static final MenuManagerMainmenu INSTANCE = new MenuManagerMainmenu();
 
     /**
@@ -76,20 +77,16 @@ public class MenuManagerMainmenu extends ContextMenuManager<FilePackage, Downloa
      * Create a new instance of DownloadListContextMenuManager. This is a singleton class. Access the only existing instance by using
      * {@link #getInstance()}.
      */
-
     private MenuManagerMainmenu() {
         super();
-
     }
 
     public JPopupMenu build(SelectionInfo<FilePackage, DownloadLink> si) {
         throw new WTFException("Not Supported");
-
     }
 
     public MenuContainerRoot createDefaultStructure() {
         MenuContainerRoot mr = new MenuContainerRoot();
-
         mr.add(createFileMenu());
         if (!CrossSystem.isMac()) {
             mr.add(createSettingsMenu());
@@ -97,15 +94,14 @@ public class MenuManagerMainmenu extends ContextMenuManager<FilePackage, Downloa
         mr.add(createAddonsMenu());
         // mr.add(createAddonsMenu());
         mr.add(createAboutMenu());
-
         OptionalContainer opt;
         mr.add(opt = new OptionalContainer(false));
-
         opt.add(RenameAction.class);
-
         CaptchaQuickSettingsContainer ocr;
         opt.add(ocr = new CaptchaQuickSettingsContainer());
         ocr.add(CaptchaModeChangeAction.class);
+        ocr.add(CaptchaToogleAntiCaptchaAction.class);
+        ocr.add(CaptchaToogleTwoCaptchaAction.class);
         ocr.add(CaptchaToogle9KWAction.class);
         ocr.add(CaptchaToogleDBCAction.class);
         ocr.add(CaptchaToogleCheapCaptchaAction.class);
@@ -119,19 +115,19 @@ public class MenuManagerMainmenu extends ContextMenuManager<FilePackage, Downloa
         // HorizontalBoxItem h = new HorizontalBoxItem();
         // h.setVisible(true);
         // mr.add(h);
-
         return mr;
     }
 
     public AboutMenuContainer createAboutMenu() {
         AboutMenuContainer ret = new AboutMenuContainer();
-        ret.add(LatestChangesAction.class);
         ret.add(KnowledgeAction.class);
         ret.add(LogSendAction.class);
         ret.add(new SeparatorData());
         ret.add(CheckForUpdatesAction.class);
-        ret.add(AboutAction.class);
+        ret.add(LatestChangesAction.class);
+        ret.add(new SeparatorData());
         ret.add(DonateAction.class);
+        ret.add(AboutAction.class);
         return ret;
     }
 
@@ -144,9 +140,7 @@ public class MenuManagerMainmenu extends ContextMenuManager<FilePackage, Downloa
 
     public SettingsMenuContainer createSettingsMenu() {
         // add(new SettingsMenu());
-
         SettingsMenuContainer ret = new SettingsMenuContainer();
-
         ret.add(SettingsAction.class);
         ret.add(MyJDownloaderTabAction.class);
         ret.add(hide(new MenuItemData(SettingsAccountUsageRulesAction.class)));
@@ -155,10 +149,8 @@ public class MenuManagerMainmenu extends ContextMenuManager<FilePackage, Downloa
         // add(new ParalellDownloadsEditor());
         // add(new ParallelDownloadsPerHostEditor());
         // add(new SpeedlimitEditor());
-
         if (!CrossSystem.isMac()) {
             ret.add(new ChunksEditorLink());
-
             ret.add(new ParalellDownloadsEditorLink());
             ret.add(new ParallelDownloadsPerHostEditorLink());
             //
@@ -179,18 +171,15 @@ public class MenuManagerMainmenu extends ContextMenuManager<FilePackage, Downloa
         ret.add(AddContainerAction.class);
         ret.add(new SeparatorData());
         BackupMenuContainer backup = new BackupMenuContainer();
-
         backup.add(BackupCreateAction.class);
         backup.add(BackupRestoreAction.class);
         ret.add(backup);
         ret.add(RestartAction.class);
         ret.add(new ActionData(ExitAction.class).putSetup(ExitAction.HIDE_ON_MAC, true));
-
         return ret;
     }
 
     public void show() {
-
         new MenuManagerAction().actionPerformed(null);
     }
 
@@ -206,13 +195,10 @@ public class MenuManagerMainmenu extends ContextMenuManager<FilePackage, Downloa
     @Override
     protected void updateGui() {
         new EDTRunner() {
-
             @Override
             protected void runInEDT() {
                 JDMenuBar.getInstance().updateLayout();
             }
         };
-
     }
-
 }

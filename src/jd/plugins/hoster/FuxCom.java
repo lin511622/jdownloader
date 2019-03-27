@@ -13,10 +13,7 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
-
-import java.io.IOException;
 
 import jd.PluginWrapper;
 import jd.http.Browser;
@@ -31,13 +28,15 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.SiteType.SiteTemplate;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "fux.com" }, urls = { "http://(www\\.)?fux\\.com/(video|embed)/\\d+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "fux.com" }, urls = { "https?://(?:www\\.)?fux\\.com/(?:videos?|embed)/\\d+" })
 public class FuxCom extends PluginForHost {
-
     public FuxCom(PluginWrapper wrapper) {
         super(wrapper);
     }
 
+    /* DEV NOTES */
+    /* Porn_plugin */
+    /* tags: fux.com, porntube.com, 4tube.com, pornerbros.com */
     @Override
     public String getAGBLink() {
         return "http://www.fux.com/legal/tos";
@@ -53,20 +52,39 @@ public class FuxCom extends PluginForHost {
     }
 
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws IOException, PluginException {
+    public String getLinkID(final DownloadLink link) {
+        final String linkid = new Regex(link.getPluginPatternMatcher(), "(\\d+)$").getMatch(0);
+        if (linkid != null) {
+            return linkid;
+        } else {
+            return super.getLinkID(link);
+        }
+    }
+
+    @Override
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
-        br.getPage(downloadLink.getDownloadURL());
-        if (br.containsHTML("(<title>Fux \\- Error \\- Page not found</title>|<h2>Page<br />not found</h2>|We can\\'t find that page you\\'re looking for|<h3>Oops\\!</h3>|class='videoNotAvailable')") || br.getURL().matches(".+/video\\?error=\\d+")) {
+        br.getHeaders().put("Accept-Language", "en-AU,en;q=0.8");
+        br.getPage(link.getPluginPatternMatcher());
+        if (br.getURL().matches(".+/videos?\\?error=\\d+") || br.containsHTML("<title>Fux - Error - Page not found</title>|<h2>Page<br />not found</h2>|We can't find that page you're looking for|<h3>Oops!</h3>|class='videoNotAvailable'")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-        String filename = br.getRegex("<h1>(.*?)</h1>").getMatch(0);
+        String filename = br.getRegex("property=\"og:title\" content=\"([^\"]+)\"").getMatch(0);
         if (filename == null) {
-            filename = br.getRegex("<title>(.*?) \\- FUX</title>").getMatch(0);
+            /* Fallback */
+            filename = getLinkID(link);
         }
-        final Regex info = br.getRegex("\\$\\.ajax\\(url, opts\\);[\t\n\r ]+\\}[\t\n\r ]+\\}\\)\\((\\d+), \\d+, \\[(.*?)\\]\\);");
-        final String mediaID = jd.plugins.hoster.PornTubeCom.getMediaid(this.br);
-        String availablequalities = info.getMatch(1);
+        final String source;
+        final String b64 = br.getRegex("window\\.INITIALSTATE = \\'([^\"\\']+)\\'").getMatch(0);
+        if (b64 != null) {
+            /* 2018-11-14: New */
+            source = Encoding.htmlDecode(Encoding.Base64Decode(b64));
+        } else {
+            source = br.toString();
+        }
+        final String mediaID = new Regex(source, "\"mediaId\":([0-9]{2,})").getMatch(0);
+        String availablequalities = br.getRegex("\\((\\d+)\\s*,\\s*\\d+\\s*,\\s*\\[([0-9,]+)\\]\\);").getMatch(0);
         if (availablequalities != null) {
             availablequalities = availablequalities.replace(",", "+");
         } else {
@@ -77,46 +95,52 @@ public class FuxCom extends PluginForHost {
         }
         br.getHeaders().put("Accept", "application/json, text/javascript, */*; q=0.01");
         br.getHeaders().put("Origin", "http://www.fux.com");
-        br.postPage("http://tkn.fux.com/" + mediaID + "/desktop/" + availablequalities, "");
+        final boolean newWay = true;
+        if (newWay) {
+            /* 2017-05-31 */
+            br.postPage("https://tkn.kodicdn.com/" + mediaID + "/desktop/" + availablequalities, "");
+        } else {
+            br.postPage("https://tkn.fux.com/" + mediaID + "/desktop/" + availablequalities, "");
+        }
         // seems to be listed in order highest quality to lowest. 20130513
-        String DLLINK = getDllink();
-        if (DLLINK == null) {
+        String dllink = getDllink();
+        if (dllink == null) {
             logger.warning("Couldn't find 'DDLINK'");
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        DLLINK = Encoding.htmlDecode(DLLINK);
+        dllink = Encoding.htmlDecode(dllink);
         filename = Encoding.htmlDecode(filename.trim());
-        if (DLLINK.contains(".m4v")) {
-            downloadLink.setFinalFileName(filename + ".m4v");
-        } else if (DLLINK.contains(".mp4")) {
-            downloadLink.setFinalFileName(filename + ".mp4");
+        if (dllink.contains(".m4v")) {
+            link.setFinalFileName(filename + ".m4v");
+        } else if (dllink.contains(".mp4")) {
+            link.setFinalFileName(filename + ".mp4");
         } else {
-            downloadLink.setFinalFileName(filename + ".flv");
+            link.setFinalFileName(filename + ".flv");
         }
         // In case the link redirects to the finallink
         br.setFollowRedirects(true);
         URLConnectionAdapter con = null;
         try {
-            con = br.openGetConnection(DLLINK.trim());
+            con = br.openGetConnection(dllink.trim());
             if (!con.getContentType().contains("html")) {
-                downloadLink.setDownloadSize(con.getLongContentLength());
-                downloadLink.setProperty("DDLink", br.getURL());
+                link.setDownloadSize(con.getLongContentLength());
+                link.setProperty("DDLink", br.getURL());
             } else {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
-            return AvailableStatus.TRUE;
         } finally {
             try {
                 con.disconnect();
             } catch (Throwable e) {
             }
         }
+        return AvailableStatus.TRUE;
     }
 
     @Override
     public void handleFree(DownloadLink downloadLink) throws Exception {
         requestFileInformation(downloadLink);
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, downloadLink.getStringProperty("DDLink"), true, 0);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, downloadLink.getStringProperty("DDLink"), true, 0);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -137,7 +161,7 @@ public class FuxCom extends PluginForHost {
         }
         /* Hm probably this is only needed if only one quality exists */
         if (finallink == null) {
-            finallink = br.getRegex("\"token\":\"(http://[^<>\"]*?)\"").getMatch(0);
+            finallink = br.getRegex("\"token\":\"(https?://[^<>\"]*?)\"").getMatch(0);
         }
         return finallink;
     }

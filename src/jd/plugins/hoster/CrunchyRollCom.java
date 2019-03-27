@@ -13,21 +13,22 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.BufferedWriter;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Scanner;
 import java.util.regex.Pattern;
 import java.util.zip.InflaterInputStream;
@@ -39,9 +40,11 @@ import javax.xml.parsers.DocumentBuilderFactory;
 import jd.PluginWrapper;
 import jd.controlling.AccountController;
 import jd.http.Browser;
+import jd.http.Cookies;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
+import jd.parser.html.Form;
 import jd.plugins.Account;
 import jd.plugins.Account.AccountType;
 import jd.plugins.AccountInfo;
@@ -54,6 +57,7 @@ import jd.plugins.PluginForDecrypt;
 import jd.utils.JDUtilities;
 import jd.utils.locale.JDL;
 
+import org.appwork.utils.StringUtils;
 import org.appwork.utils.formatter.TimeFormatter;
 import org.bouncycastle.crypto.BufferedBlockCipher;
 import org.bouncycastle.crypto.CipherParameters;
@@ -61,6 +65,7 @@ import org.bouncycastle.crypto.engines.AESEngine;
 import org.bouncycastle.crypto.modes.CBCBlockCipher;
 import org.bouncycastle.crypto.params.KeyParameter;
 import org.bouncycastle.crypto.params.ParametersWithIV;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
 import org.jdownloader.downloader.hls.HLSDownloader;
 import org.jdownloader.plugins.components.antiDDoSForHost;
 import org.jdownloader.plugins.components.hls.HlsContainer;
@@ -71,16 +76,12 @@ import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.SAXException;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "crunchyroll.com" }, urls = { "http://www\\.crunchyroll\\.com/(xml/\\?req=RpcApiVideoPlayer_GetStandardConfig\\&media_id=[0-9]+.*|xml/\\?req=RpcApiSubtitle_GetXml\\&subtitle_script_id=[0-9]+.*|android_rpc/\\?req=RpcApiAndroid_GetVideoWithAcl\\&media_id=[0-9]+.*)" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "crunchyroll.com" }, urls = { "https?://(?:\\w+.\\w+|www|api-manga)\\.crunchyroll\\.com/(xml/\\?req=RpcApiVideoPlayer_GetStandardConfig\\&media_id=[0-9]+.*|xml/\\?req=RpcApiSubtitle_GetXml\\&subtitle_script_id=[0-9]+.*|i/croll_manga/e/\\w+)" })
 public class CrunchyRollCom extends antiDDoSForHost {
-
-    static private Object                                    lock                 = new Object();
-    static private HashMap<Account, HashMap<String, String>> loginCookies         = new HashMap<Account, HashMap<String, String>>();
-    static private final String                              RCP_API_VIDEO_PLAYER = "RpcApiVideoPlayer_GetStandardConfig";
-    static private final String                              RCP_API_SUBTITLE     = "RpcApiSubtitle_GetXml";
-    static private final String                              RCP_API_ANDROID      = "RpcApiAndroid_GetVideoWithAcl";
-
-    private String                                           rtmp_path_or_hls_url = null;
+    static private final String RCP_API_VIDEO_PLAYER = "RpcApiVideoPlayer_GetStandardConfig";
+    static private final String RCP_API_SUBTITLE     = "RpcApiSubtitle_GetXml";
+    static private final String CROLL_MANGA          = "croll_manga";
+    private String              rtmp_path_or_hls_url = null;
 
     @SuppressWarnings("deprecation")
     public CrunchyRollCom(final PluginWrapper wrapper) {
@@ -97,11 +98,9 @@ public class CrunchyRollCom extends antiDDoSForHost {
     private void convertSubs(final DownloadLink downloadLink) throws PluginException {
         downloadLink.getLinkStatus().setStatusText("Decrypting subtitles...");
         try {
-
             final File source = new File(downloadLink.getFileOutput());
             final StringBuilder xmltext = new StringBuilder();
             final String lineseparator = System.getProperty("line.separator");
-
             Scanner in = null;
             try {
                 in = new Scanner(new FileReader(source));
@@ -109,31 +108,27 @@ public class CrunchyRollCom extends antiDDoSForHost {
                     xmltext.append(in.nextLine() + lineseparator);
                 }
             } catch (Exception e) {
+                logger.log(e);
             } finally {
                 in.close();
             }
             if (xmltext.toString().contains("<error>No Permission</error>")) {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
-
             // Create the XML Parser
             final DocumentBuilderFactory xmlDocBuilderFactory = DocumentBuilderFactory.newInstance();
             final DocumentBuilder xmlDocBuilder = xmlDocBuilderFactory.newDocumentBuilder();
             final Document xml = xmlDocBuilder.parse(new File(downloadLink.getFileOutput()));
             xml.getDocumentElement().normalize();
-
             // Get the subtitle information
             final Element xmlSub = (Element) xml.getElementsByTagName("subtitle").item(0);
-
             final Node error = xmlSub.getAttributeNode("error");
             final Node xmlId = xmlSub.getAttributeNode("id");
             final Node xmlIv = xmlSub.getElementsByTagName("iv").item(0);
             final Node xmlData = xmlSub.getElementsByTagName("data").item(0);
-
             final int subId = Integer.parseInt(xmlId.getNodeValue());
             final String subIv = xmlIv.getTextContent();
             final String subData = xmlData.getTextContent();
-
             // Generate the AES parameters
             final byte[] key = this.subsGenerateKey(subId, 32);
             final byte[] ivData = DatatypeConverter.parseBase64Binary(subIv);
@@ -142,12 +137,10 @@ public class CrunchyRollCom extends antiDDoSForHost {
             try {
                 final KeyParameter keyParam = new KeyParameter(key);
                 final CipherParameters cipherParams = new ParametersWithIV(keyParam, ivData);
-
                 // Prepare the cipher (AES, CBC, no padding)
                 final BufferedBlockCipher cipher = new BufferedBlockCipher(new CBCBlockCipher(new AESEngine()));
                 cipher.reset();
                 cipher.init(false, cipherParams);
-
                 // Decrypt the subtitles
                 decrypted = new byte[cipher.getOutputSize(encData.length)];
                 final int decLength = cipher.processBytes(encData, 0, encData.length, decrypted, 0);
@@ -161,20 +154,16 @@ public class CrunchyRollCom extends antiDDoSForHost {
             final DocumentBuilder subsDocBuilder = subsDocBuilderFactory.newDocumentBuilder();
             final Document subs = subsDocBuilder.parse(new InflaterInputStream(new ByteArrayInputStream(decrypted)));
             subs.getDocumentElement().normalize();
-
             // Get the header
             final Element subHeaderElem = (Element) subs.getElementsByTagName("subtitle_script").item(0);
             final String subHeaderTitle = subHeaderElem.getAttributeNode("title").getNodeValue();
             final String subHeaderWrap = subHeaderElem.getAttributeNode("wrap_style").getNodeValue();
             final String subHeaderResX = subHeaderElem.getAttributeNode("play_res_x").getNodeValue();
             final String subHeaderResY = subHeaderElem.getAttributeNode("play_res_y").getNodeValue();
-
             final String subHeader = "[Script Info]\nTitle: " + subHeaderTitle + "\nScriptType: v4.00+\nWrapStyle: " + subHeaderWrap + "\nPlayResX: " + subHeaderResX + "\nPlayResY: " + subHeaderResY + "\n";
-
             // Get the styles
-            String subStyles = "[V4 Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n";
+            String subStyles = "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n";
             final NodeList subStylesNodes = subs.getElementsByTagName("style");
-
             for (int i = 0; i < subStylesNodes.getLength(); i++) {
                 final Element subStylesElem = (Element) subStylesNodes.item(i);
                 final String subStylesName = subStylesElem.getAttributeNode("name").getNodeValue();
@@ -200,7 +189,6 @@ public class CrunchyRollCom extends antiDDoSForHost {
                 final String subStylesMarginR = subStylesElem.getAttributeNode("margin_r").getNodeValue();
                 final String subStylesMarginV = subStylesElem.getAttributeNode("margin_v").getNodeValue();
                 final String subStylesEncoding = subStylesElem.getAttributeNode("encoding").getNodeValue();
-
                 // Fix the odd case where the subtitles are scaled to nothing
                 if (subStylesScaleX.equals("0")) {
                     subStylesScaleX = "100";
@@ -208,14 +196,11 @@ public class CrunchyRollCom extends antiDDoSForHost {
                 if (subStylesScaleY.equals("0")) {
                     subStylesScaleY = "100";
                 }
-
-                subStyles += "Style: " + subStylesName + ", " + subStylesFontName + ", " + subStylesFontSize + ", " + subStylesPriColor + ", " + subStylesSecColor + ", " + subStylesOutColor + ", " + subStylesBacColor + ", " + subStylesBold + ", " + subStylesItalic + ", " + subStylesUnderline + ", " + subStylesStrikeout + ", " + subStylesScaleX + ", " + subStylesScaleY + ", " + subStylesSpacing + ", " + subStylesAngle + ", " + subStylesBorder + ", " + subStylesOutline + ", " + subStylesShadow + ", " + subStylesAlignment + ", " + subStylesMarginL + ", " + subStylesMarginR + ", " + subStylesMarginV + ", " + subStylesEncoding + "\n";
+                subStyles += "Style: " + subStylesName + "," + subStylesFontName + "," + subStylesFontSize + "," + subStylesPriColor + "," + subStylesSecColor + "," + subStylesOutColor + "," + subStylesBacColor + "," + subStylesBold + "," + subStylesItalic + "," + subStylesUnderline + "," + subStylesStrikeout + "," + subStylesScaleX + "," + subStylesScaleY + "," + subStylesSpacing + "," + subStylesAngle + "," + subStylesBorder + "," + subStylesOutline + "," + subStylesShadow + "," + subStylesAlignment + "," + subStylesMarginL + "," + subStylesMarginR + "," + subStylesMarginV + "," + subStylesEncoding + "\n";
             }
-
             // Get the elements
             String subEvents = "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n";
             final NodeList subEventsNodes = subs.getElementsByTagName("event");
-
             for (int i = 0; i < subEventsNodes.getLength(); i++) {
                 final Element subEventsElem = (Element) subEventsNodes.item(i);
                 final String subEventsStart = subEventsElem.getAttributeNode("start").getNodeValue();
@@ -227,56 +212,73 @@ public class CrunchyRollCom extends antiDDoSForHost {
                 final String subEventsMarginV = subEventsElem.getAttributeNode("margin_v").getNodeValue();
                 final String subEventsEffect = subEventsElem.getAttributeNode("effect").getNodeValue();
                 final String subEventsText = subEventsElem.getAttributeNode("text").getNodeValue();
-
                 subEvents += "Dialogue: 0," + subEventsStart + "," + subEventsEnd + "," + subEventsStyle + "," + subEventsName + "," + subEventsMarginL + "," + subEventsMarginR + "," + subEventsMarginV + "," + subEventsEffect + "," + subEventsText + "\n";
             }
-
             // Output to the original file
             final FileWriter subOutFile = new FileWriter(downloadLink.getFileOutput());
             final BufferedWriter subOut = new BufferedWriter(subOutFile);
-
             try {
                 subOut.write(subHeader + "\n");
                 subOut.write(subStyles + "\n");
                 subOut.write(subEvents);
             } catch (final Throwable e) {
+                logger.log(e);
                 subOut.close();
                 subOutFile.close();
                 throw new PluginException(LinkStatus.ERROR_DOWNLOAD_FAILED, "Error writing decrypted subtitles!");
             }
-
             subOut.close();
             subOutFile.close();
             downloadLink.getLinkStatus().setStatusText(JDL.L("plugins.hoster.crunchyrollcom.decryptedsubtitles", "Subtitles decrypted"));
         } catch (final SAXException e) {
+            logger.log(e);
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "Error decrypting subtitles: Invalid XML file!");
         } catch (final DOMException e) {
+            logger.log(e);
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "Error decrypting subtitles: XML file changed!");
         } catch (final PluginException e) {
             throw e;
         } catch (final Throwable e) {
-            e.printStackTrace();
+            logger.log(e);
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "Error decrypting subtitles!");
         }
     }
 
     /**
-     * Download the given file using the HTTP Android method. The file will be mp4 and have subtitles hardcoded.
+     * Decrypt the downloaded image file from CrunchyRoll into a valid jpeg file (XOR'd with key 'B').
      *
      * @param downloadLink
-     *            The DownloadLink to try and download using RTMP
+     *            The DownloadLink to decrypt the .jpg file
      */
-    private void downloadAndroid(final DownloadLink downloadLink) throws Exception {
-        // Check if the link appears to be valid
-        final String videoUrl = downloadLink.getStringProperty("videourl");
-        if ((Boolean) downloadLink.getProperty("valid", false) && videoUrl != null) {
-            this.dl = jd.plugins.BrowserAdapter.openDownload(this.br, downloadLink, videoUrl, true, 0);
-            if (!this.dl.getConnection().isContentDisposition() && !this.dl.getConnection().getContentType().startsWith("video")) {
-                downloadLink.setProperty("valid", false);
-                this.dl.getConnection().disconnect();
-                throw new PluginException(LinkStatus.ERROR_RETRY);
+    private void decryptImage(final DownloadLink downloadLink) throws PluginException {
+        downloadLink.getLinkStatus().setStatusText("Decrypting image...");
+        try {
+            final File source = new File(downloadLink.getFileOutput());
+            final ByteArrayOutputStream input_stream = new ByteArrayOutputStream();
+            final BufferedInputStream input = new BufferedInputStream(new FileInputStream(source));
+            try {
+                while (input.available() > 0) {
+                    input_stream.write(input.read());
+                }
+            } finally {
+                input.close();
             }
-            this.dl.startDownload();
+            byte[] input_array = input_stream.toByteArray();
+            for (int i = 0; i < input_array.length; i++) {
+                input_array[i] ^= 'B';
+            }
+            final BufferedOutputStream output = new BufferedOutputStream(new FileOutputStream(source));
+            try {
+                for (int i = 0; i < input_array.length; i++) {
+                    output.write(input_array[i]);
+                }
+            } finally {
+                output.close();
+            }
+            downloadLink.getLinkStatus().setStatusText(JDL.L("plugins.hoster.crunchyrollcom.decryptimage", "Image decrypted"));
+        } catch (final Throwable e) {
+            logger.log(e);
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "Error decrypting image!");
         }
     }
 
@@ -291,18 +293,15 @@ public class CrunchyRollCom extends antiDDoSForHost {
         // Check if the link appears to be valid
         if ((Boolean) downloadLink.getProperty("valid", false) && downloadLink.getStringProperty("rtmphost").startsWith("rtmp")) {
             final String url = downloadLink.getStringProperty("rtmphost") + "/" + downloadLink.getStringProperty("rtmpfile");
-
             // Create the download
             this.dl = new RTMPDownload(this, downloadLink, url);
             final jd.network.rtmp.url.RtmpUrlConnection rtmp = ((RTMPDownload) this.dl).getRtmpConnection();
-
             // Set all of the needed rtmpdump parameters
             rtmp.setUrl(url);
             rtmp.setTcUrl(downloadLink.getStringProperty("rtmphost"));
             rtmp.setPlayPath(rtmp_path_or_hls_url);
             rtmp.setSwfVfy(downloadLink.getStringProperty("swfdir") + downloadLink.getStringProperty("rtmpswf"));
             rtmp.setResume(true);
-
             ((RTMPDownload) this.dl).startDownload();
         } else {
             throw new PluginException(LinkStatus.ERROR_DOWNLOAD_FAILED, "Invalid download");
@@ -317,20 +316,22 @@ public class CrunchyRollCom extends antiDDoSForHost {
      */
     private void downloadSubs(final DownloadLink downloadLink) throws Exception {
         if ((Boolean) downloadLink.getProperty("valid", false)) {
+            this.br.getHeaders().put("Accept-Encoding", "identity");
             this.dl = jd.plugins.BrowserAdapter.openDownload(this.br, downloadLink, downloadLink.getDownloadURL(), true, 1);
-            if (!this.dl.getConnection().isContentDisposition() && !this.dl.getConnection().getContentType().endsWith("xml")) {
+            if (dl.getConnection().isContentDisposition() || StringUtils.containsIgnoreCase(dl.getConnection().getContentType(), "text/xml")) {
+                if (this.dl.startDownload()) {
+                    this.convertSubs(downloadLink);
+                }
+            } else {
                 downloadLink.setProperty("valid", false);
                 this.dl.getConnection().disconnect();
                 throw new PluginException(LinkStatus.ERROR_RETRY);
-            }
-            if (this.dl.startDownload()) {
-                this.convertSubs(downloadLink);
             }
         }
     }
 
     private void downloadHls(final DownloadLink downloadLink) throws Exception {
-        br.getPage(rtmp_path_or_hls_url);
+        getPage(rtmp_path_or_hls_url);
         final HlsContainer hlsbest = HlsContainer.findBestVideoByBandwidth(HlsContainer.getHlsQualities(this.br));
         if (hlsbest == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -338,23 +339,38 @@ public class CrunchyRollCom extends antiDDoSForHost {
         if (!downloadLink.getFinalFileName().endsWith(".mp4")) {
             downloadLink.setFinalFileName(downloadLink.getFinalFileName() + ".mp4");
         }
-        rtmp_path_or_hls_url = hlsbest.downloadurl;
+        rtmp_path_or_hls_url = hlsbest.getDownloadurl();
         checkFFmpeg(downloadLink, "Download a HLS Stream");
         /* 2016-10-19: Seems like they use crypted HLS (in most cases?!) */
         dl = new HLSDownloader(downloadLink, br, rtmp_path_or_hls_url);
         dl.startDownload();
     }
 
+    /**
+     * Download and decrypt manga pages.
+     *
+     * @param downloadLink
+     *            The DownloadLink to download manga pages
+     */
+    private void downloadManga(final DownloadLink downloadLink) throws Exception {
+        this.br.getHeaders().put("Accept-Encoding", "identity");
+        this.dl = jd.plugins.BrowserAdapter.openDownload(this.br, downloadLink, downloadLink.getDownloadURL(), true, 1);
+        if (dl.getConnection().isContentDisposition() || StringUtils.containsIgnoreCase(dl.getConnection().getContentType(), "image")) {
+            if (this.dl.startDownload()) {
+                this.decryptImage(downloadLink);
+            }
+        } else {
+            downloadLink.setProperty("valid", false);
+            this.dl.getConnection().disconnect();
+            throw new PluginException(LinkStatus.ERROR_RETRY);
+        }
+    }
+
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         final AccountInfo ai = new AccountInfo();
-        try {
-            this.login(account, this.br, true);
-            // TODO Find the expiration date of the premium status
-        } catch (final PluginException e) {
-            account.setValid(false);
-            return ai;
-        }
+        this.login(account, this.br, true);
+        // TODO Find the expiration date of the premium status
         // date + 4 days
         final String nextbillingdate = br.getRegex("Next Billing Date:</th>\\s*<td>([a-zA-Z]{3,4} \\d{1,2}, \\d{4})</td>").getMatch(0);
         long date = TimeFormatter.getMilliSeconds(nextbillingdate, "MMM dd, yyyy", Locale.ENGLISH);
@@ -381,7 +397,7 @@ public class CrunchyRollCom extends antiDDoSForHost {
 
     @Override
     public String getDescription() {
-        return "JDownloader's CrunchyRoll Plugin helps download videos and subtitles from crunchyroll.com. Crunchyroll provides a range of qualities, and this plugin will show all those available to you.";
+        return "JDownloader's CrunchyRoll Plugin helps download videos, subtitles, and manga from crunchyroll.com. Crunchyroll provides a range of qualities, and this plugin will show all those available to you.";
     }
 
     @Override
@@ -404,8 +420,10 @@ public class CrunchyRollCom extends antiDDoSForHost {
             this.downloadRTMP(downloadLink);
         } else if (downloadLink.getDownloadURL().contains(CrunchyRollCom.RCP_API_SUBTITLE)) {
             this.downloadSubs(downloadLink);
-        } else if (downloadLink.getDownloadURL().contains(CrunchyRollCom.RCP_API_ANDROID)) {
-            this.downloadAndroid(downloadLink);
+        } else if (downloadLink.getDownloadURL().contains(CrunchyRollCom.CROLL_MANGA)) {
+            this.downloadManga(downloadLink);
+        } else {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
     }
 
@@ -420,8 +438,10 @@ public class CrunchyRollCom extends antiDDoSForHost {
             this.downloadRTMP(downloadLink);
         } else if (downloadLink.getDownloadURL().contains(CrunchyRollCom.RCP_API_SUBTITLE)) {
             this.downloadSubs(downloadLink);
-        } else if (downloadLink.getDownloadURL().contains(CrunchyRollCom.RCP_API_ANDROID)) {
-            this.downloadAndroid(downloadLink);
+        } else if (downloadLink.getDownloadURL().contains(CrunchyRollCom.CROLL_MANGA)) {
+            this.downloadManga(downloadLink);
+        } else {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
     }
 
@@ -436,40 +456,52 @@ public class CrunchyRollCom extends antiDDoSForHost {
      *            Should new cookies be retrieved (fresh login) even if cookies have previously been cached.
      */
     public void login(final Account account, Browser br, final boolean refresh) throws Exception {
-        synchronized (CrunchyRollCom.lock) {
+        synchronized (account) {
             if (br == null) {
                 br = this.br;
             }
             try {
                 this.setBrowserExclusive();
-                // Load cookies from the cache if allowed, and they exist
-                if (refresh == false && CrunchyRollCom.loginCookies.containsKey(account)) {
-                    final HashMap<String, String> cookies = CrunchyRollCom.loginCookies.get(account);
-                    if (cookies != null) {
-                        if (cookies.containsKey("c_userid")) {
-                            // Save cookies to the browser
-                            for (final Map.Entry<String, String> cookieEntry : cookies.entrySet()) {
-                                final String key = cookieEntry.getKey();
-                                final String value = cookieEntry.getValue();
-                                br.setCookie("crunchyroll.com", key, value);
-                            }
-                            return;
-                        }
+                final Cookies cookies = account.loadCookies("");
+                boolean freshLogin = true;
+                if (cookies != null) {
+                    br.setCookies(getHost(), cookies);
+                    getPage("https://www.crunchyroll.com");
+                    if (br.getCookie(this.getHost(), "c_userid", Cookies.NOTDELETEDPATTERN) == null || br.getCookie(this.getHost(), "c_userkey", Cookies.NOTDELETEDPATTERN) == null) {
+                        br.clearCookies(getHost());
+                    } else {
+                        freshLogin = false;
                     }
                 }
-
-                // Set the POST parameters to log in
-                final LinkedHashMap<String, String> post = new LinkedHashMap<String, String>();
-                post.put("formname", "RpcApiUser_Login");
-                post.put("next_url", Encoding.urlEncode("http://www.crunchyroll.com/acct/membership/"));
-                post.put("fail_url", Encoding.urlEncode("http://www.crunchyroll.com/login"));
-                post.put("name", Encoding.urlEncode(account.getUser()));
-                post.put("password", Encoding.urlEncode(account.getPass()));
-                post.put("submit", "submit");
-
-                // Load the login page (actually log in)
-                br.setFollowRedirects(true);
-                postPage("https://www.crunchyroll.com/?a=formhandler", post);
+                if (freshLogin) {
+                    getPage("https://www.crunchyroll.com/login");
+                    final Form login = br.getFormbyActionRegex("/login");
+                    if (login == null) {
+                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                    }
+                    login.put(Encoding.urlEncode("login_form[name]"), Encoding.urlEncode(account.getUser()));
+                    login.put(Encoding.urlEncode("login_form[password]"), Encoding.urlEncode(account.getPass()));
+                    if (br.containsHTML("id=\"g-recaptcha\"")) {
+                        final DownloadLink original = this.getDownloadLink();
+                        if (original == null) {
+                            this.setDownloadLink(new DownloadLink(this, "Account", getHost(), "http://" + getHost(), true));
+                        }
+                        try {
+                            final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br, "6LfpWucSAAAAAGp_ie37zj6x3WRP0UBe2KCZXoqG").getToken();
+                            if (recaptchaV2Response == null) {
+                                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                            }
+                            login.put("g-recaptcha-response", Encoding.urlEncode(recaptchaV2Response));
+                        } finally {
+                            if (original == null) {
+                                this.setDownloadLink(null);
+                            }
+                        }
+                    }
+                    // Load the login page (actually log in)
+                    br.setFollowRedirects(true);
+                    submitForm(login);
+                }
                 // redirect => via standard means, then another direct => via Meta/JavaScript only
                 String redirect = br.getRegex("<meta http-equiv=\"refresh\" content=\"\\d+;\\s*url=(.*?)\"").getMatch(0);
                 if (redirect == null) {
@@ -479,22 +511,18 @@ public class CrunchyRollCom extends antiDDoSForHost {
                     }
                 }
                 if (redirect != null) {
-                    br.getPage(redirect);
+                    getPage(br, redirect);
                 }
-                if (br.getCookie(this.getHost(), "c_userid") == null && br.getCookie(this.getHost(), "c_userkey") == null) {
+                if (br.getCookie(this.getHost(), "c_userid", Cookies.NOTDELETEDPATTERN) == null || br.getCookie(this.getHost(), "c_userkey", Cookies.NOTDELETEDPATTERN) == null) {
                     // Set account to invalid and quit
-                    account.setValid(false);
-                    if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen? Versuche folgendes:\r\n1. Falls dein Passwort Sonderzeichen enthält, ändere es (entferne diese) und versuche es erneut!\r\n2. Gib deine Zugangsdaten per Hand (ohne kopieren/einfügen) ein.", PluginException.VALUE_ID_PREMIUM_DISABLE);
-                    } else {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!\r\nYou're sure that the username and password you entered are correct? Some hints:\r\n1. If your password contains special characters, change it (remove them) and try again!\r\n2. Type in your username/password by hand without copy & paste.", PluginException.VALUE_ID_PREMIUM_DISABLE);
-                    }
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
                 }
-
                 // Save the cookies to the cache
-                CrunchyRollCom.loginCookies.put(account, fetchCookies("crunchyroll.com"));
+                account.saveCookies(br.getCookies(getHost()), "");
             } catch (final PluginException e) {
-                CrunchyRollCom.loginCookies.remove(account);
+                if (e.getLinkStatus() == LinkStatus.ERROR_PREMIUM) {
+                    account.clearCookies("");
+                }
                 throw e;
             }
         }
@@ -534,7 +562,6 @@ public class CrunchyRollCom extends antiDDoSForHost {
     public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
         downloadLink.setProperty("valid", false);
         rtmp_path_or_hls_url = getRtmpPathOrHlsUrl(downloadLink);
-
         // Try and find which download type it is
         if (downloadLink.getDownloadURL().contains(CrunchyRollCom.RCP_API_VIDEO_PLAYER)) {
             // Attempt to login
@@ -543,17 +570,16 @@ public class CrunchyRollCom extends antiDDoSForHost {
                 if (account != null) {
                     try {
                         this.login(account, this.br, false);
-                    } catch (final Exception e) {
+                    } catch (final PluginException e) {
+                        logger.log(e);
                     }
                 }
             }
-
             // Find matching decrypter
             final PluginForDecrypt plugin = JDUtilities.getPluginForDecrypt("crunchyroll.com");
             if (plugin == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "Cannot decrypt video link");
             }
-
             // Set the RTMP details (exception on error)
             try {
                 ((jd.plugins.decrypter.CrhyRllCom) plugin).setRTMP(downloadLink, this.br);
@@ -566,7 +592,6 @@ public class CrunchyRollCom extends antiDDoSForHost {
             if (subId == null) {
                 return AvailableStatus.FALSE;
             }
-
             if (downloadLink.getStringProperty("filename") == null) {
                 final String filename = "CrunchyRoll." + subId;
                 downloadLink.setProperty("filename", filename);
@@ -579,25 +604,25 @@ public class CrunchyRollCom extends antiDDoSForHost {
             if (br.containsHTML("<error>No Permission</error>")) {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
-
             // Get the HTTP response headers of the XML file to check for validity
             URLConnectionAdapter conn = null;
             try {
+                br.getHeaders().put("Accept-Encoding", "identity");
                 conn = this.br.openGetConnection(downloadLink.getDownloadURL());
                 final long respCode = conn.getResponseCode();
                 final long length = conn.getLongContentLength();
                 final String contType = conn.getContentType();
-                if (respCode == 200 && contType.endsWith("xml")) {
+                if (respCode == 200 && contType != null && contType.contains("text/xml")) {
                     // Check if the file is too small to be subtitles
                     // 20130719 length isn't given anymore so will equal -1
                     // 20141123 length is always -1, code below is not usable, getpage and error check is added above
                     if (length != -1 && length < 200) {
                         return AvailableStatus.FALSE;
+                    } else {
+                        // File valid, set details
+                        downloadLink.setDownloadSize(length);
+                        downloadLink.setProperty("valid", true);
                     }
-
-                    // File valid, set details
-                    downloadLink.setDownloadSize(length);
-                    downloadLink.setProperty("valid", true);
                 }
             } finally {
                 try {
@@ -605,15 +630,6 @@ public class CrunchyRollCom extends antiDDoSForHost {
                 } catch (final Throwable e) {
                 }
             }
-        } else if (downloadLink.getDownloadURL().contains(CrunchyRollCom.RCP_API_ANDROID)) {
-            // Find matching decrypter
-            final PluginForDecrypt plugin = JDUtilities.getPluginForDecrypt("crunchyroll.com");
-            if (plugin == null) {
-                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "Cannot decrypt video link");
-            }
-
-            // Set the Android video details (exception on error)
-            ((jd.plugins.decrypter.CrhyRllCom) plugin).setAndroid(downloadLink, this.br);
         }
         if ((Boolean) downloadLink.getProperty("valid", false)) {
             return AvailableStatus.TRUE;
@@ -646,7 +662,7 @@ public class CrunchyRollCom extends antiDDoSForHost {
      *            The number of bytes to make the key (e.g. 32 bytes for 256-bit key)
      * @return The byte formatted key to be used in AES decryption
      */
-    private byte[] subsGenerateKey(final int id, final int size) throws NoSuchAlgorithmException {
+    private static byte[] subsGenerateKey(final int id, final int size) throws NoSuchAlgorithmException {
         // Generate fibonacci salt
         String magicStr = "";
         int fibA = 1;
@@ -657,24 +673,19 @@ public class CrunchyRollCom extends antiDDoSForHost {
             fibB = newChr;
             magicStr += Character.toString((char) (newChr % 97 + 33));
         }
-
         // Calculate magic number
         final int magic1 = (int) Math.floor(Math.sqrt(6.9) * Math.pow(2, 25));
         final long magic2 = id ^ magic1 ^ (id ^ magic1) >>> 3 ^ (magic1 ^ id) * 32l;
-
         magicStr += magic2;
-
         // Calculate the hash using SHA-1
         final MessageDigest md = MessageDigest.getInstance("SHA-1");
         /* CHECK: we should always use getBytes("UTF-8") or with wanted charset, never system charset! */
         final byte[] magicBytes = magicStr.getBytes();
         md.update(magicBytes, 0, magicBytes.length);
         final byte[] hashBytes = md.digest();
-
         // Create the key using the given length
         final byte[] key = new byte[size];
         Arrays.fill(key, (byte) 0);
-
         for (int i = 0; i < key.length && i < hashBytes.length; i++) {
             key[i] = hashBytes[i];
         }
@@ -683,17 +694,18 @@ public class CrunchyRollCom extends antiDDoSForHost {
 
     /**
      * because stable is lame!
-     * */
+     */
     public void setBrowser(final Browser ibr) {
         this.br = ibr;
     }
 
+    // required for decrypter
     public void getPage(final Browser ibr, final String page) throws Exception {
         super.getPage(ibr, page);
     }
 
+    // required for decrypter
     public void postPage(final Browser ibr, final String page, final String postData) throws Exception {
         super.postPage(ibr, page, postData);
     }
-
 }

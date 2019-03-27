@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.File;
@@ -57,6 +56,7 @@ import jd.plugins.LinkStatus;
 import jd.plugins.Plugin;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForDecrypt;
+import jd.plugins.PluginForHost;
 import jd.plugins.components.PluginJSonUtils;
 import jd.utils.JDUtilities;
 import jd.utils.locale.JDL;
@@ -71,34 +71,45 @@ import org.jdownloader.plugins.components.antiDDoSForHost;
 
 @HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "depositfiles.com" }, urls = { "https?://(www\\.)?(depositfiles\\.(com|org)|dfiles\\.(eu|ru))(/\\w{1,3})?/files/[\\w]+" })
 public class DepositFiles extends antiDDoSForHost {
-
-    private final String                  UA                       = "Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/43.0.2357.81 Safari/537.36";
-    private final String                  FILE_NOT_FOUND           = "Dieser File existiert nicht|Entweder existiert diese Datei nicht oder sie wurde";
-    private final String                  downloadLimitReached     = "<strong>Achtung! Sie haben ein Limit|Sie haben Ihre Download Zeitfrist erreicht\\.<";
-    private final String                  PATTERN_PREMIUM_FINALURL = "<div id=\"download_url\".*?<a href=\"(.*?)\"";
-    public static AtomicReference<String> MAINPAGE                 = new AtomicReference<String>();
-    public static final String            DOMAINS                  = "(depositfiles\\.(com|org)|dfiles\\.(eu|ru))";
-
-    private String                        protocol                 = null;
-
-    public String                         DLLINKREGEX2             = "<div id=\"download_url\" style=\"display:none;\">.*?<form action=\"(.*?)\" method=\"get";
-    private final Pattern                 FILE_INFO_NAME           = Pattern.compile("(?s)Dateiname: <b title=\"(.*?)\">.*?</b>", Pattern.CASE_INSENSITIVE);
-    private final Pattern                 FILE_INFO_SIZE           = Pattern.compile(">Datei Gr.*?sse: <b>([^<>\"]*?)</b>");
-
-    private static Object                 PREMLOCK                 = new Object();
-    private static Object                 LOCK                     = new Object();
-
-    private static AtomicInteger          simultanpremium          = new AtomicInteger(1);
-    private static AtomicBoolean          useAPI                   = new AtomicBoolean(true);
-
-    private final String                  SETTING_SSL_CONNECTION   = "SSL_CONNECTION";
+    private final String                  UA                           = "Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/43.0.2357.81 Safari/537.36";
+    private final String                  FILE_NOT_FOUND               = "Dieser File existiert nicht|Entweder existiert diese Datei nicht oder sie wurde";
+    private final String                  downloadLimitReached         = "<strong>Achtung! Sie haben ein Limit|Sie haben Ihre Download Zeitfrist erreicht\\.<";
+    private final String                  PATTERN_PREMIUM_FINALURL     = "<div id=\"download_url\".*?<a href=\"(.*?)\"";
+    public static AtomicReference<String> MAINPAGE                     = new AtomicReference<String>();
+    public static final String            DOMAINS                      = "(depositfiles\\.(com|org)|dfiles\\.(eu|ru))";
+    private String                        protocol                     = null;
+    public String                         DLLINKREGEX2                 = "<div id=\"download_url\" style=\"display:none;\">.*?<form action=\"(.*?)\" method=\"get";
+    private final Pattern                 FILE_INFO_NAME               = Pattern.compile("(?s)Dateiname: <b title=\"(.*?)\">.*?</b>", Pattern.CASE_INSENSITIVE);
+    private final Pattern                 FILE_INFO_SIZE               = Pattern.compile(">Datei Gr.*?sse: <b>([^<>\"]*?)</b>");
+    private static Object                 PREMLOCK                     = new Object();
+    private static Object                 LOCK                         = new Object();
+    /* note: CAN NOT be negative or zero! (ie. -1 or 0) Otherwise math sections fail. .:. use [1-20] */
+    private static AtomicInteger          totalMaxSimultanFreeDownload = new AtomicInteger(20);
+    /* don't touch the following! */
+    private static AtomicInteger          maxFree                      = new AtomicInteger(1);
+    private static AtomicInteger          simultanpremium              = new AtomicInteger(1);
+    private static AtomicBoolean          useAPI                       = new AtomicBoolean(true);
+    private final String                  SETTING_SSL_CONNECTION       = "SSL_CONNECTION";
 
     // private final String SETTING_PREFER_SOLVEMEDIA = "SETTING_PREFER_SOLVEMEDIA";
-
+    // @Override
+    // public String[] siteSupportedNames() {
+    // return new String[] { "depositfiles.com", "depositfiles.org", "dfiles.eu", "dfiles.ru" };
+    // }
     public DepositFiles(final PluginWrapper wrapper) {
         super(wrapper);
         setConfigElements();
         this.enablePremium("http://depositfiles.com/signup.php?ref=down1");
+    }
+
+    @Override
+    public String buildExternalDownloadURL(DownloadLink downloadLink, PluginForHost buildForThisPlugin) {
+        if (StringUtils.equals(getHost(), buildForThisPlugin.getHost())) {
+            return super.buildExternalDownloadURL(downloadLink, buildForThisPlugin);
+        } else {
+            final String fileID = new Regex(downloadLink.getPluginPatternMatcher(), "/files/([\\w]+)").getMatch(0);
+            return "https://dfiles.eu/files/" + fileID;
+        }
     }
 
     public void setMainpage() {
@@ -150,13 +161,7 @@ public class DepositFiles extends antiDDoSForHost {
     @Override
     public void correctDownloadLink(final DownloadLink link) {
         setMainpage();
-        String url = link.getDownloadURL();
-        if (url.matches("^https?://https?://.+")) {
-            // fixes regression because of buggy domain restoration code
-            url = url.replaceFirst("^(https?://https?://)", "http://");
-            link.setUrlDownload(url);
-        }
-        final String currentDomain = Browser.getHost(link.getDownloadURL(), true);
+        final String currentDomain = Browser.getHost(link.getDownloadURL(), false);
         if (!currentDomain.matches(DOMAINS)) {
             // this is needed to fix old users bad domain name corrections (say hotpspots/gateways)
             String mainPage = MAINPAGE.get();
@@ -167,7 +172,6 @@ public class DepositFiles extends antiDDoSForHost {
         }
         final String newLink = link.getDownloadURL().replaceAll(DOMAINS + "(/.*?)?/files", MAINPAGE.get().replaceAll("https?://(www\\.)?", "") + "/de/files");
         link.setUrlDownload(fixLinkSSL(newLink));
-
     }
 
     protected void showFreeDialog(final String domain) {
@@ -177,7 +181,6 @@ public class DepositFiles extends antiDDoSForHost {
         }
         try {
             SwingUtilities.invokeAndWait(new Runnable() {
-
                 @Override
                 public void run() {
                     try {
@@ -238,7 +241,7 @@ public class DepositFiles extends antiDDoSForHost {
     }
 
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
         // correctlink fixes https|not https, and sets mainpage! no need to duplicate in other download areas!.
         correctDownloadLink(downloadLink);
         setBrowserExclusive();
@@ -280,8 +283,7 @@ public class DepositFiles extends antiDDoSForHost {
         if (fileName == null) {
             String eval = br.getRegex("class=\"info\".*?unescape\\('(.*?)'").getMatch(0);
             if (eval != null) {
-                JDUtilities.getPluginForHost("youtube.com");
-                eval = jd.nutils.encoding.Encoding.unescapeYoutube(eval);
+                eval = Encoding.unicodeDecode(eval);
                 fileName = new Regex(eval, FILE_INFO_NAME).getMatch(0);
             }
         }
@@ -307,8 +309,14 @@ public class DepositFiles extends antiDDoSForHost {
         if (br.containsHTML("Zugang zur folgenden Datei ist begrenzt oder Datei wurde entfernt|Diese Datei besteht nicht, der Zugang zur folgenden Datei ist begrenzt oder Datei wurde entfernt, wegen der Urheberrechtsverletzung\\.")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
+        if (br.containsHTML("This file does not exist, the access to the following file is limited or it has been removed due to infringement of copyright")) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        }
         if (br.containsHTML("Leider, sind alle Slots f")) {
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "No Free Downloadslot", 20 * 60 * 1000l);
+        }
+        if (br.containsHTML("html_download_api-not_exists")) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         /* Server under maintenance */
         if (br.containsHTML("(html_download_api-temporary_unavailable|The site is temporarily unavailable for we are making some important upgrades)")) {
@@ -403,7 +411,7 @@ public class DepositFiles extends antiDDoSForHost {
 
     @Override
     public int getMaxSimultanFreeDownloadNum() {
-        return 1;
+        return maxFree.get();
     }
 
     @Override
@@ -445,7 +453,7 @@ public class DepositFiles extends antiDDoSForHost {
             if (dllink != null && !dllink.equals("")) {
                 dllink = fixLinkSSL(dllink);
                 // handling for txt file downloadlinks, dunno why they made a completely different page for txt files
-                dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 1);
+                dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, true, 1);
                 final URLConnectionAdapter con = dl.getConnection();
                 if (Plugin.getFileNameFromHeader(con) == null || Plugin.getFileNameFromHeader(con).indexOf("?") >= 0) {
                     con.disconnect();
@@ -500,7 +508,6 @@ public class DepositFiles extends antiDDoSForHost {
                 sleep(((wait != null ? Integer.parseInt(wait) : 60) * 1000l) - (System.currentTimeMillis() - timeBefore), downloadLink);
                 // // ajax request, here they give you more html && js. Think this is where the captcha type is determined.
                 ajaxGetPage("/get_file.php?fid=" + fid);
-
                 // this changes each time you load page...
                 final String ck = ajax.getRegex("ACPuzzleKey\\s*=\\s*('|\")(.*?)\\1").getMatch(1);
                 if (ck != null) {
@@ -543,7 +550,7 @@ public class DepositFiles extends antiDDoSForHost {
         }
         logger.info("finallink = " + finallink);
         finallink = fixLinkSSL(finallink);
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, finallink, true, 1);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, finallink, true, 1);
         final URLConnectionAdapter con = dl.getConnection();
         if (Plugin.getFileNameFromHeader(con) == null || Plugin.getFileNameFromHeader(con).indexOf("?") >= 0) {
             if (!con.isContentDisposition()) {
@@ -584,25 +591,52 @@ public class DepositFiles extends antiDDoSForHost {
             downloadLink.setFinalFileName(fixedName);
         }
         downloadLink.setProperty("finallink", finallink);
-        dl.startDownload();
+        try {
+            /* add a download slot */
+            controlFree(+1);
+            /* start the dl */
+            dl.startDownload();
+        } finally {
+            /* remove download slot */
+            controlFree(-1);
+        }
     }
 
-    private final String submitCapthcaStep(final String page) throws IOException, PluginException {
+    /**
+     * Prevents more than one free download from starting at a given time. One step prior to dl.startDownload(), it adds a slot to maxFree
+     * which allows the next singleton download to start, or at least try.
+     *
+     * This is needed because xfileshare(website) only throws errors after a final dllink starts transferring or at a given step within pre
+     * download sequence. But this template(XfileSharingProBasic) allows multiple slots(when available) to commence the download sequence,
+     * this.setstartintival does not resolve this issue. Which results in x(20) captcha events all at once and only allows one download to
+     * start. This prevents wasting peoples time and effort on captcha solving and|or wasting captcha trading credits. Users will experience
+     * minimal harm to downloading as slots are freed up soon as current download begins.
+     *
+     * @param controlFree
+     *            (+1|-1)
+     */
+    private synchronized void controlFree(final int num) {
+        logger.info("maxFree was = " + maxFree.get());
+        maxFree.set(Math.min(Math.max(1, maxFree.addAndGet(num)), totalMaxSimultanFreeDownload.get()));
+        logger.info("maxFree now = " + maxFree.get());
+    }
+
+    private final String submitCapthcaStep(final String page) throws Exception {
         // Important! Setup Header
         ajaxGetPage("/get_file.php?" + page);
         if (ajax.containsHTML("(onclick=\"check_recaptcha|load_recaptcha)")) {
             throw new PluginException(LinkStatus.ERROR_CAPTCHA);
         }
-        String finallink = ajax.getRegex("\"(https?://fileshare\\d+\\." + DOMAINS + "/auth.*?)\"").getMatch(0);
+        String finallink = ajax.getRegex("\"((?:https?:)?//fileshare\\d+\\." + DOMAINS + "/auth.*?)\"").getMatch(0);
         if (finallink == null) {
-            finallink = ajax.getRegex("<form action=\"(https?://.*?)\"").getMatch(0);
+            finallink = ajax.getRegex("<form [^>]*action=\"((?:https?:)?//.*?)\"").getMatch(0);
         }
         return finallink;
     }
 
     private Browser ajax = null;
 
-    private void ajaxGetPage(final String page) throws IOException {
+    private void ajaxGetPage(final String page) throws Exception {
         ajax = br.cloneBrowser();
         ajax.getHeaders().put("X-Requested-With", "XMLHttpRequest");
         ajax.getHeaders().put("Accept", "*/*");
@@ -614,21 +648,28 @@ public class DepositFiles extends antiDDoSForHost {
         protocol = fixLinkSSL("https://");
     }
 
-    public boolean isFreeAccount(Account acc, boolean force) throws IOException {
+    // check that can be done pre login based on cached data.
+    public boolean isFreeAccountPre(Account acc) {
+        if (acc.getType() == AccountType.PREMIUM) {
+            return false;
+        }
+        if (accountData != null && accountData.containsKey("mode")) {
+            if ("gold".equalsIgnoreCase(accountData.get("mode").toString())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // post login check
+    public boolean isFreeAccountPost() throws Exception {
         synchronized (LOCK) {
-            if (acc.getType() == AccountType.FREE) {
-                return true;
-            }
-            if (accountData != null && accountData.containsKey("mode")) {
-                if ("gold".equalsIgnoreCase(accountData.get("mode").toString())) {
-                    return true;
-                } else {
-                    return false;
-                }
-            }
             setLangtoGer();
             if (!br.getURL().contains("/gold/")) {
+                final boolean ifr = br.isFollowingRedirects();
+                br.setFollowRedirects(true);
                 br.getPage(MAINPAGE.get() + "/de/gold/");
+                br.setFollowRedirects(ifr);
             }
             boolean ret = false;
             if (br.containsHTML("Ihre aktuelle Status: Frei - Mitglied</div>")) {
@@ -645,11 +686,6 @@ public class DepositFiles extends antiDDoSForHost {
                 ret = true;
             } else {
                 ret = false;
-            }
-            if (ret) {
-                acc.setType(AccountType.FREE);
-            } else {
-                acc.setType(AccountType.PREMIUM);
             }
             return ret;
         }
@@ -673,28 +709,16 @@ public class DepositFiles extends antiDDoSForHost {
 
     private AccountInfo webFetchAccountInfo(Account account) throws Exception {
         AccountInfo ai = new AccountInfo();
-        try {
-            webLogin(account, true);
-        } catch (final PluginException e) {
-            ai.setStatus(JDL.L("plugins.hoster.depositfilescom.accountbad", "Account expired or not valid."));
-            account.setValid(false);
-            return ai;
-        }
-        if (isFreeAccount(account, true)) {
-            try {
-                account.setMaxSimultanDownloads(1);
-                account.setConcurrentUsePossible(false);
-            } catch (final Throwable e) {
-            }
-            ai.setStatus(JDL.L("plugins.hoster.depositfilescom.accountokfree", "Free Account is ok"));
+        webLogin(account, true);
+        if (isFreeAccountPost()) {
+            account.setMaxSimultanDownloads(1);
+            account.setConcurrentUsePossible(false);
+            account.setType(AccountType.FREE);
             account.setValid(true);
             return ai;
         } else {
-            try {
-                account.setMaxSimultanDownloads(-1);
-                account.setConcurrentUsePossible(true);
-            } catch (final Throwable e) {
-            }
+            account.setMaxSimultanDownloads(-1);
+            account.setConcurrentUsePossible(true);
             String expire = br.getRegex("Gold-Zugriff: <b>(.*?)</b></div>").getMatch(0);
             if (expire == null) {
                 expire = br.getRegex("Gold Zugriff bis: <b>(.*?)</b></div>").getMatch(0);
@@ -714,9 +738,9 @@ public class DepositFiles extends antiDDoSForHost {
                 account.setValid(false);
                 return ai;
             }
-            ai.setStatus(JDL.L("plugins.hoster.depositfilescom.accountok", "Premium Account is ok"));
-            Date date;
             account.setValid(true);
+            account.setType(AccountType.PREMIUM);
+            final Date date;
             try {
                 date = dateFormat.parse(expire);
                 ai.setValidUntil(date.getTime());
@@ -747,13 +771,7 @@ public class DepositFiles extends antiDDoSForHost {
                 br.getHeaders().put("User-Agent", UA);
                 br.setFollowRedirects(true);
                 br.getPage(MAINPAGE.get() + "/login.php?return=%2Fde%2F");
-                String captchaJs = br.getRegex("(http[^\"']+js/base2\\.js)").getMatch(0);
                 Browser br2 = br.cloneBrowser();
-                String cid = null;
-                if (captchaJs != null) {
-                    br2.getPage(captchaJs);
-                    cid = br2.getRegex("window\\.recaptcha_public_key = '([^']+)").getMatch(0);
-                }
                 Thread.sleep(2000);
                 final Form login = br.getFormBySubmitvalue("Eingeben");
                 if (login == null) {
@@ -765,19 +783,16 @@ public class DepositFiles extends antiDDoSForHost {
                 login.put("password", Encoding.urlEncode(account.getPass()));
                 br2 = br.cloneBrowser();
                 br2.submitForm(login);
-
-                if (br2.containsHTML("\"error\":\"CaptchaRequired\"") && cid == null) {
-                    logger.warning("cid = null, captcha is required to login");
-                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-                } else if (br2.containsHTML("\"error\":\"CaptchaRequired\"") && cid != null) {
-                    DownloadLink dummy = new DownloadLink(null, null, null, null, true);
-                    final Recaptcha rc = new Recaptcha(br2, this);
-                    rc.setId(cid);
-                    rc.load();
-                    File cf = rc.downloadCaptcha(getLocalCaptchaFile());
-                    String c = getCaptchaCode("recaptcha", cf, dummy);
-                    login.put("recaptcha_challenge_field", rc.getChallenge());
-                    login.put("recaptcha_response_field", Encoding.urlEncode(c));
+                if (br2.containsHTML("\"error\":\"CaptchaRequired\"")) {
+                    if (getDownloadLink() == null) {
+                        final DownloadLink dummyLink = new DownloadLink(null, "Account", this.getHost(), MAINPAGE.get(), true);
+                        setDownloadLink(dummyLink);
+                    }
+                    final String c = new CaptchaHelperHostPluginRecaptchaV2(this, br, "6LdyfgcTAAAAAArE1fk9cGyExtKfT4a12dWcViye").getToken();
+                    if (c == null || c.equals("")) {
+                        throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                    }
+                    login.put("g-recaptcha-response", Encoding.urlEncode(c));
                     br2.submitForm(login);
                     if (br2.containsHTML("\"error\":\"CaptchaInvalid\"")) {
                         logger.info("Invalid Captcha response!");
@@ -795,12 +810,13 @@ public class DepositFiles extends antiDDoSForHost {
                     logger.info("Depositfiles website login method == success!");
                 }
                 br.setFollowRedirects(false);
-
                 account.saveCookies(this.br.getCookies(this.getHost()), "");
                 account.setProperty("uprand", br.getCookie(MAINPAGE.get(), "uprand"));
             } catch (final PluginException e) {
-                account.clearCookies("");
-                account.setProperty("uprand", Property.NULL);
+                if (e.getLinkStatus() == LinkStatus.ERROR_PREMIUM) {
+                    account.clearCookies("");
+                    account.setProperty("uprand", Property.NULL);
+                }
                 throw e;
             }
         }
@@ -811,7 +827,7 @@ public class DepositFiles extends antiDDoSForHost {
         setConstants();
         requestFileInformation(downloadLink);
         synchronized (PREMLOCK) {
-            if (isFreeAccount(account, false)) {
+            if (isFreeAccountPre(account)) {
                 simultanpremium.set(1);
             } else {
                 if (simultanpremium.get() + 1 > 20) {
@@ -831,7 +847,7 @@ public class DepositFiles extends antiDDoSForHost {
 
     private void webHandlePremium(final DownloadLink downloadLink, Account account) throws Exception {
         webLogin(account, false);
-        if (isFreeAccount(account, true)) {
+        if (account.getType() == AccountType.FREE) {
             logger.info(account.getUser() + " @ Free Account :: Web download method in use");
             br.getPage(downloadLink.getDownloadURL());
             doFree(downloadLink);
@@ -868,7 +884,7 @@ public class DepositFiles extends antiDDoSForHost {
                 throw new PluginException(LinkStatus.ERROR_RETRY);
             }
             link = fixLinkSSL(link);
-            dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, link, true, 0);
+            dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, link, true, 0);
             final URLConnectionAdapter con = dl.getConnection();
             if (Plugin.getFileNameFromHeader(con) == null || Plugin.getFileNameFromHeader(con).indexOf("?") >= 0) {
                 if (!con.isContentDisposition()) {
@@ -990,18 +1006,15 @@ public class DepositFiles extends antiDDoSForHost {
             apiGetPage("http://depositfiles.com/api/user/login?" + "login=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()) + "&" + apiKeyVal());
             if (br.containsHTML("\"error\":\"CaptchaRequired\"")) {
                 for (int i = 0; i <= 2; i++) {
-                    DownloadLink dummyLink = new DownloadLink(null, "Account", this.getHost(), MAINPAGE.get(), true);
-                    final Recaptcha rc = new Recaptcha(br, this);
-                    rc.setId("6LdRTL8SAAAAAE9UOdWZ4d0Ky-aeA7XfSqyWDM2m");
-                    rc.load();
-                    File cf = rc.downloadCaptcha(getLocalCaptchaFile());
-                    String c = getCaptchaCode("recaptcha", cf, dummyLink);
-                    if (c == null || c.equals("")) {
-                        logger.warning(this.getHost() + "requires captcha query in order to login, you've entered nothing or blank captcha respsonse. Aborting login sequence");
-                        account.setValid(false);
-                        return ai;
+                    if (getDownloadLink() == null) {
+                        final DownloadLink dummyLink = new DownloadLink(null, "Account", this.getHost(), MAINPAGE.get(), true);
+                        setDownloadLink(dummyLink);
                     }
-                    br.getPage("http://depositfiles.com/api/user/login?recaptcha_challenge_field=" + rc.getChallenge() + "&recaptcha_response_field=" + Encoding.urlEncode(c) + "&" + apiKeyVal() + "&login=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
+                    final String c = new CaptchaHelperHostPluginRecaptchaV2(this, br, "6LdyfgcTAAAAAArE1fk9cGyExtKfT4a12dWcViye").getToken();
+                    if (c == null || c.equals("")) {
+                        throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                    }
+                    br.getPage("http://depositfiles.com/api/user/login?recaptcha_challenge_field=null&g-recaptcha-response=" + Encoding.urlEncode(c) + "&" + apiKeyVal() + "&login=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
                     if (br.containsHTML("\"error\":\"CaptchaInvalid\"")) {
                         logger.info("Invalid Captcha response!");
                     } else {
@@ -1014,7 +1027,7 @@ public class DepositFiles extends antiDDoSForHost {
                 throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
             }
             if (br.containsHTML("\"error\":\"CaptchaInvalid\"")) {
-                logger.info("Invalid Captcha response! Excausted retry count");
+                logger.info("Invalid Captcha response! Exhausted retry count");
                 throw new PluginException(LinkStatus.ERROR_CAPTCHA);
             }
             String token = PluginJSonUtils.getJsonValue(br, "token");
@@ -1048,36 +1061,30 @@ public class DepositFiles extends antiDDoSForHost {
             final String expire = PluginJSonUtils.getJsonValue(br, "gold_expired");
             if ("gold".equalsIgnoreCase(mode)) {
                 account.setType(AccountType.PREMIUM);
-                ai.setStatus("Premium Account");
                 account.setMaxSimultanDownloads(-1);
                 account.setConcurrentUsePossible(true);
-                final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss", Locale.UK);
                 if (expire == null) {
-                    ai.setStatus(JDL.L("plugins.hoster.depositfilescom.accountbad", "Account expired or not valid."));
-                    account.setProperty("accountData", Property.NULL);
-                    account.setValid(false);
-                    return ai;
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
                 }
                 try {
-                    Date date;
-                    date = dateFormat.parse(expire);
+                    final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss", Locale.UK);
+                    final Date date = dateFormat.parse(expire);
                     ai.setValidUntil(date.getTime());
                 } catch (final ParseException e) {
                     logger.log(e);
                 }
             } else {
-                ai.setStatus("Free Account");
                 account.setType(AccountType.FREE);
                 account.setMaxSimultanDownloads(1);
                 account.setConcurrentUsePossible(false);
             }
             saveAccountData(account);
-            account.setValid(true);
+            account.setProperty(Account.PROPERTY_REFRESH_TIMEOUT, 5 * 60 * 60 * 1000l);
         } catch (PluginException e) {
-            account.setProperty("accountData", Property.NULL);
-            ai.setStatus(JDL.L("plugins.hoster.depositfilescom.accountbad", "Account expired or not valid."));
-            account.setValid(false);
-            return ai;
+            if (e.getLinkStatus() == LinkStatus.ERROR_PREMIUM) {
+                account.setProperty("accountData", Property.NULL);
+            }
+            throw e;
         }
         // }
         return ai;
@@ -1175,7 +1182,7 @@ public class DepositFiles extends antiDDoSForHost {
         // if (!account.getBooleanProperty("free", false)) {
         dllink = fixLinkSSL(dllink);
         // }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, apiResumes, apiChunks);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, apiResumes, apiChunks);
         final URLConnectionAdapter con = dl.getConnection();
         if (Plugin.getFileNameFromHeader(con) == null || Plugin.getFileNameFromHeader(con).indexOf("?") >= 0) {
             if (!con.isContentDisposition()) {
@@ -1258,7 +1265,7 @@ public class DepositFiles extends antiDDoSForHost {
     }
 
     private boolean checkSsl() {
-        return getPluginConfig().getBooleanProperty(SETTING_SSL_CONNECTION, false);
+        return true;// getPluginConfig().getBooleanProperty(SETTING_SSL_CONNECTION, false);
     }
 
     private String fixLinkSSL(String link) {
@@ -1290,7 +1297,10 @@ public class DepositFiles extends antiDDoSForHost {
     }
 
     public void setLangtoGer() throws IOException {
-        br.setCookie(MAINPAGE.get(), "lang_current", "de");
+        br.setCookie("depositfiles.com", "lang_current", "de");
+        br.setCookie("depositfiles.org", "lang_current", "de");
+        br.setCookie("dfiles.eu", "lang_current", "de");
+        br.setCookie("dfiles.ru", "lang_current", "de");
     }
 
     @Override
@@ -1298,5 +1308,4 @@ public class DepositFiles extends antiDDoSForHost {
         setMainpage();
         return MAINPAGE.get() + "/en/agreem.html";
     }
-
 }

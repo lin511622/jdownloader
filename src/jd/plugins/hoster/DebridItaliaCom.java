@@ -13,13 +13,14 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
+
+import org.jdownloader.plugins.components.antiDDoSForHost;
+import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
 
 import jd.PluginWrapper;
 import jd.config.Property;
@@ -33,13 +34,10 @@ import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
+import jd.plugins.components.MultiHosterManagement;
 
-import org.jdownloader.plugins.components.antiDDoSForHost;
-import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "debriditalia.com" }, urls = { "https?://\\w+\\.debriditalia\\.com/dl/\\d+/.+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "debriditalia.com" }, urls = { "https?://\\w+\\.debriditalia\\.com/dl/\\d+/.+" })
 public class DebridItaliaCom extends antiDDoSForHost {
-
     public DebridItaliaCom(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium("https://www.debriditalia.com/premium.php");
@@ -50,16 +48,15 @@ public class DebridItaliaCom extends antiDDoSForHost {
         return "https://www.debriditalia.com/premium.php";
     }
 
-    private static final String                            NICE_HOST                     = "debriditalia.com";
-    private static final String                            NICE_HOSTproperty             = NICE_HOST.replaceAll("(\\.|\\-)", "");
-    private static final String                            NOCHUNKS                      = "NOCHUNKS";
-    private static final String                            MAX_RETRIES_DL_ERROR_PROPERTY = "MAX_RETRIES_DL_ERROR";
-    private static final int                               DEFAULT_MAX_RETRIES_DL_ERROR  = 50;
-
-    private static HashMap<Account, HashMap<String, Long>> hostUnavailableMap            = new HashMap<Account, HashMap<String, Long>>();
-    private Account                                        currAcc                       = null;
-    private DownloadLink                                   currDownloadLink              = null;
-    private String                                         dllink                        = null;
+    private static MultiHosterManagement mhm                           = new MultiHosterManagement("debriditalia.com");
+    private static final String          NICE_HOST                     = "debriditalia.com";
+    private static final String          NICE_HOSTproperty             = NICE_HOST.replaceAll("(\\.|\\-)", "");
+    private static final String          NOCHUNKS                      = "NOCHUNKS";
+    private static final String          MAX_RETRIES_DL_ERROR_PROPERTY = "MAX_RETRIES_DL_ERROR";
+    private static final int             DEFAULT_MAX_RETRIES_DL_ERROR  = 50;
+    private Account                      currAcc                       = null;
+    private DownloadLink                 currDownloadLink              = null;
+    private String                       dllink                        = null;
 
     private void setConstants(final Account acc, final DownloadLink dl) {
         dllink = null;
@@ -75,7 +72,7 @@ public class DebridItaliaCom extends antiDDoSForHost {
             prepBr.setReadTimeout(60 * 1000);
             /* 401 can happen when user enters invalid logindata */
             prepBr.addAllowedResponseCodes(401);
-            prepBr.getHeaders().put("User-Agent", "JDownloader");
+            prepBr.getHeaders().put("User-Agent", "JDownloader " + getVersion());
         }
         return prepBr;
     }
@@ -106,12 +103,11 @@ public class DebridItaliaCom extends antiDDoSForHost {
             accountInvalid();
         }
         ac.setValidUntil(Long.parseLong(expire) * 1000l);
-
         getPage("https://debriditalia.com/api.php?hosts");
         final String[] hosts = br.getRegex("\"([^<>\"]*?)\"").getColumn(0);
         final List<String> supportedHosts = new ArrayList<String>(Arrays.asList(hosts));
         ac.setMultiHostSupport(this, supportedHosts);
-        ac.setStatus("Premium account");
+        ac.setStatus("Premium Account");
         return ac;
     }
 
@@ -156,56 +152,30 @@ public class DebridItaliaCom extends antiDDoSForHost {
     @SuppressWarnings("deprecation")
     public void handleMultiHost(final DownloadLink link, final Account account) throws Exception {
         setConstants(account, link);
-
-        synchronized (hostUnavailableMap) {
-            HashMap<String, Long> unavailableMap = hostUnavailableMap.get(account);
-            if (unavailableMap != null) {
-                Long lastUnavailable = unavailableMap.get(link.getHost());
-                if (lastUnavailable != null && System.currentTimeMillis() < lastUnavailable) {
-                    final long wait = lastUnavailable - System.currentTimeMillis();
-                    throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Host is temporarily unavailable via " + this.getHost(), wait);
-                } else if (lastUnavailable != null) {
-                    unavailableMap.remove(link.getHost());
-                    if (unavailableMap.size() == 0) {
-                        hostUnavailableMap.remove(account);
-                    }
-                }
-            }
-        }
-        // prevent ddos work around
-        if (link.getBooleanProperty("hasFailed", false)) {
-            final int hasFailedInt = link.getIntegerProperty("hasFailedWait", 60);
-            // nullify old storeables
-            link.setProperty("hasFailed", Property.NULL);
-            link.setProperty("hasFailedWait", Property.NULL);
-            sleep(hasFailedInt * 1001, link);
-        }
-
+        mhm.runCheck(currAcc, currDownloadLink);
         showMessage(link, "Generating link");
-
-        // since no requests are done with this.br we need to manually set so checkdirectlink is correct
+        /* since no requests are done with this.br we need to manually set so checkdirectlink is correct */
         prepBrowser(br, "https://debriditalia.com/");
         dllink = checkDirectLink(link, "debriditaliadirectlink");
         if (dllink == null) {
             String host_downloadlink = link.getDownloadURL();
             /* Workaround for server side debriditalia bug. */
             /*
-             * Known hosts for which they do definitely not accept https urls [ last updated 2015-10-05]: share-online.biz, depfile.com,
-             * inclouddrive.com, secureupload.eu
+             * Known hosts for which they do definitely not accept https urls [ last updated 2015-10-05]: share-online.biz, inclouddrive.com
              */
             host_downloadlink = host_downloadlink.replace("https://", "http://");
             final String encodedLink = Encoding.urlEncode(host_downloadlink);
             getPage("https://debriditalia.com/api.php?generate=on&u=" + Encoding.urlEncode(account.getUser()) + "&p=" + encodePassword(account.getPass()) + "&link=" + encodedLink);
             /* Either server error or the host is broken (we have to find out by retrying) */
             if (br.containsHTML("ERROR: not_available")) {
-                handleErrorRetries("not_available", 20, 5 * 60 * 1000l);
+                mhm.handleErrorGeneric(currAcc, currDownloadLink, "not_available", 5, 5 * 60 * 1000l);
             } else if (br.containsHTML("ERROR: not_supported")) {
                 logger.info("Current host is not supported");
-                tempUnavailableHoster(5 * 60 * 1000l);
+                mhm.putError(currAcc, currDownloadLink, 5 * 60 * 1000l, "not_supported");
             }
             dllink = br.getRegex("(https?://(\\w+\\.)?debriditalia\\.com/dl/.+)").getMatch(0);
             if (dllink == null) {
-                handleErrorRetries("dllinknull", 20, 5 * 60 * 1000l);
+                mhm.handleErrorGeneric(currAcc, currDownloadLink, "dllinknull", 5, 5 * 60 * 1000l);
             }
         }
         handleDl();
@@ -216,17 +186,17 @@ public class DebridItaliaCom extends antiDDoSForHost {
         if (currDownloadLink.getBooleanProperty(DebridItaliaCom.NOCHUNKS, false)) {
             chunks = 1;
         }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, currDownloadLink, Encoding.htmlDecode(dllink.trim()), true, chunks);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, currDownloadLink, Encoding.htmlDecode(dllink.trim()), true, chunks);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             int maxRetriesOnDownloadError = getPluginConfig().getIntegerProperty(MAX_RETRIES_DL_ERROR_PROPERTY, DEFAULT_MAX_RETRIES_DL_ERROR);
             if (br.containsHTML("<h1>Error</h1>") && br.containsHTML("<p>For some reason the download not started\\. Please reload the page or click the button below\\.</p>")) {
-                handleErrorRetries("Download not started", maxRetriesOnDownloadError, 10 * 60 * 1000l);
+                mhm.handleErrorGeneric(currAcc, currDownloadLink, "Download_not_started", maxRetriesOnDownloadError, 5 * 60 * 1000l);
             }
             if (br.containsHTML("No htmlCode read")) {
-                handleErrorRetries("unknowndlerror", maxRetriesOnDownloadError, 5 * 60 * 1000l);
+                mhm.handleErrorGeneric(currAcc, currDownloadLink, "unknowndlerror", maxRetriesOnDownloadError, 5 * 60 * 1000l);
             }
-            handleErrorRetries("unknowndlerror2", maxRetriesOnDownloadError, 5 * 60 * 1000l);
+            mhm.handleErrorGeneric(currAcc, currDownloadLink, "unknowndlerror2", maxRetriesOnDownloadError, 5 * 60 * 1000l);
         }
         // Directlinks can be used for up to 2 days
         currDownloadLink.setProperty("debriditaliadirectlink", dllink);
@@ -306,22 +276,6 @@ public class DebridItaliaCom extends antiDDoSForHost {
         return password;
     }
 
-    private void tempUnavailableHoster(long timeout) throws PluginException {
-        if (this.currDownloadLink == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "Unable to handle this errorcode!");
-        }
-        synchronized (hostUnavailableMap) {
-            HashMap<String, Long> unavailableMap = hostUnavailableMap.get(this.currAcc);
-            if (unavailableMap == null) {
-                unavailableMap = new HashMap<String, Long>();
-                hostUnavailableMap.put(this.currAcc, unavailableMap);
-            }
-            /* wait to retry this host */
-            unavailableMap.put(this.currDownloadLink.getHost(), (System.currentTimeMillis() + timeout));
-        }
-        throw new PluginException(LinkStatus.ERROR_RETRY);
-    }
-
     private void showMessage(DownloadLink link, String message) {
         link.getLinkStatus().setStatusText(message);
     }
@@ -343,34 +297,6 @@ public class DebridItaliaCom extends antiDDoSForHost {
             }
         }
         return dllink;
-    }
-
-    /**
-     * Is intended to handle out of date errors which might occur seldom by re-tring a couple of times before we temporarily remove the host
-     * from the host list.
-     *
-     * @param error
-     *            : The name of the error
-     * @param maxRetries
-     *            : Max retries before out of date error is thrown
-     */
-    private void handleErrorRetries(final String error, final int maxRetries, final long timeout) throws PluginException {
-        int timesFailed = this.currDownloadLink.getIntegerProperty(NICE_HOSTproperty + "failedtimes_" + error, 0);
-        if (timesFailed <= maxRetries) {
-            logger.info(NICE_HOST + ": " + error + " -> Retrying");
-            timesFailed++;
-            logger.fine("Unknown download error! Retry attempt " + timesFailed + " of " + maxRetries);
-            this.currDownloadLink.setProperty(NICE_HOSTproperty + "failedtimes_" + error, timesFailed);
-            // prevent ddos
-            this.currDownloadLink.setProperty("hasFailed", true);
-            this.currDownloadLink.setProperty("hasFailedWait", 60);
-            throw new PluginException(LinkStatus.ERROR_RETRY, error);
-        } else {
-            logger.fine("Unknown download error! Max. retry attempts reached!");
-            this.currDownloadLink.setProperty(NICE_HOSTproperty + "failedtimes_" + error, Property.NULL);
-            logger.info(NICE_HOST + ": " + error + " -> Disabling current host");
-            tempUnavailableHoster(1 * 60 * 1000l);
-        }
     }
 
     @Override

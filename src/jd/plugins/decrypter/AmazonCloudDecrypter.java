@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.io.IOException;
@@ -23,6 +22,7 @@ import java.util.Random;
 
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
+import jd.http.Browser;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.plugins.CryptedLink;
@@ -33,9 +33,8 @@ import jd.plugins.PluginForDecrypt;
 
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "amazon.com" }, urls = { "https?://(?:www\\.)?amazon\\.(?:de|es|com|com\\.au|co\\.uk|fr|ca)/(gp/|cloud)drive/share(/|\\?).+|https?://(?:www\\.)?amazon\\.com/clouddrive/share.+" })
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "amazon.com" }, urls = { "https?://(?:www\\.)?amazon\\.(?:de|es|com\\.au|com|co\\.uk|fr|ca|it)/(gp/|cloud)drive/share(/|\\?).+|https?://(?:www\\.)?amazon\\.com/clouddrive/share.+" })
 public class AmazonCloudDecrypter extends PluginForDecrypt {
-
     public AmazonCloudDecrypter(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -49,32 +48,25 @@ public class AmazonCloudDecrypter extends PluginForDecrypt {
         subfolder_id = null;
         ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         parameter = param.toString();
-
         plain_folder_id = new Regex(parameter, "[\\?\\&]s=([A-Za-z0-9\\-_^&]+)").getMatch(0);
-        plain_domain = new Regex(parameter, "(amazon\\.(de|es|com|com\\.au|co\\.uk|fr|ca))").getMatch(0);
+        plain_domain = Browser.getHost(parameter);
         if (plain_folder_id == null) {
-
             // there are dummy ?md5=..&name=... links. see below
             plain_folder_id = new Regex(parameter, "share/([A-Za-z0-9\\-_]+)").getMatch(0);
             // linkType https://www.amazon.es/clouddrive/share/THB_Rik<...ID....>
             return handleNewType(decryptedLinks, param, progress);
-
         } else {
             // Link Type: https://www.amazon.com/clouddrive/share?s=yr-4blQrTV8hRaCZ8zOOPg
             // LinkType: http://www.amazon.com/gp/drive/share/177-7117023-0446256?ie=UTF8&s=yr-4blQrTV8hRaCZ8zOOPg
-
             final DownloadLink main = createDownloadlink("https://amazondecrypted.com/" + System.currentTimeMillis() + new Random().nextInt(100000));
             main.setProperty("type", "old20140922");
             main.setProperty("plain_folder_id", plain_folder_id);
             main.setProperty("mainlink", parameter);
             main.setProperty("plain_domain", plain_domain);
             main.setContentUrl(" https://www." + plain_domain + "/clouddrive/share?s=" + plain_folder_id);
-
             decryptedLinks.add(main);
         }
-
         return decryptedLinks;
-
     }
 
     @SuppressWarnings({ "deprecation", "unchecked" })
@@ -104,7 +96,6 @@ public class AmazonCloudDecrypter extends PluginForDecrypt {
             main.setProperty("plain_folder_id", plain_folder_id);
             main.setProperty("mainlink", parameter);
             main.setContentUrl("https://www." + this.plain_domain + "/clouddrive/share/" + plain_folder_id);
-
             jd.plugins.hoster.AmazonCloud.accessFolder(this.br, this.plain_domain, this.plain_folder_id);
             if (jd.plugins.hoster.AmazonCloud.isOffline(this.br)) {
                 decryptedLinks.add(createOfflinelink(this.parameter));
@@ -131,7 +122,6 @@ public class AmazonCloudDecrypter extends PluginForDecrypt {
         for (final Object o : resource_data_list) {
             decryptedLinks.add(crawlSingleObject(o, path_decrypted));
         }
-
         return decryptedLinks;
     }
 
@@ -153,9 +143,7 @@ public class AmazonCloudDecrypter extends PluginForDecrypt {
                 return null;
             }
             final String fid = jd.plugins.hoster.AmazonCloud.getLinkid(this.plain_folder_id, md5, name);
-
             name = Encoding.htmlDecode(name).trim();
-
             dl.setDownloadSize(filesize);
             dl.setFinalFileName(name);
             dl.setProperty("plain_name", name);
@@ -207,5 +195,4 @@ public class AmazonCloudDecrypter extends PluginForDecrypt {
         br.setFollowRedirects(true);
         br.getHeaders().put("Accept", "application/json, text/javascript, */*; q=0.01");
     }
-
 }

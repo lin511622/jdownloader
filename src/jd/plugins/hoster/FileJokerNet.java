@@ -13,19 +13,28 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.Locale;
-import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.regex.Pattern;
+import java.util.regex.Pattern;import jd.plugins.Account;
+import jd.plugins.Account.AccountType;
+import jd.plugins.AccountInfo;
+import jd.plugins.DownloadLink;
+import jd.plugins.DownloadLink.AvailableStatus;
+import jd.plugins.HostPlugin;
+import jd.plugins.LinkStatus;
+import jd.plugins.Plugin;
+import jd.plugins.PluginException;
+import jd.plugins.components.PluginJSonUtils;
+import jd.plugins.components.SiteType.SiteTemplate;
+import jd.utils.locale.JDL;
 
+import org.appwork.utils.StringUtils;
 import org.appwork.utils.formatter.SizeFormatter;
 import org.appwork.utils.formatter.TimeFormatter;
 import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
@@ -38,29 +47,18 @@ import jd.config.ConfigContainer;
 import jd.config.ConfigEntry;
 import jd.config.Property;
 import jd.http.Browser;
-import jd.http.Cookie;
 import jd.http.Cookies;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.parser.html.Form;
+import jd.parser.html.Form.MethodType;
 import jd.parser.html.HTMLParser;
 import jd.parser.html.InputField;
-import jd.plugins.Account;
-import jd.plugins.Account.AccountType;
-import jd.plugins.AccountInfo;
-import jd.plugins.DownloadLink;
-import jd.plugins.DownloadLink.AvailableStatus;
-import jd.plugins.HostPlugin;
-import jd.plugins.LinkStatus;
-import jd.plugins.Plugin;
-import jd.plugins.PluginException;
-import jd.plugins.components.SiteType.SiteTemplate;
-import jd.utils.locale.JDL;
+
 
 @HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "filejoker.net" }, urls = { "https?://(?:www\\.)?filejoker\\.net/(?:vidembed\\-)?[a-z0-9]{12}" })
 public class FileJokerNet extends antiDDoSForHost {
-
     private String               correctedBR                  = "";
     private String               passCode                     = null;
     private static final String  PASSWORDTEXT                 = "<br><b>Passwor(d|t):</b> <input";
@@ -84,20 +82,17 @@ public class FileJokerNet extends antiDDoSForHost {
     private static AtomicInteger maxFree                      = new AtomicInteger(1);
     private static Object        LOCK                         = new Object();
     private String               fuid                         = null;
-
     private static final String  INVALIDLINKS                 = "https?://(www\\.)?filejoker\\.net/registration";
-
     /* Plugin settings */
     private static final String  CUSTOM_REFERER               = "CUSTOM_REFERER";
 
     /* DEV NOTES */
     // XfileSharingProBasic Version 2.6.5.7
-    // mods: erandom UA|ours is blocked, heavily modified, DO NOT UPGRADE!
+    // mods: random UA|ours is blocked, heavily modified, DO NOT UPGRADE!
     // limit-info:
     // protocol: no https
     // captchatype: recaptcha
     // other: forced https
-
     @Override
     public void correctDownloadLink(final DownloadLink link) {
         /* forced https */
@@ -113,6 +108,39 @@ public class FileJokerNet extends antiDDoSForHost {
         super(wrapper);
         this.setConfigElements();
         this.enablePremium(COOKIE_HOST + "/premium.html");
+    }
+
+    /* do not add @Override here to keep 0.* compatibility */
+    public boolean hasAutoCaptcha() {
+        return true;
+    }
+
+    /* NO OVERRIDE!! We need to stay 0.9*compatible */
+    public boolean hasCaptcha(DownloadLink link, jd.plugins.Account acc) {
+        if (acc == null) {
+            /* no account, yes we can expect captcha */
+            return true;
+        }
+        if (acc.getType() == AccountType.FREE) {
+            /* free accounts also have captchas */
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    protected boolean useRUA() {
+        return true;
+    }
+
+    @Override
+    protected Browser prepBrowser(final Browser prepBr, final String host) {
+        if (!(browserPrepped.containsKey(prepBr) && browserPrepped.get(prepBr) == Boolean.TRUE)) {
+            super.prepBrowser(prepBr, host);
+            /* define custom browser headers and language settings */
+            prepBr.setCookie(COOKIE_HOST, "lang", "english");
+        }
+        return prepBr;
     }
 
     private Browser prepBR(final Browser br) {
@@ -131,7 +159,7 @@ public class FileJokerNet extends antiDDoSForHost {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         setFUID(link);
-        prepBR(this.br);
+        prepBR(br);
         getPage(link.getDownloadURL());
         if (new Regex(correctedBR, "(No such file|>File Not Found<|>The file was removed by|Reason for deletion:\n)").matches()) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
@@ -139,8 +167,9 @@ public class FileJokerNet extends antiDDoSForHost {
         if (new Regex(correctedBR, MAINTENANCE).matches()) {
             link.getLinkStatus().setStatusText(MAINTENANCEUSERTEXT);
             return AvailableStatus.UNCHECKABLE;
-        }
-        if (br.getURL().contains("/?op=login&redirect=")) {
+        } else if (ddosBlocked()) {
+            return AvailableStatus.UNCHECKABLE;
+        } else if (br.getURL().contains("/?op=login&redirect=")) {
             link.getLinkStatus().setStatusText(PREMIUMONLY2);
             return AvailableStatus.UNCHECKABLE;
         }
@@ -158,8 +187,12 @@ public class FileJokerNet extends antiDDoSForHost {
             link.setMD5Hash(fileInfo[2].trim());
         }
         fileInfo[0] = fileInfo[0].replaceAll("(</b>|<b>|\\.html)", "");
-        /* Server sometimes returns bad filenames */
-        link.setFinalFileName(fileInfo[0].trim());
+        if (fileInfo[0].contains("&#8230;")) { // …
+            link.setName(Encoding.htmlDecode(fileInfo[0]).trim());
+        } else {
+            /* Server sometimes returns bad filenames */
+            link.setFinalFileName(fileInfo[0].trim());
+        }
         if (fileInfo[1] != null && !fileInfo[1].equals("")) {
             link.setDownloadSize(SizeFormatter.getSize(fileInfo[1]));
         }
@@ -200,7 +233,10 @@ public class FileJokerNet extends antiDDoSForHost {
             if (fileInfo[1] == null) {
                 fileInfo[1] = new Regex(correctedBR, "</font>[ ]+\\(([^<>\"\\'/]+)\\)(.*?)</font>").getMatch(0);
                 if (fileInfo[1] == null) {
-                    fileInfo[1] = new Regex(correctedBR, "(\\d+(\\.\\d+)? ?(KB|MB|GB))").getMatch(0);
+                    fileInfo[1] = new Regex(correctedBR, ">\\s*\\(\\s*(\\d+(\\.\\d+)?\\s{0,1}(KB|MB|GB))\\s*\\)<").getMatch(0);
+                    if (fileInfo[1] == null) {
+                        fileInfo[1] = new Regex(correctedBR, "(\\d+(\\.\\d+)?\\s{0,1}(KB|MB|GB))").getMatch(0);
+                    }
                 }
             }
         }
@@ -218,6 +254,9 @@ public class FileJokerNet extends antiDDoSForHost {
 
     @SuppressWarnings("unused")
     public void doFree(final DownloadLink downloadLink, final boolean resumable, final int maxchunks, final String directlinkproperty, final Account account) throws Exception, PluginException {
+        if (checkShowFreeDialog(getHost())) {
+            showFreeDialog(getHost());
+        }
         br.setFollowRedirects(false);
         passCode = downloadLink.getStringProperty("pass");
         /* First, bring up saved final links */
@@ -292,6 +331,7 @@ public class FileJokerNet extends antiDDoSForHost {
                 dlForm = br.getFormByInputFieldKeyValue("op", "download2");
             }
             if (dlForm == null) {
+                // THIS IS BAD IDEA! -raztoki20161121
                 dlForm = allForms[allForms.length - 1];
             }
             if (dlForm == null) {
@@ -303,7 +343,6 @@ public class FileJokerNet extends antiDDoSForHost {
                 dlForm.remove(null);
                 final long timeBefore = System.currentTimeMillis();
                 boolean password = false;
-                boolean skipWaittime = false;
                 if (new Regex(correctedBR, PASSWORDTEXT).matches()) {
                     password = true;
                     logger.info("The downloadlink seems to be password protected.");
@@ -316,7 +355,46 @@ public class FileJokerNet extends antiDDoSForHost {
                     }
                 }
                 /* Captcha START */
-                if (correctedBR.contains(";background:#ccc;text-align")) {
+                if (correctedBR.contains("g-recaptcha")) {
+                    /* 2017-12-07: Do NOT wait before this captcha otherwise we might run into a timeout! */
+                    logger.info("Detected captcha method \"RecaptchaV2\" for this host");
+                    final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
+                    if (new Regex(correctedBR, Pattern.compile("\\$\\.post\\(\\s*?\"/ddl\"", Pattern.CASE_INSENSITIVE)).matches()) {
+                        /* 2017-12-07: New */
+                        /* Do not put the result in this Form as the check is handled below already */
+                        dlForm.put("g-recaptcha-response", "");
+                        final Form specialCaptchaForm = new Form();
+                        specialCaptchaForm.setMethod(MethodType.POST);
+                        specialCaptchaForm.setAction("/ddl");
+                        final InputField if_Rand = dlForm.getInputFieldByName("rand");
+                        final String file_id = PluginJSonUtils.getJson(br, "file_id");
+                        if (if_Rand != null) {
+                            /* This is usually given */
+                            specialCaptchaForm.put("rand", if_Rand.getValue());
+                        }
+                        if (!StringUtils.isEmpty(file_id)) {
+                            /* This is usually given */
+                            specialCaptchaForm.put("file_id", file_id);
+                        }
+                        specialCaptchaForm.put("op", "captcha1");
+                        specialCaptchaForm.put("g-recaptcha-response", Encoding.urlEncode(recaptchaV2Response));
+                        /* User existing Browser object as we get a cookie which is required later. */
+                        br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
+                        br.getHeaders().put("Accept", "*/*");
+                        this.submitForm(br, specialCaptchaForm);
+                        if (br.containsHTML("Wrong captcha")) {
+                            logger.info("Rare case: Wrong reCaptchaV2 captcha");
+                            throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                        } else if (!br.toString().equalsIgnoreCase("OK")) {
+                            logger.warning("Fatal reCaptchaV2 special handling failure");
+                            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                        }
+                        br.getHeaders().remove("X-Requested-With");
+                    } else {
+                        /* Old */
+                        dlForm.put("g-recaptcha-response", Encoding.urlEncode(recaptchaV2Response));
+                    }
+                } else if (correctedBR.contains(";background:#ccc;text-align")) {
                     logger.info("Detected captcha method \"plaintext captchas\" for this host");
                     /* Captcha method by ManiacMansion */
                     final String[][] letters = new Regex(br, "<span style=\\'position:absolute;padding\\-left:(\\d+)px;padding\\-top:\\d+px;\\'>(&#\\d+;)</span>").getMatches();
@@ -365,11 +443,8 @@ public class FileJokerNet extends antiDDoSForHost {
                     dlForm.put("recaptcha_challenge_field", rc.getChallenge());
                     dlForm.put("recaptcha_response_field", Encoding.urlEncode(c));
                     logger.info("Put captchacode " + c + " obtained by captcha metod \"Re Captcha\" in the form and submitted it.");
-                    /* wait time is usually skippable for reCaptcha handling */
-                    skipWaittime = true;
                 } else if (br.containsHTML("solvemedia\\.com/papi/")) {
                     logger.info("Detected captcha method \"solvemedia\" for this host");
-
                     final org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia sm = new org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia(br);
                     File cf = null;
                     try {
@@ -394,15 +469,12 @@ public class FileJokerNet extends antiDDoSForHost {
                         throw new PluginException(LinkStatus.ERROR_FATAL);
                     }
                     dlForm.put("capcode", result);
-                    skipWaittime = false;
                 }
                 /* Captcha END */
                 if (password) {
                     passCode = handlePassword(dlForm, downloadLink);
                 }
-                if (!skipWaittime) {
-                    waitTime(timeBefore, downloadLink);
-                }
+                waitTime(timeBefore, downloadLink);
                 submitForm(dlForm);
                 logger.info("Submitted DLForm");
                 checkErrors(downloadLink, true, account);
@@ -436,10 +508,12 @@ public class FileJokerNet extends antiDDoSForHost {
             checkServerErrors();
             handlePluginBroken(downloadLink, "dllinknofile", 3);
         }
-        downloadLink.setProperty(directlinkproperty, dllink);
-        fixFilename(downloadLink);
+        if (!downloadLink.getName().contains("…")) {
+            fixFilename(downloadLink);
+        }
         try {
             /* add a download slot */
+            downloadLink.setProperty(directlinkproperty, dl.getConnection().getURL().toString());
             controlFree(+1);
             /* start the dl */
             dl.startDownload();
@@ -452,39 +526,6 @@ public class FileJokerNet extends antiDDoSForHost {
     @Override
     public int getMaxSimultanFreeDownloadNum() {
         return maxFree.get();
-    }
-
-    /* do not add @Override here to keep 0.* compatibility */
-    public boolean hasAutoCaptcha() {
-        return true;
-    }
-
-    /* NO OVERRIDE!! We need to stay 0.9*compatible */
-    public boolean hasCaptcha(DownloadLink link, jd.plugins.Account acc) {
-        if (acc == null) {
-            /* no account, yes we can expect captcha */
-            return true;
-        }
-        if (acc.getType() == AccountType.FREE) {
-            /* free accounts also have captchas */
-            return true;
-        }
-        return false;
-    }
-
-    @Override
-    protected boolean useRUA() {
-        return true;
-    }
-
-    @Override
-    protected Browser prepBrowser(final Browser prepBr, final String host) {
-        if (!(browserPrepped.containsKey(prepBr) && browserPrepped.get(prepBr) == Boolean.TRUE)) {
-            super.prepBrowser(prepBr, host);
-            /* define custom browser headers and language settings */
-            prepBr.setCookie(COOKIE_HOST, "lang", "english");
-        }
-        return prepBr;
     }
 
     /**
@@ -510,14 +551,11 @@ public class FileJokerNet extends antiDDoSForHost {
     public void correctBR() throws NumberFormatException, PluginException {
         correctedBR = br.toString();
         ArrayList<String> regexStuff = new ArrayList<String>();
-
         // remove custom rules first!!! As html can change because of generic cleanup rules.
-
         /* generic cleanup */
         regexStuff.add("<\\!(\\-\\-.*?\\-\\-)>");
         regexStuff.add("(display: ?none;\">.*?</div>)");
         regexStuff.add("(visibility:hidden>.*?<)");
-
         for (String aRegex : regexStuff) {
             String results[] = new Regex(correctedBR, aRegex).getColumn(0);
             if (results != null) {
@@ -549,26 +587,21 @@ public class FileJokerNet extends antiDDoSForHost {
 
     private String decodeDownloadLink(final String s) {
         String decoded = null;
-
         try {
             Regex params = new Regex(s, "\\'(.*?[^\\\\])\\',(\\d+),(\\d+),\\'(.*?)\\'");
-
             String p = params.getMatch(0).replaceAll("\\\\", "");
             int a = Integer.parseInt(params.getMatch(1));
             int c = Integer.parseInt(params.getMatch(2));
             String[] k = params.getMatch(3).split("\\|");
-
             while (c != 0) {
                 c--;
                 if (k[c].length() != 0) {
                     p = p.replaceAll("\\b" + Integer.toString(c, a) + "\\b", k[c]);
                 }
             }
-
             decoded = p;
         } catch (Exception e) {
         }
-
         String finallink = null;
         if (decoded != null) {
             /* Open regex is possible because in the unpacked JS there are usually only 1 links */
@@ -750,9 +783,13 @@ public class FileJokerNet extends antiDDoSForHost {
             }
         }
         /** Wait time reconnect handling */
-        if (new Regex(correctedBR, "(You have reached (the|your) download(-| )limit|You have to wait|until the next download becomes available<)").matches()) {
+        if (new Regex(correctedBR, ">\\s*No free download slots are available at this time\\.\\s*<").matches()) {
+            /* 2016-12-30: According to multiple users this is a 45 minute IP_BLOCKED waittime. */
+            throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, null, 45 * 60 * 1000l);
+        } else if (new Regex(correctedBR, "(You have reached (the|your) download(-| )limit|You have to wait|until the next download becomes available<|>\\s*Please try again later or upgrade to Premium and download right now\\!|ait .*? to download for free)").matches()) {
             /* adjust this regex to catch the wait time string for COOKIE_HOST */
-            String WAIT = new Regex(correctedBR, "(You have reached (the|your) download(-| )limit|You have to wait)[^<>]+").getMatch(-1);
+            /* 2017-05-02: Added one special RegEx */
+            String WAIT = new Regex(correctedBR, "[^<>]*?(You have reached (the|your) download(-| )limit|You have to wait|ait .*? to download for free)[^<>]+").getMatch(-1);
             String tmphrs = new Regex(WAIT, "\\s+(\\d+)\\s+hours?").getMatch(0);
             if (tmphrs == null) {
                 tmphrs = new Regex(correctedBR, "Please wait.*?\\s+(\\d+)\\s+hours?").getMatch(0);
@@ -800,6 +837,8 @@ public class FileJokerNet extends antiDDoSForHost {
                 }
                 throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, null, waittime);
             }
+        } else if (ddosBlocked()) {
+            throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "Server error 'Too many requests'", 10 * 60 * 1000l);
         }
         if (correctedBR.contains("You're using all download slots for IP")) {
             throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, null, 10 * 60 * 1001l);
@@ -808,8 +847,11 @@ public class FileJokerNet extends antiDDoSForHost {
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error!", 10 * 60 * 1000l);
         }
         /** Error handling for only-premium links */
-        if (new Regex(correctedBR, "( can download files up to |Upgrade your account to download bigger files|>Upgrade your account to download larger files|>The file you requested reached max downloads limit for Free Users|Please Buy Premium To download this file<|This file reached max downloads limit|class=\"premium\\-only\"|<strong>This file can only be downloaded by <[^>]*>Premium Member)").matches()) {
+        if (new Regex(correctedBR, "( can download files (?:up to|no bigger than) |Upgrade your account to download bigger files|>Upgrade your account to download larger files|>The file you requested reached max downloads limit for Free Users|Please Buy Premium To download this file<|This file reached max downloads limit|class=\"premium\\-only\"|<strong>This file can only be downloaded by <[^>]*>Premium Member)").matches()) {
             String filesizelimit = new Regex(correctedBR, "You can download files up to(.*?)only").getMatch(0);
+            if (filesizelimit == null) {
+                filesizelimit = new Regex(correctedBR, "Free Members can download files no bigger than (.*?)\\.").getMatch(0);
+            }
             if (filesizelimit != null) {
                 filesizelimit = filesizelimit.trim();
                 logger.info("As free user you can download files up to " + filesizelimit + " only");
@@ -830,6 +872,11 @@ public class FileJokerNet extends antiDDoSForHost {
             final Long parsedTime = parseTime(accountIpBlocked);
             throw new PluginException(PluginException.VALUE_ID_PREMIUM_TEMP_DISABLE, "Multiple connections from multiple IP addresses in short duration", parsedTime > 0 ? parsedTime : 3 * 60 * 60 * 1000l);
         }
+    }
+
+    private boolean ddosBlocked() {
+        /* 2017-05-02: "Your downloader software make requests too often." */
+        return correctedBR.contains("Your downloader software mak");
     }
 
     public void checkServerErrors() throws NumberFormatException, PluginException {
@@ -906,12 +953,7 @@ public class FileJokerNet extends antiDDoSForHost {
         }
         final AccountInfo ai = new AccountInfo();
         /* reset maxPrem workaround on every fetchaccount info */
-        try {
-            login(account, true);
-        } catch (final PluginException e) {
-            account.setValid(false);
-            throw e;
-        }
+        login(account, true);
         final String space[] = new Regex(correctedBR, ">Used space:</td>.*?<td.*?b>([0-9\\.]+) ?(KB|MB|GB|TB)?</b>").getRow(0);
         if ((space != null && space.length != 0) && (space[0] != null && space[1] != null)) {
             /* free users it's provided by default */
@@ -921,7 +963,7 @@ public class FileJokerNet extends antiDDoSForHost {
             ai.setUsedSpace(space[0] + "Mb");
         }
         account.setValid(true);
-        final String availabletraffic = new Regex(correctedBR, "<td>Traffic Available:</td>[\t\n\r ]+<td>([^<>\"]*?)</td>").getMatch(0);
+        final String availabletraffic = new Regex(correctedBR, "<td>Traffic Available:</td>[\t\n\r ]+<td>([^<>\"]*?)<").getMatch(0);
         if (availabletraffic != null && !availabletraffic.contains("nlimited") && !availabletraffic.equalsIgnoreCase(" Mb")) {
             availabletraffic.trim();
             /* need to set 0 traffic left, as getSize returns positive result, even when negative value supplied. */
@@ -952,34 +994,60 @@ public class FileJokerNet extends antiDDoSForHost {
         return ai;
     }
 
-    @SuppressWarnings("unchecked")
     private void login(final Account account, final boolean force) throws Exception {
         synchronized (LOCK) {
             try {
                 /* Load cookies */
                 br.setCookiesExclusive(true);
-                prepBR(this.br);
-                final Object ret = account.getProperty("cookies", null);
-                boolean acmatch = Encoding.urlEncode(account.getUser()).equals(account.getStringProperty("name", Encoding.urlEncode(account.getUser())));
-                if (acmatch) {
-                    acmatch = Encoding.urlEncode(account.getPass()).equals(account.getStringProperty("pass", Encoding.urlEncode(account.getPass())));
-                }
-                if (acmatch && ret != null && ret instanceof HashMap<?, ?> && !force) {
-                    final HashMap<String, String> cookies = (HashMap<String, String>) ret;
-                    if (account.isValid()) {
-                        for (final Map.Entry<String, String> cookieEntry : cookies.entrySet()) {
-                            final String key = cookieEntry.getKey();
-                            final String value = cookieEntry.getValue();
-                            this.br.setCookie(COOKIE_HOST, key, value);
-                        }
+                prepBR(br);
+                final Cookies cookies = account.loadCookies("");
+                if (cookies != null) {
+                    /* Try to re-use these cookies as long as possible to prevent login captcha. */
+                    br.setCookies(this.getHost(), cookies);
+                    getPage("https://" + this.getHost() + "/profile");
+                    if (br.getURL().contains("/profile")) {
+                        /* Existing cookies are fine. */
+                        account.saveCookies(this.br.getCookies(COOKIE_HOST), "");
                         return;
                     }
+                    br = prepBR(prepBrowser(new Browser(), COOKIE_HOST));
                 }
-                br.setFollowRedirects(true);
                 // required otherwise they redirect to /#login then we need to get login again...
-                getPage("https://filejoker.net/");
+                getPage("https://" + this.getHost() + "/");
                 br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
-                postPage("/login", "recaptcha_response_field=&op=login&redirect=&rand=&email=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
+                getPage("/login");
+                boolean hadCaptcha = false;
+                String postdata = "op=login&redirect=&rand=&email=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass());
+                if (correctedBR.contains("data-sitekey=")) {
+                    final DownloadLink dlinkbefore = this.getDownloadLink();
+                    if (dlinkbefore == null) {
+                        this.setDownloadLink(new DownloadLink(this, "Account", account.getHoster(), "http://" + account.getHoster(), true));
+                    }
+                    try {
+                        final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, this.br).getToken();
+                        postdata += "&g-recaptcha-response=" + Encoding.urlEncode(recaptchaV2Response);
+                    } finally {
+                        if (dlinkbefore != null) {
+                            this.setDownloadLink(dlinkbefore);
+                        }
+                    }
+                    hadCaptcha = true;
+                }
+                postPage("/login", postdata);
+                if (!hadCaptcha && br.containsHTML("data-sitekey=") && (br.getCookie(COOKIE_HOST, "email") == null || br.getCookie(COOKIE_HOST, "xfss") == null)) {
+                    final DownloadLink dlinkbefore = this.getDownloadLink();
+                    if (dlinkbefore == null) {
+                        this.setDownloadLink(new DownloadLink(this, "Account", account.getHoster(), "http://" + account.getHoster(), true));
+                    }
+                    try {
+                        final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, this.br).getToken();
+                        postPage("/login", "op=login&redirect=&rand=&email=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()) + "&g-recaptcha-response=" + Encoding.urlEncode(recaptchaV2Response));
+                    } finally {
+                        if (dlinkbefore != null) {
+                            this.setDownloadLink(dlinkbefore);
+                        }
+                    }
+                }
                 if (br.getCookie(COOKIE_HOST, "email") == null || br.getCookie(COOKIE_HOST, "xfss") == null) {
                     if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen? Versuche folgendes:\r\n1. Falls dein Passwort Sonderzeichen enthält, ändere es (entferne diese) und versuche es erneut!\r\n2. Gib deine Zugangsdaten per Hand (ohne kopieren/einfügen) ein.", PluginException.VALUE_ID_PREMIUM_DISABLE);
@@ -995,17 +1063,9 @@ public class FileJokerNet extends antiDDoSForHost {
                 } else {
                     account.setType(AccountType.PREMIUM);
                 }
-                /* Save cookies */
-                final HashMap<String, String> cookies = new HashMap<String, String>();
-                final Cookies add = this.br.getCookies(COOKIE_HOST);
-                for (final Cookie c : add.getCookies()) {
-                    cookies.put(c.getKey(), c.getValue());
-                }
-                account.setProperty("name", Encoding.urlEncode(account.getUser()));
-                account.setProperty("pass", Encoding.urlEncode(account.getPass()));
-                account.setProperty("cookies", cookies);
+                account.saveCookies(this.br.getCookies(COOKIE_HOST), "");
             } catch (final PluginException e) {
-                account.setProperty("cookies", Property.NULL);
+                account.clearCookies("");
                 throw e;
             }
         }
@@ -1031,7 +1091,7 @@ public class FileJokerNet extends antiDDoSForHost {
                     dllink = null;
                 }
                 final Form captchaForm = this.br.getFormbyProperty("id", "f1");
-                if (captchaForm != null && correctedBR.contains("g-recaptcha")) {
+                if (captchaForm != null && captchaForm.containsHTML("g-recaptcha")) {
                     /*
                      * 2016-08-16: Got captcha in premium mode and I was not able to solve it - website redirected me to captcha again and
                      * again
@@ -1057,6 +1117,12 @@ public class FileJokerNet extends antiDDoSForHost {
                     }
                     submitForm(dlform);
                     checkErrors(downloadLink, true, account);
+                    if (correctedBR.contains("There is not enough traffic available to download this file")) {
+                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "Not enough traffic available", PluginException.VALUE_ID_PREMIUM_TEMP_DISABLE);
+                    }
+                    if (correctedBR.contains("You don't have permission to download this file")) {
+                        throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "You don't have permission to download this file", 30 * 60 * 1000l);
+                    }
                     dllink = getDllink();
                 }
             }
@@ -1077,13 +1143,13 @@ public class FileJokerNet extends antiDDoSForHost {
                 handlePluginBroken(downloadLink, "dllinknofile", 3);
             }
             fixFilename(downloadLink);
-            downloadLink.setProperty("premlink", dllink);
+            downloadLink.setProperty("premlink", dl.getConnection().getURL().toString());
             dl.startDownload();
         }
     }
 
     private void setConfigElements() {
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_TEXTFIELD, this.getPluginConfig(), CUSTOM_REFERER, "Set custom Referer here (only non NON-API mode!)").setDefaultValue(null));
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_TEXTFIELD, this.getPluginConfig(), CUSTOM_REFERER, "Set custom Referer here").setDefaultValue(null));
     }
 
     @Override
@@ -1098,5 +1164,4 @@ public class FileJokerNet extends antiDDoSForHost {
     public SiteTemplate siteTemplateType() {
         return SiteTemplate.SibSoft_XFileShare;
     }
-
 }

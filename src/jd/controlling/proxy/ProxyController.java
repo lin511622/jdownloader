@@ -17,25 +17,9 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Level;
-
-import jd.config.SubConfiguration;
-import jd.controlling.accountchecker.AccountChecker.AccountCheckJob;
-import jd.controlling.accountchecker.AccountCheckerThread;
-import jd.controlling.downloadcontroller.AccountCache.CachedAccount;
-import jd.controlling.downloadcontroller.DownloadLinkCandidate;
-import jd.controlling.downloadcontroller.SingleDownloadController;
-import jd.controlling.linkchecker.LinkCheckerThread;
-import jd.controlling.linkcrawler.LinkCrawlerThread;
-import jd.http.Browser;
-import jd.http.ClonedProxy;
-import jd.http.ProxySelectorInterface;
-import jd.http.Request;
-import jd.nutils.encoding.Encoding;
-import jd.plugins.Account;
-import jd.plugins.Plugin;
-import jd.plugins.PluginForHost;
 
 import org.appwork.exceptions.WTFException;
 import org.appwork.scheduler.DelayedRunnable;
@@ -50,7 +34,9 @@ import org.appwork.storage.config.events.ConfigEvent;
 import org.appwork.storage.config.events.ConfigEventSender;
 import org.appwork.storage.config.events.GenericConfigEventListener;
 import org.appwork.storage.config.handler.KeyHandler;
+import org.appwork.uio.UIOManager;
 import org.appwork.utils.Application;
+import org.appwork.utils.Exceptions;
 import org.appwork.utils.IO;
 import org.appwork.utils.StringUtils;
 import org.appwork.utils.event.DefaultEventListener;
@@ -66,6 +52,7 @@ import org.appwork.utils.net.httpconnection.ProxyAuthException;
 import org.appwork.utils.net.httpconnection.ProxyConnectException;
 import org.appwork.utils.net.httpconnection.ProxyEndpointConnectException;
 import org.appwork.utils.net.socketconnection.SocketConnection;
+import org.appwork.utils.net.socketconnection.Socks5SocketConnection.Socks5EndpointConnectException;
 import org.appwork.utils.swing.dialog.Dialog;
 import org.appwork.utils.swing.dialog.DialogNoAnswerException;
 import org.appwork.utils.swing.dialog.ProxyDialog;
@@ -91,6 +78,23 @@ import com.btr.proxy.util.Logger;
 import com.btr.proxy.util.Logger.LogBackEnd;
 import com.btr.proxy.util.Logger.LogLevel;
 
+import jd.config.SubConfiguration;
+import jd.controlling.accountchecker.AccountChecker.AccountCheckJob;
+import jd.controlling.accountchecker.AccountCheckerThread;
+import jd.controlling.downloadcontroller.AccountCache.CachedAccount;
+import jd.controlling.downloadcontroller.DownloadLinkCandidate;
+import jd.controlling.downloadcontroller.SingleDownloadController;
+import jd.controlling.linkchecker.LinkCheckerThread;
+import jd.controlling.linkcrawler.LinkCrawlerThread;
+import jd.http.Browser;
+import jd.http.ClonedProxy;
+import jd.http.ProxySelectorInterface;
+import jd.http.Request;
+import jd.nutils.encoding.Encoding;
+import jd.plugins.Account;
+import jd.plugins.Plugin;
+import jd.plugins.PluginForHost;
+
 //import com.btr.proxy.search.ProxySearchStrategy;
 //import com.btr.proxy.search.browser.firefox.FirefoxProxySearchStrategy;
 //import com.btr.proxy.search.desktop.DesktopProxySearchStrategy;
@@ -104,17 +108,13 @@ import com.btr.proxy.util.Logger.LogLevel;
 //import com.btr.proxy.util.Logger;
 //import com.btr.proxy.util.Logger.LogBackEnd;
 //import com.btr.proxy.util.Logger.LogLevel;
-
 public class ProxyController implements ProxySelectorInterface {
-
     public static final URLStreamHandler SOCKETURLSTREAMHANDLER = new URLStreamHandler() {
-
                                                                     @Override
                                                                     protected URLConnection openConnection(URL u) throws IOException {
                                                                         throw new IOException("not implemented");
                                                                     }
                                                                 };
-
     private static final ProxyController INSTANCE               = new ProxyController();
 
     public static final ProxyController getInstance() {
@@ -122,28 +122,26 @@ public class ProxyController implements ProxySelectorInterface {
     }
 
     private volatile CopyOnWriteArrayList<AbstractProxySelectorImpl>        list            = new CopyOnWriteArrayList<AbstractProxySelectorImpl>();
-
     private final DefaultEventSender<ProxyEvent<AbstractProxySelectorImpl>> eventSender;
-
     private final InternetConnectionSettings                                config;
-
     private final LogSource                                                 logger;
-
     private final Queue                                                     QUEUE           = new Queue(getClass().getName()) {
-
                                                                                                 @Override
                                                                                                 public void killQueue() {
                                                                                                     LogController.CL().log(new Throwable("YOU CANNOT KILL ME!"));
-                                                                                                    /*
-                                                                                                     * this queue can't be killed
-                                                                                                     */
+                                                                                                                                                                 /*
+                                                                                                                                                                  * this
+                                                                                                                                                                  * queue
+                                                                                                                                                                  * can
+                                                                                                                                                                  * '
+                                                                                                                                                                  * t
+                                                                                                                                                                  * be
+                                                                                                                                                                  * killed
+                                                                                                                                                                  */
                                                                                                 }
-
                                                                                             };
-
     private final ConfigEventSender<Object>                                 customProxyListEventSender;
     private final EventSuppressor<ConfigEvent>                              eventSuppressor = new EventSuppressor<ConfigEvent>() {
-
                                                                                                 @Override
                                                                                                 public boolean suppressEvent(ConfigEvent eventType) {
                                                                                                     return true;
@@ -161,7 +159,6 @@ public class ProxyController implements ProxySelectorInterface {
         this.logger = LogController.getInstance().getLogger(ProxyController.class.getName());
         if (Logger.getBackend() == null) {
             Logger.setBackend(new LogBackEnd() {
-
                 @Override
                 public void log(final Class<?> arg0, final LogLevel arg1, final String arg2, final Object... arg3) {
                     logger.log(Level.ALL, arg2, arg3);
@@ -173,10 +170,8 @@ public class ProxyController implements ProxySelectorInterface {
                 }
             });
         }
-
         list = new CopyOnWriteArrayList<AbstractProxySelectorImpl>(loadProxySettings(true));
         final GenericConfigEventListener<Object> updateListener = new GenericConfigEventListener<Object>() {
-
             @Override
             public void onConfigValueModified(KeyHandler<Object> keyHandler, Object newValue) {
                 setList(loadProxySettings(true));
@@ -188,9 +183,7 @@ public class ProxyController implements ProxySelectorInterface {
         };
         customProxyListEventSender = config._getStorageHandler().getKeyHandler("CustomProxyList").getEventSender();
         customProxyListEventSender.addListener(updateListener);
-
         ShutdownController.getInstance().addShutdownEvent(new ShutdownEvent() {
-
             @Override
             public void onShutdown(final ShutdownRequest shutdownRequest) {
                 // avoid that the controller gets reinitialized during shutdown
@@ -205,16 +198,16 @@ public class ProxyController implements ProxySelectorInterface {
         });
         getEventSender().addListener(new DefaultEventListener<ProxyEvent<AbstractProxySelectorImpl>>() {
             final DelayedRunnable asyncSaving = new DelayedRunnable(5000l, 60000l) {
-                                                  @Override
-                                                  public void delayedrun() {
-                                                      ProxyController.this.saveProxySettings();
-                                                  }
+                @Override
+                public void delayedrun() {
+                    ProxyController.this.saveProxySettings();
+                }
 
-                                                  @Override
-                                                  public String getID() {
-                                                      return "ProxyController";
-                                                  }
-                                              };
+                @Override
+                public String getID() {
+                    return "ProxyController";
+                }
+            };
 
             @Override
             public void onEvent(final ProxyEvent<AbstractProxySelectorImpl> event) {
@@ -246,7 +239,7 @@ public class ProxyController implements ProxySelectorInterface {
             for (int i = 0; i < entries.length; i++) {
                 final String entry = entries[i] == null ? "" : entries[i].trim();
                 if (entry.length() == 0 || entry.startsWith("//") || entry.startsWith("#")) {
-                    /**
+                    /*
                      * empty/comment lines
                      */
                     continue;
@@ -469,7 +462,6 @@ public class ProxyController implements ProxySelectorInterface {
 
     public void setFilter(final AbstractProxySelectorImpl proxySelector, final FilterList filterList) {
         QUEUE.add(new QueueAction<Void, RuntimeException>() {
-
             @Override
             protected Void run() throws RuntimeException {
                 proxySelector.setFilter(filterList);
@@ -539,7 +531,6 @@ public class ProxyController implements ProxySelectorInterface {
         final ProxyExportImport restore = JSonStorage.restoreFromString(IO.readFileToString(selected), new TypeRef<ProxyExportImport>() {
         });
         QUEUE.add(new QueueAction<Void, RuntimeException>() {
-
             @Override
             protected Void run() throws RuntimeException {
                 config.setLatestProfile(selected.getAbsolutePath());
@@ -602,6 +593,9 @@ public class ProxyController implements ProxySelectorInterface {
                             proxy = new SingleDirectGatewaySelector(proxyData);
                             break;
                         case HTTP:
+                        case HTTPS:
+                            proxy = new SingleBasicProxySelectorImpl(proxyData);
+                            break;
                         case SOCKS4:
                         case SOCKS5:
                             proxy = new SingleBasicProxySelectorImpl(proxyData);
@@ -632,8 +626,10 @@ public class ProxyController implements ProxySelectorInterface {
                         crashTest.createNewFile();
                         final ArrayList<ProxySearchStrategy> strategies = new ArrayList<ProxySearchStrategy>();
                         try {
-                            strategies.add(new DesktopProxySearchStrategy());
-                            strategies.add(new FirefoxProxySearchStrategy());
+                            if (!Application.isHeadless()) {
+                                strategies.add(new DesktopProxySearchStrategy());
+                                strategies.add(new FirefoxProxySearchStrategy());
+                            }
                             strategies.add(new EnvProxySearchStrategy());
                             strategies.add(new JavaProxySearchStrategy());
                         } catch (final Throwable e) {
@@ -758,6 +754,7 @@ public class ProxyController implements ProxySelectorInterface {
                         }
                         break;
                     case HTTP:
+                    case HTTPS:
                         final SingleBasicProxySelectorImpl basic = new SingleBasicProxySelectorImpl(proxyData);
                         if (proxies.add(basic)) {
                             logger.info("Restore Basic: " + basic);
@@ -770,7 +767,6 @@ public class ProxyController implements ProxySelectorInterface {
                             logger.info("Restore Soskcs: " + socks);
                         }
                         break;
-
                     default:
                         continue;
                     }
@@ -932,6 +928,7 @@ public class ProxyController implements ProxySelectorInterface {
                 final ProxyDialog pd = new ProxyDialog(selectedProxy, msg) {
                     {
                         this.flagMask |= flags;
+                        this.flagMask |= UIOManager.LOGIC_COUNTDOWN;
                     }
 
                     @Override
@@ -944,12 +941,24 @@ public class ProxyController implements ProxySelectorInterface {
                         getDialog().setMinimumSize(new Dimension(450, getPreferredSize().height));
                         super.pack();
                     }
+
+                    @Override
+                    public boolean isTypeEditable() {
+                        return super.isTypeEditable() && typeEditable;
+                    }
+
+                    @Override
+                    public boolean isHostEditable() {
+                        return super.isHostEditable() && typeEditable;
+                    }
+
+                    @Override
+                    public boolean isPortEditable() {
+                        return super.isPortEditable() && typeEditable;
+                    }
                 };
                 pd.setTimeout(5 * 60 * 1000);
                 pd.setAuthRequired(true);
-                pd.setTypeEditable(typeEditable);
-                pd.setHostEditable(typeEditable);
-                pd.setPortEditable(typeEditable);
                 pd.setTitle(title);
                 proxy = Dialog.getInstance().showDialog(pd);
                 rememberCheckBox = pd.isRememberChecked();
@@ -983,7 +992,6 @@ public class ProxyController implements ProxySelectorInterface {
                     if (rememberCheckBox) {
                         singleBasic.setUser(userName);
                         singleBasic.setPassword(passWord);
-
                     }
                     singleBasic.setTempAuth(userName, passWord);
                     return true;
@@ -1019,7 +1027,6 @@ public class ProxyController implements ProxySelectorInterface {
             counter -= 1;
             return counter;
         }
-
     }
 
     private final HashMap<SelectedProxy, SelectedProxyLock> LOCKS = new HashMap<SelectedProxy, SelectedProxyLock>();
@@ -1063,7 +1070,7 @@ public class ProxyController implements ProxySelectorInterface {
                                 }
                             }
                         }
-                        boolean ret = this.askForProxyAuth(selectedProxy, 0, false, url, _JDT.T.ProxyController_updateProxy_proxy_auth_required_msg(url.getHost()), _JDT.T.ProxyController_updateProxy_proxy_auth_required_title());
+                        boolean ret = this.askForProxyAuth(selectedProxy, UIOManager.LOGIC_COUNTDOWN, false, url, _JDT.T.ProxyController_updateProxy_proxy_auth_required_msg(url.getHost()), _JDT.T.ProxyController_updateProxy_proxy_auth_required_title());
                         if (ret && proxy != null && proxy.equalsWithSettings(selectedProxy)) {
                             ret = false;
                         }
@@ -1096,7 +1103,6 @@ public class ProxyController implements ProxySelectorInterface {
             LogController.getRebirthLogger(logger).log(e);
         }
         return null;
-
     }
 
     public List<HTTPProxy> getProxiesForUpdater(final URL url) {
@@ -1128,7 +1134,7 @@ public class ProxyController implements ProxySelectorInterface {
     private List<HTTPProxy> getProxiesForUpdater(final URL url, final boolean ignoreConnectionBans, final boolean ignoreAllBans) {
         final LinkedHashSet<HTTPProxy> ret = new LinkedHashSet<HTTPProxy>();
         try {
-            final String host = Browser.getHost(url);
+            final String host = Browser.getHost(url, true);
             final Plugin plugin = getPluginFromThread();
             for (final AbstractProxySelectorImpl selector : _getList()) {
                 try {
@@ -1193,7 +1199,7 @@ public class ProxyController implements ProxySelectorInterface {
         }
         final LinkedHashSet<HTTPProxy> ret = new LinkedHashSet<HTTPProxy>();
         try {
-            final String host = Browser.getHost(url);
+            final String host = Browser.getHost(url, true);
             final String plgHost;
             if (plugin == null || plugin.isHandlingMultipleHosts()) {
                 plgHost = host;
@@ -1276,6 +1282,18 @@ public class ProxyController implements ProxySelectorInterface {
         });
     }
 
+    @Override
+    public String toString() {
+        try {
+            final Map<String, Object> data = new HashMap<String, Object>();
+            data.put("class", getClass().getName());
+            data.put("proxy", list.toString());
+            return JSonStorage.toString(data);
+        } catch (Throwable e) {
+            return Exceptions.getStackTrace(e);
+        }
+    }
+
     public boolean reportHTTPProxyException(final HTTPProxy proxy, final URL url, final IOException e) {
         try {
             if (proxy != null && e != null && url != null && e instanceof HTTPProxyException) {
@@ -1283,6 +1301,15 @@ public class ProxyController implements ProxySelectorInterface {
                 if (selectedProxy != null && selectedProxy.getSelector() != null) {
                     final AbstractProxySelectorImpl selector = selectedProxy.getSelector();
                     if (e instanceof ProxyEndpointConnectException) {
+                        final Socks5EndpointConnectException socks5EndpointConnectException = Exceptions.getInstanceof(e, Socks5EndpointConnectException.class);
+                        if (socks5EndpointConnectException != null) {
+                            switch (socks5EndpointConnectException.getError()) {
+                            case TTL_EXPIRED:
+                                return false;
+                            default:
+                                break;
+                            }
+                        }
                         selector.addSessionBan(new EndPointConnectExceptionBan(selector, selectedProxy, url));
                         return true;
                     } else if (e instanceof ProxyConnectException) {
@@ -1315,6 +1342,15 @@ public class ProxyController implements ProxySelectorInterface {
                         selector.addSessionBan(new ConnectExceptionInPluginBan(plg, selector, selectedProxy));
                     } else {
                         if (e instanceof ProxyEndpointConnectException) {
+                            final Socks5EndpointConnectException socks5EndpointConnectException = Exceptions.getInstanceof(e, Socks5EndpointConnectException.class);
+                            if (socks5EndpointConnectException != null) {
+                                switch (socks5EndpointConnectException.getError()) {
+                                case TTL_EXPIRED:
+                                    return false;
+                                default:
+                                    break;
+                                }
+                            }
                             selector.addSessionBan(new EndPointConnectExceptionBan(selector, selectedProxy, request.getURL()));
                         } else {
                             selector.addSessionBan(new GenericConnectExceptionBan(selector, selectedProxy, request.getURL()));

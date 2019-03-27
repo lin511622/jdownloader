@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.io.File;
@@ -21,18 +20,13 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.LinkedHashSet;
-import java.util.concurrent.atomic.AtomicReference;
-
-import org.appwork.storage.JSonStorage;
-import org.appwork.utils.StringUtils;
-import org.appwork.utils.formatter.HexFormatter;
-import org.jdownloader.captcha.v2.Challenge;
-import org.jdownloader.captcha.v2.challenge.clickcaptcha.ClickedPoint;
-import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperCrawlerPluginRecaptchaV2;
+import java.util.HashSet;
+import java.util.List;
+import java.util.regex.Pattern;
 
 import jd.PluginWrapper;
+import jd.config.ConfigContainer;
+import jd.config.ConfigEntry;
 import jd.controlling.ProgressController;
 import jd.http.Browser;
 import jd.http.URLConnectionAdapter;
@@ -40,6 +34,7 @@ import jd.nutils.JDHash;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.parser.html.Form;
+import jd.parser.html.Form.MethodType;
 import jd.parser.html.InputField;
 import jd.plugins.CaptchaException;
 import jd.plugins.CryptedLink;
@@ -53,14 +48,29 @@ import jd.plugins.PluginForDecrypt;
 import jd.plugins.components.UserAgents;
 import jd.plugins.components.UserAgents.BrowserName;
 import jd.utils.JDUtilities;
+import jd.utils.locale.JDL;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "filecrypt.cc" }, urls = { "https?://(?:www\\.)?filecrypt\\.cc/Container/([A-Z0-9]{10,16})" })
+import org.appwork.storage.JSonStorage;
+import org.appwork.utils.StringUtils;
+import org.appwork.utils.formatter.HexFormatter;
+import org.jdownloader.captcha.v2.Challenge;
+import org.jdownloader.captcha.v2.challenge.clickcaptcha.ClickedPoint;
+import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperCrawlerPluginRecaptchaV2;
+
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "filecrypt.cc" }, urls = { "https?://(?:www\\.)?filecrypt\\.cc/Container/([A-Z0-9]{10,16})(\\.html\\?mirror=\\d+)?" })
 public class FileCryptCc extends PluginForDecrypt {
+    @Override
+    public int getMaxConcurrentProcessingInstances() {
+        return 1;
+    }
 
-    private static AtomicReference<String> LAST_USED_PASSWORD = new AtomicReference<String>();
+    private final String NO_SOLVEMEDIA = "1";
+    private String       userretrys    = "10";
 
     public FileCryptCc(PluginWrapper wrapper) {
         super(wrapper);
+        setConfigElements();
     }
 
     /* NO OVERRIDE!! */
@@ -72,30 +82,34 @@ public class FileCryptCc extends PluginForDecrypt {
         final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         final String parameter = param.toString();
         br = new Browser();
+        br.setLoadLimit(br.getLoadLimit() * 2);
         final String agent = UserAgents.stringUserAgent(BrowserName.Chrome);
         br.getHeaders().put("User-Agent", agent);
         br.getHeaders().put("Accept-Encoding", "gzip, deflate, sdch");
         br.getHeaders().put("Accept-Language", "en");
-
         br.setFollowRedirects(true);
+        FilePackage fp = null;
+        br.addAllowedResponseCodes(500);// submit captcha responds with 500 code
         final String uid = new Regex(parameter, this.getSupportedLinks()).getMatch(0);
         // not all captcha types are skipable (recaptchav2 isn't). I tried with new response value - raztoki
-        getPage(parameter + "/.html");
+        final String containsMirror = new Regex(parameter, this.getSupportedLinks()).getMatch(1);
+        if (containsMirror == null) {
+            getPage(parameter + "/.html");
+        } else {
+            getPage(parameter);
+        }
         if (br.getURL().contains("filecrypt.cc/404.html")) {
             decryptedLinks.add(createOfflinelink(parameter));
             return decryptedLinks;
         }
         // Separate password and captcha. this is easier for count reasons!
         int counter = -1;
-        final int retry = 10;
-
-        final ArrayList<String> toTry = new ArrayList<String>();
-        final LinkedHashSet<String> tried = new LinkedHashSet<String>();
-        if (StringUtils.isNotEmpty(LAST_USED_PASSWORD.get())) {
-            toTry.add(LAST_USED_PASSWORD.get());
-        }
-        if (StringUtils.isNotEmpty(param.getDecrypterPassword())) {
-            toTry.add(param.getDecrypterPassword());
+        final int retry = Integer.parseInt(userretrys);
+        final List<String> passwords = getPreSetPasswords();
+        final HashSet<String> avoidRetry = new HashSet<String>();
+        final String lastUsedPassword = this.getPluginConfig().getStringProperty("last_used_password", null);
+        if (StringUtils.isNotEmpty(lastUsedPassword)) {
+            passwords.add(0, lastUsedPassword);
         }
         String usedPassword = null;
         while (counter++ < retry && containsPassword()) {
@@ -111,21 +125,23 @@ public class FileCryptCc extends PluginForDecrypt {
             }
             /* If there is captcha + password, password comes first, then captcha! */
             if (passwordForm != null) {
-
-                String passCode = null;
-                if (!toTry.isEmpty()) {
-                    passCode = toTry.remove(0);
-                    if (!tried.add(passCode)) {
+                final String passCode;
+                if (passwords.size() > 0) {
+                    passCode = passwords.remove(0);
+                    if (!avoidRetry.add(passCode)) {
+                        counter--;
                         continue;
                     }
-                }
-
-                // when previous provided password has failed, or not provided we should ask
-                if (passCode == null) {
+                } else {
+                    // when previous provided password has failed, or not provided we should ask
                     passCode = getUserInput("Password?", param);
-                    if (!tried.add(passCode)) {
-                        // no need to submit password that has already been tried!
-                        continue;
+                    if (passCode == null) {
+                        throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                    } else {
+                        if (!avoidRetry.add(passCode)) {
+                            // no need to submit password that has already been tried!
+                            continue;
+                        }
                     }
                 }
                 usedPassword = passCode;
@@ -136,13 +152,14 @@ public class FileCryptCc extends PluginForDecrypt {
             }
         }
         if (usedPassword != null) {
-            LAST_USED_PASSWORD.set(usedPassword);
+            this.getPluginConfig().setProperty("last_used_password", usedPassword);
         }
         if (counter == retry && containsPassword()) {
             throw new DecrypterException(DecrypterException.PASSWORD);
         }
         // captcha time!
         counter = -1;
+        int cutCaptcha = 15;
         while (counter++ < retry && containsCaptcha()) {
             Form captchaForm = null;
             final Form[] allForms = br.getForms();
@@ -154,11 +171,14 @@ public class FileCryptCc extends PluginForDecrypt {
                     }
                 }
             }
-            final String captcha = captchaForm != null ? captchaForm.getRegex("(/captcha/[^<>\"]*?)\"").getMatch(0) : null;
+            final String captcha = captchaForm != null ? captchaForm.getRegex("((https?://[^<>\"']*?)?/captcha/[^<>\"']*?)\"").getMatch(0) : null;
             if (captcha != null && captcha.contains("circle.php")) {
                 final File file = this.getLocalCaptchaFile();
-                br.cloneBrowser().getDownload(file, captcha);
+                getCaptchaBrowser(br).getDownload(file, captcha);
                 final ClickedPoint cp = getCaptchaClickedPoint(getHost(), file, param, null, "Click on the open circle");
+                if (cp == null) {
+                    throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                }
                 captchaForm.put("button.x", String.valueOf(cp.getX()));
                 captchaForm.put("button.y", String.valueOf(cp.getY()));
                 captchaForm.remove("button");
@@ -168,28 +188,32 @@ public class FileCryptCc extends PluginForDecrypt {
                 captchaForm.put("g-recaptcha-response", Encoding.urlEncode(recaptchaV2Response));
                 submitForm(captchaForm);
             } else if (captchaForm != null && captchaForm.containsHTML("solvemedia\\.com/papi/")) {
-                final org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia sm = new org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia(br);
-                File cf = null;
-                try {
-                    cf = sm.downloadCaptcha(getLocalCaptchaFile());
-                } catch (final Exception e) {
-                    if (org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia.FAIL_CAUSE_CKEY_MISSING.equals(e.getMessage())) {
-                        throw new PluginException(LinkStatus.ERROR_FATAL, "Host side solvemedia.com captcha error - please contact the " + this.getHost() + " support");
+                if (getPluginConfig().getBooleanProperty(NO_SOLVEMEDIA, false) == false) {
+                    final org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia sm = new org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia(br);
+                    File cf = null;
+                    try {
+                        cf = sm.downloadCaptcha(getLocalCaptchaFile());
+                    } catch (final Exception e) {
+                        if (org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia.FAIL_CAUSE_CKEY_MISSING.equals(e.getMessage())) {
+                            throw new PluginException(LinkStatus.ERROR_FATAL, "Host side solvemedia.com captcha error - please contact the " + this.getHost() + " support");
+                        }
+                        throw e;
                     }
-                    throw e;
-                }
-                final String code = getCaptchaCode("solvemedia", cf, param);
-                if (StringUtils.isEmpty(code)) {
-                    if (counter + 1 < retry) {
-                        continue;
-                    } else {
-                        throw new DecrypterException(DecrypterException.CAPTCHA);
+                    final String code = getCaptchaCode("solvemedia", cf, param);
+                    if (StringUtils.isEmpty(code)) {
+                        if (counter + 1 < retry) {
+                            continue;
+                        } else {
+                            throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                        }
                     }
+                    final String chid = sm.getChallenge(code);
+                    captchaForm.put("adcopy_response", Encoding.urlEncode(code));
+                    captchaForm.put("adcopy_challenge", chid);
+                    submitForm(captchaForm);
+                } else {
+                    continue;
                 }
-                final String chid = sm.getChallenge(code);
-                captchaForm.put("adcopy_response", Encoding.urlEncode(code));
-                captchaForm.put("adcopy_challenge", chid);
-                submitForm(captchaForm);
             } else if (captchaForm != null && captchaForm.containsHTML("capcode")) {
                 Challenge<String> challenge = new KeyCaptcha(this, br, createDownloadlink(parameter)).createChallenge(this);
                 try {
@@ -212,35 +236,41 @@ public class FileCryptCc extends PluginForDecrypt {
                     continue;
                 }
                 submitForm(captchaForm);
-            } else if (captcha != null) {
-                // they use recaptcha response field key for non recaptcha.. math sum and text =
-                // http://filecrypt.cc/captcha/captcha.php?namespace=container
-                // using bismarck original observation, this type is skipable.
-                if (counter > 0) {
-                    final String code = getCaptchaCode(captcha, param);
-                    if (StringUtils.isEmpty(code)) {
-                        if (counter + 1 < retry) {
-                            continue;
-                        } else {
-                            throw new DecrypterException(DecrypterException.CAPTCHA);
-                        }
-                    }
-                    captchaForm.put("recaptcha_response_field", Encoding.urlEncode(code));
+            } else if (captchaForm != null && captchaForm.containsHTML("class=\"coinhive\\-captcha\"")) {
+                logger.info("Coinhive captcha is not yet supported");
+                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+            } else if (StringUtils.containsIgnoreCase(captcha, "cutcaptcha")) {
+                logger.info("cutcaptcha captcha is not yet supported:retry left:" + cutCaptcha);
+                if (cutCaptcha-- == 0 || true) {
+                    // fallback to rc2 no longer working
+                    throw new PluginException(LinkStatus.ERROR_CAPTCHA);
                 } else {
-                    captchaForm.put("recaptcha_response_field", "");
+                    counter--;
+                    br.getPage(br.getURL());
+                    sleep(1000, param);
                 }
+            } else if (captcha != null) {
+                final String code = getCaptchaCode(captcha, param);
+                if (StringUtils.isEmpty(code)) {
+                    if (counter + 1 < retry) {
+                        continue;
+                    } else {
+                        throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                    }
+                }
+                captchaForm.put("recaptcha_response_field", Encoding.urlEncode(code));
                 submitForm(captchaForm);
             } else {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "Could not find captcha form");
             }
         }
         if (counter == retry && containsCaptcha()) {
-            throw new DecrypterException(DecrypterException.CAPTCHA);
+            throw new PluginException(LinkStatus.ERROR_CAPTCHA);
         }
         final String fpName = br.getRegex("<h2>([^<>\"]*?)<").getMatch(0);
-
         // mirrors - note: containers no longer have uid within path! -raztoki20160117
-        String[] mirrors = br.getRegex("\"([^\"]*/Container/[A-Z0-9]+\\.html\\?mirror=\\d+)\"").getColumn(0);
+        // mirrors - note: containers can contain uid within path... -raztoki20161204
+        String[] mirrors = br.getRegex("\"([^\"]*/Container/[A-Z0-9]+" + (containsMirror != null ? Pattern.quote(containsMirror) : "\\.html\\?mirror=\\d+") + ")\"").getColumn(0);
         if (mirrors.length < 1) {
             mirrors = new String[1];
             mirrors[0] = parameter + "?mirror=0";
@@ -259,9 +289,15 @@ public class FileCryptCc extends PluginForDecrypt {
             if (!tdl.isEmpty()) {
                 decryptedLinks.addAll(tdl);
                 if (fpName != null) {
-                    final FilePackage fp = FilePackage.getInstance();
-                    fp.setName(Encoding.htmlDecode(fpName.trim()));
-                    fp.addLinks(decryptedLinks);
+                    if (fp == null) {
+                        fp = FilePackage.getInstance();
+                        fp.setName(Encoding.htmlDecode(fpName.trim()));
+                    }
+                    fp.addLinks(tdl);
+                }
+                distribute(tdl.toArray(new DownloadLink[0]));
+                if (containsMirror != null) {
+                    return decryptedLinks;
                 }
                 continue;
             }
@@ -285,17 +321,48 @@ public class FileCryptCc extends PluginForDecrypt {
         logger.info("Trying single link handling");
         final String[] links = br.getRegex("openLink\\('([^<>\"]*?)'").getColumn(0);
         if (links == null || links.length == 0) {
+            if (br.containsHTML("Der Inhaber dieses Ordners hat leider alle Hoster in diesem Container in seinen Einstellungen deaktiviert.")) {
+                return decryptedLinks;
+            }
             logger.warning("Decrypter broken for link: " + parameter);
             return null;
         }
         br.setFollowRedirects(false);
         br.setCookie(this.getHost(), "BetterJsPopCount", "1");
         for (final String singleLink : links) {
+            if (isAbort()) {
+                break;
+            }
             final Browser br2 = br.cloneBrowser();
             br2.getPage("/Link/" + singleLink + ".html");
             if (br2.containsHTML("friendlyduck.com/") || br2.containsHTML("filecrypt\\.cc/usenet\\.html") || br2.containsHTML("share-online\\.biz/affiliate")) {
                 /* Advertising */
                 continue;
+            }
+            int retryCaptcha = 5;
+            while (!isAbort() && retryCaptcha-- > 0) {
+                if (br2.containsHTML("Security prompt")) {
+                    final String captcha = br2.getRegex("(/captcha/[^<>\"]*?)\"").getMatch(0);
+                    if (captcha != null && captcha.contains("circle.php")) {
+                        final File file = this.getLocalCaptchaFile();
+                        getCaptchaBrowser(br).getDownload(file, captcha);
+                        final ClickedPoint cp = getCaptchaClickedPoint(getHost(), file, param, null, "Click on the open circle");
+                        if (cp == null) {
+                            throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                        }
+                        final Form form = new Form();
+                        form.setMethod(MethodType.POST);
+                        form.setAction(br2.getURL());
+                        form.put("button.x", String.valueOf(cp.getX()));
+                        form.put("button.y", String.valueOf(cp.getY()));
+                        form.put("button", "send");
+                        br2.submitForm(form);
+                    } else {
+                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                    }
+                } else {
+                    break;
+                }
             }
             String finallink = null;
             final String first_rd = br2.getRedirectLocation();
@@ -317,15 +384,17 @@ public class FileCryptCc extends PluginForDecrypt {
                 // return null;
                 continue;
             }
-            decryptedLinks.add(createDownloadlink(finallink));
+            final DownloadLink link = createDownloadlink(finallink);
+            decryptedLinks.add(link);
+            if (fpName != null) {
+                if (fp == null) {
+                    fp = FilePackage.getInstance();
+                    fp.setName(Encoding.htmlDecode(fpName.trim()));
+                }
+                fp.add(link);
+            }
+            distribute(link);
         }
-
-        if (fpName != null) {
-            final FilePackage fp = FilePackage.getInstance();
-            fp.setName(Encoding.htmlDecode(fpName.trim()));
-            fp.addLinks(decryptedLinks);
-        }
-
         return decryptedLinks;
     }
 
@@ -369,7 +438,6 @@ public class FileCryptCc extends PluginForDecrypt {
             final DownloadLink dl = createDownloadlink("http://dummycnl.jdownloader.org/" + HexFormatter.byteArrayToHex(json.getBytes("UTF-8")));
             decryptedLinks.add(dl);
         }
-
     }
 
     private final boolean containsCaptcha() {
@@ -381,7 +449,6 @@ public class FileCryptCc extends PluginForDecrypt {
     }
 
     private final String containsCaptcha = "<h2>(?:Sicherheitsüberprüfung|Security prompt)</h2>";
-
     private String       cleanHTML       = null;
 
     private final void cleanUpHTML() {
@@ -390,7 +457,6 @@ public class FileCryptCc extends PluginForDecrypt {
         // generic cleanup
         regexStuff.add("<!(--.*?--)>");
         regexStuff.add("(<\\s*(\\w+)\\s+[^>]*style\\s*=\\s*(\"|')(?:(?:[\\w:;\\s#-]*(visibility\\s*:\\s*hidden;|display\\s*:\\s*none;|font-size\\s*:\\s*0;)[\\w:;\\s#-]*)|font-size\\s*:\\s*0|visibility\\s*:\\s*hidden|display\\s*:\\s*none)\\3[^>]*(>.*?<\\s*/\\2[^>]*>|/\\s*>))");
-
         for (String aRegex : regexStuff) {
             String results[] = new Regex(toClean, aRegex).getColumn(0);
             if (results != null) {
@@ -399,7 +465,6 @@ public class FileCryptCc extends PluginForDecrypt {
                 }
             }
         }
-
         cleanHTML = toClean;
     }
 
@@ -433,12 +498,11 @@ public class FileCryptCc extends PluginForDecrypt {
             if (file.exists()) {
                 file.delete();
             }
-
         }
         return links;
     }
 
-    private final void getPage(final String page) throws IOException, PluginException {
+    private final void getPage(final String page) throws Exception {
         if (page == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
@@ -446,7 +510,7 @@ public class FileCryptCc extends PluginForDecrypt {
         cleanUpHTML();
     }
 
-    private final void postPage(final String url, final String post) throws IOException, PluginException {
+    private final void postPage(final String url, final String post) throws Exception {
         if (url == null || post == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
@@ -462,4 +526,16 @@ public class FileCryptCc extends PluginForDecrypt {
         cleanUpHTML();
     }
 
+    private void setConfiguredDomain() {
+        final int chosenRetrys = getPluginConfig().getIntegerProperty(retrys, 0);
+        userretrys = this.allretrys[chosenRetrys];
+    }
+
+    private final String   retrys    = "retrys";
+    private final String[] allretrys = new String[] { "10", "15", "20" };
+
+    private void setConfigElements() {
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), NO_SOLVEMEDIA, JDL.L("plugins.decrypter.filecryptcc.nosolvemedia", "No solvemedia?")).setDefaultValue(false));
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_COMBOBOX_INDEX, getPluginConfig(), retrys, allretrys, JDL.L("plugins.decrypter.filecryptcc.retrys", "Retrys")).setDefaultValue(0));
+    }
 }

@@ -13,33 +13,38 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
+import java.util.regex.Pattern;
 
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
 import jd.nutils.encoding.Encoding;
-import jd.parser.Regex;
 import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
-import jd.plugins.PluginForDecrypt;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "mangahost.com" }, urls = { "http://(?:www\\.)?(br\\.)?mangahost\\.(com|net)/manga/[^/]+/[^\\s]*\\d+(\\.\\d+)?" })
-public class MangahostCom extends PluginForDecrypt {
+import org.jdownloader.plugins.components.antiDDoSForDecrypt;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "mangahost.com" }, urls = { "https?://(?:www\\.)?(?:br\\.)?(mangahost(?:-?br)?\\.(?:com|net|me|org|cc)|mangahosts\\.com|mangahost1\\.com|yesmangas\\.net)/manga/[^/]+/([^\\s]*\\d+(\\.\\d+|[a-z])?|one-shot)" })
+public class MangahostCom extends antiDDoSForDecrypt {
     public MangahostCom(PluginWrapper wrapper) {
         super(wrapper);
     }
 
+    @Override
+    public String[] siteSupportedNames() {
+        return new String[] { "mangahost.com", "mangahost.net", "mangahost.me", "mangahost.org", "mangahost.cc", "yesmangas.net", "mangahosts.com", "mangahost1.com" };
+    }
+
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
-        ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
+        final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         final String parameter = param.toString();
         br.setFollowRedirects(true);
-        br.getPage(parameter);
+        getPage(parameter);
         if (br.getHttpConnection().getResponseCode() == 403) {
             logger.info("GEO-blocked!!");
             decryptedLinks.add(this.createOfflinelink(parameter));
@@ -48,21 +53,25 @@ public class MangahostCom extends PluginForDecrypt {
             decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
         }
-        String fpName = br.getRegex("<title>([^<>\"]+)</title>").getMatch(0);
+        final String host = br.getHost();
+        final String fpName = br.getRegex("<title>(.*?)(?:\\s*\\|\\s*[^<]*)?</title>").getMatch(0);
         String[] links = null;
         if (br.containsHTML("var images")) {
-            if (br.containsHTML("(jpg|png)\\.webp")) {
-                links = br.getRegex("(https?://img\\.mangahost.net/br/images/[^<>\"\\']+\\.webp)").getColumn(0);
+            if (br.containsHTML("(jpe?g|png)\\.webp")) {
+                links = br.getRegex("(https?://(?:img\\." + Pattern.quote(host) + "|img-host\\.filestatic\\.xyz)/(?:br/)?images/[^<>\"\\']+\\.webp)").getColumn(0);
             } else {
-                links = br.getRegex("(https?://img\\.mangahost.net/br/mangas_files/[^<>\"\\']+(jpg|png))").getColumn(0);
+                links = br.getRegex("(https?://(?:img\\." + Pattern.quote(host) + "|img-host\\.filestatic\\.xyz)/(?:br/)?mangas_files/[^<>\"\\']+(jpe?g|png))").getColumn(0);
             }
         } else {
-            String pages = br.getRegex("(var pages[^<>]+\\}\\]\\;)").getMatch(0);
-            pages = pages.replace("\\/", "/");
-            if (br.containsHTML("(jpg|png)\\.webp")) {
-                links = new Regex(pages, "(https?://img\\.mangahost.net/br/images/[^<>\"\\']+\\.webp)").getColumn(0);
-            } else {
-                links = new Regex(pages, "(https?://img\\.mangahost.net/br/mangas_files/[^<>\"\\']+(jpg|png))").getColumn(0);
+            // this is JSON, DO NOT universally unescape it.
+            String pages = br.getRegex("var pages\\s*=\\s*(\\[\\{[^<>]+\\}\\])\\;").getMatch(0);
+            final ArrayList<Object> resource = (ArrayList<Object>) JavaScriptEngineFactory.jsonToJavaObject(pages);
+            if (links == null) {
+                links = new String[resource.size()];
+            }
+            int i = 0;
+            for (final Object page : resource) {
+                links[i++] = (String) JavaScriptEngineFactory.walkJson(page, "url");
             }
         }
         if (links == null || links.length == 0) {
@@ -77,13 +86,11 @@ public class MangahostCom extends PluginForDecrypt {
             dl.setAvailable(true);
             decryptedLinks.add(dl);
         }
-
         if (fpName != null) {
             final FilePackage fp = FilePackage.getInstance();
             fp.setName(Encoding.htmlDecode(fpName.trim()));
             fp.addLinks(decryptedLinks);
         }
-
         return decryptedLinks;
     }
 }

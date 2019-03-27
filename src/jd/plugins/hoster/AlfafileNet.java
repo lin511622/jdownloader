@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.File;
@@ -25,6 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.appwork.utils.StringUtils;
 import org.appwork.utils.formatter.SizeFormatter;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
 import org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia;
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
@@ -37,6 +37,7 @@ import jd.http.Cookies;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
+import jd.parser.html.Form;
 import jd.plugins.Account;
 import jd.plugins.Account.AccountType;
 import jd.plugins.AccountInfo;
@@ -52,7 +53,6 @@ import jd.utils.JDUtilities;
 
 @HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "alfafile.net" }, urls = { "https?://(www\\.)?alfafile\\.net/file/[A-Za-z0-9]+" })
 public class AlfafileNet extends PluginForHost {
-
     public AlfafileNet(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium("http://alfafile.net/premium");
@@ -78,10 +78,9 @@ public class AlfafileNet extends PluginForHost {
     private static final boolean ACCOUNT_PREMIUM_RESUME       = true;
     private static final int     ACCOUNT_PREMIUM_MAXCHUNKS    = -5;
     private static final int     ACCOUNT_PREMIUM_MAXDOWNLOADS = 20;
-
     /* don't touch the following! */
     private static AtomicInteger maxPrem                      = new AtomicInteger(1);
-
+    private boolean              isDirecturl                  = false;
     /*
      * TODO: Use API for linkchecking whenever an account is added to JD. This will ensure that the plugin will always work, at least for
      * premium users. Status 2015-08-03: Filecheck API does not seem to work --> Disabled it - reported API issues to jiaz.
@@ -91,6 +90,7 @@ public class AlfafileNet extends PluginForHost {
     @SuppressWarnings("deprecation")
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
+        isDirecturl = false;
         this.setBrowserExclusive();
         prepBR();
         String filename = null;
@@ -109,7 +109,6 @@ public class AlfafileNet extends PluginForHost {
                 api_works = true;
             }
         }
-
         if (api_works) {
             final String status = PluginJSonUtils.getJsonValue(br, "status");
             if (!"200".equals(status)) {
@@ -119,7 +118,24 @@ public class AlfafileNet extends PluginForHost {
             filesize = PluginJSonUtils.getJsonValue(br, "size");
             md5 = PluginJSonUtils.getJsonValue(br, "hash");
         } else {
-            br.getPage(link.getDownloadURL());
+            URLConnectionAdapter con = null;
+            try {
+                con = br.openGetConnection(link.getDownloadURL());
+                if (!con.getContentType().contains("html")) {
+                    logger.info("This url is a directurl");
+                    link.setDownloadSize(con.getLongContentLength());
+                    link.setFinalFileName(getFileNameFromHeader(con));
+                    isDirecturl = true;
+                    return AvailableStatus.TRUE;
+                } else {
+                    br.followConnection();
+                }
+            } finally {
+                try {
+                    con.disconnect();
+                } catch (final Throwable e) {
+                }
+            }
             if (this.br.getHttpConnection().getResponseCode() == 404) {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
@@ -152,65 +168,85 @@ public class AlfafileNet extends PluginForHost {
         }
         String dllink = checkDirectLink(downloadLink, directlinkproperty);
         if (dllink == null) {
-            final String fid = getFileID(downloadLink);
-            br.getHeaders().put("Accept", "application/json, text/javascript, */*; q=0.01");
-            br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
-            br.getPage("/download/start_timer/" + fid);
-            final String reconnect_wait = br.getRegex("Try again in (\\d+) minutes").getMatch(0);
-            if (br.containsHTML(">This file can be downloaded by premium users only|>You can download files up to")) {
-                throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
-            } else if (reconnect_wait != null) {
-                throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, Long.parseLong(reconnect_wait) * 60 * 1001l);
-            } else if (br.containsHTML("You can't download not more than \\d+ file at a time")) {
-                throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, "Too many max sim dls", 20 * 60 * 1000l);
-            }
-            int wait = 45;
-            String wait_str = br.getRegex(">(\\d+) <span>s<").getMatch(0);
-            if (wait_str != null) {
-                wait = Integer.parseInt(wait_str);
-            }
-            String redirect_url = PluginJSonUtils.getJsonValue(br, "redirect_url");
-            if (redirect_url == null) {
-                redirect_url = "/file/" + fid + "/captcha";
-            }
-            this.sleep(wait * 1001l, downloadLink);
-            br.getPage(redirect_url);
-            if (br.getHttpConnection().getResponseCode() == 404) {
-                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 404", 5 * 60 * 1000l);
-            }
-            this.br.setFollowRedirects(true);
-            boolean success = false;
-            for (int i = 0; i <= 3; i++) {
-                final PluginForDecrypt solveplug = JDUtilities.getPluginForDecrypt("linkcrypt.ws");
-                final SolveMedia sm = new SolveMedia(br);
-                sm.setSecure(true);
-                File cf = null;
-                try {
-                    cf = sm.downloadCaptcha(getLocalCaptchaFile());
-                } catch (final Exception e) {
-                    if (SolveMedia.FAIL_CAUSE_CKEY_MISSING.equals(e.getMessage())) {
-                        throw new PluginException(LinkStatus.ERROR_FATAL, "Host side solvemedia.com captcha error - please contact the " + this.getHost() + " support");
+            if (isDirecturl) {
+                dllink = downloadLink.getDownloadURL();
+            } else {
+                final String fid = getFileID(downloadLink);
+                br.getHeaders().put("Accept", "application/json, text/javascript, */*; q=0.01");
+                br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
+                br.getPage("/download/start_timer/" + fid);
+                final String reconnect_wait = br.getRegex("Try again in (\\d+) minutes").getMatch(0);
+                if (br.containsHTML(">This file can be downloaded by premium users only|>You can download files up to")) {
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
+                } else if (reconnect_wait != null) {
+                    throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, Long.parseLong(reconnect_wait) * 60 * 1001l);
+                } else if (br.containsHTML("You can't download not more than \\d+ file at a time")) {
+                    throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, "Too many max sim dls", 20 * 60 * 1000l);
+                } else if (br.containsHTML("You have reached your daily downloads limit. Please try again later\\.")) {
+                    throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, "You have reached your daily download limit.", 3 * 60 * 60 * 1000l);
+                }
+                int wait = 45;
+                String wait_str = br.getRegex(">(\\d+) <span>s<").getMatch(0);
+                if (wait_str != null) {
+                    wait = Integer.parseInt(wait_str);
+                }
+                String redirect_url = PluginJSonUtils.getJsonValue(br, "redirect_url");
+                if (redirect_url == null) {
+                    redirect_url = "/file/" + fid + "/captcha";
+                }
+                this.sleep(wait * 1001l, downloadLink);
+                br.getPage(redirect_url);
+                if (br.getHttpConnection().getResponseCode() == 404) {
+                    throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 404", 5 * 60 * 1000l);
+                }
+                this.br.setFollowRedirects(true);
+                boolean success = false;
+                for (int i = 0; i <= 3; i++) {
+                    if (br.containsHTML("class=\"g-recaptcha\"")) {
+                        logger.info("Detected captcha method \"reCaptchaV2\" for this host");
+                        Form dlForm = br.getFormBySubmitvalue("send");
+                        final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, this.br).getToken();
+                        dlForm.put("g-recaptcha-response", Encoding.urlEncode(recaptchaV2Response));
+                        br.submitForm(dlForm);
+                        logger.info("Submitted DLForm");
+                        if (br.containsHTML("class=\"g-recaptcha\"")) {
+                            continue;
+                        }
+                        success = true;
+                        break;
+                    } else {
+                        final PluginForDecrypt solveplug = JDUtilities.getPluginForDecrypt("linkcrypt.ws");
+                        final SolveMedia sm = new SolveMedia(br);
+                        sm.setSecure(true);
+                        File cf = null;
+                        try {
+                            cf = sm.downloadCaptcha(getLocalCaptchaFile());
+                        } catch (final Exception e) {
+                            if (SolveMedia.FAIL_CAUSE_CKEY_MISSING.equals(e.getMessage())) {
+                                throw new PluginException(LinkStatus.ERROR_FATAL, "Host side solvemedia.com captcha error - please contact the " + this.getHost() + " support");
+                            }
+                            throw e;
+                        }
+                        final String code = getCaptchaCode("solvemedia", cf, downloadLink);
+                        final String chid = sm.getChallenge(code);
+                        this.br.postPage(this.br.getURL(), "send=Send&adcopy_response=" + Encoding.urlEncode(code) + "&adcopy_challenge=" + Encoding.urlEncode(chid));
+                        if (br.containsHTML("solvemedia\\.com/papi/")) {
+                            continue;
+                        }
+                        success = true;
+                        break;
                     }
-                    throw e;
                 }
-                final String code = getCaptchaCode("solvemedia", cf, downloadLink);
-                final String chid = sm.getChallenge(code);
-                this.br.postPage(this.br.getURL(), "send=Send&adcopy_response=" + Encoding.urlEncode(code) + "&adcopy_challenge=" + Encoding.urlEncode(chid));
-                if (br.containsHTML("solvemedia\\.com/papi/")) {
-                    continue;
+                if (!success) {
+                    throw new PluginException(LinkStatus.ERROR_CAPTCHA);
                 }
-                success = true;
-                break;
-            }
-            if (!success) {
-                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
-            }
-            dllink = br.getRegex("href=\"(https://[^<>\"]*?)\" class=\"big_button\"><span>Download</span>").getMatch(0);
-            if (dllink == null) {
-                dllink = br.getRegex("\"(https?://[a-z0-9\\-]+\\.alfafile\\.net/dl/[^<>\"]*?)\"").getMatch(0);
-            }
-            if (dllink == null) {
-                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                dllink = br.getRegex("href=\"(https://[^<>\"]*?)\" class=\"big_button\"><span>Download</span>").getMatch(0);
+                if (dllink == null) {
+                    dllink = br.getRegex("\"(https?://[a-z0-9\\-]+\\.alfafile\\.net/dl/[^<>\"]*?)\"").getMatch(0);
+                }
+                if (dllink == null) {
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                }
             }
         }
         dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, resumable, maxchunks);
@@ -253,6 +289,7 @@ public class AlfafileNet extends PluginForHost {
 
     private void prepBR() {
         this.br.setCookie(this.getHost(), "lang", "en");
+        this.br.setFollowRedirects(true);
     }
 
     @Override
@@ -392,12 +429,20 @@ public class AlfafileNet extends PluginForHost {
 
     private void handleErrorsGeneral() throws PluginException {
         final String errorcode = PluginJSonUtils.getJsonValue(br, "status");
-        final String errormessage = PluginJSonUtils.getJsonValue(br, "details");
+        String errormessage = PluginJSonUtils.getJsonValue(br, "details");
         if (errorcode != null) {
             if (errorcode.equals("401")) {
                 /* This can sometimes happen in premium mode */
                 /* {"response":null,"status":401,"details":"Unauthorized. Token doesn't exist"} */
                 throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 401 - unauthorized", 5 * 60 * 1000l);
+            } else if (errorcode.equals("404")) {
+                /*
+                 * E.g. detailed errormessages: "details":"File with file_id: '1234567' doesn't exist"
+                 */
+                if (errormessage == null) {
+                    errormessage = "File does not exist according to API";
+                }
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             } else if (errorcode.equals("409")) {
                 /*
                  * E.g. detailed errormessages:
@@ -441,5 +486,4 @@ public class AlfafileNet extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

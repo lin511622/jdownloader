@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.io.IOException;
@@ -32,24 +31,24 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForDecrypt;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "kindgirls.com" }, urls = { "http://(www\\.)?kindgirls\\.com/(video|gallery|girls)/([a-zA-Z0-9_\\-]+)(/[a-zA-Z0-9_\\-]+(/\\d+/?)?)?" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "kindgirls.com" }, urls = { "https?://(www\\.)?kindgirls\\.com/(video|gallery|girls)/([a-zA-Z0-9_\\-]+)(/[a-zA-Z0-9_\\-]+(/\\d+/?)?)?" })
 public class KndGrlsCom extends PluginForDecrypt {
-
     public KndGrlsCom(PluginWrapper wrapper) {
         super(wrapper);
     }
 
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
-        final String parameter = param.toString();
+        ArrayList<DownloadLink> crawledLinks = new ArrayList<DownloadLink>();
+        final String parameter = param.toString().replace("http:", "https:");
         final String page = br.getPage(parameter);
         if (parameter.contains("com/gallery")) { // it's a gallery
             if (br.containsHTML(">Sorry, gallery not found")) {
-                logger.info("Link offline: " + parameter);
-                return new ArrayList<DownloadLink>();
+                crawledLinks.add(createOfflinelink(parameter));
+                return crawledLinks;
             }
             return decryptGalleryLinks(br);
         } else if (parameter.contains("com/girls")) { // it's a girl's gallery
-                                                      // collection
+            // collection
             return decryptGirlsGalleryCollection(page);
         } else if (parameter.contains("com/video")) { // it's a video
             return decryptVideoLinks(br);
@@ -60,13 +59,11 @@ public class KndGrlsCom extends PluginForDecrypt {
     private ArrayList<DownloadLink> decryptGirlsGalleryCollection(String page) throws IOException {
         ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         Regex girlGalleriesRex = new Regex(page, "<h4>Photo Galleries</h4>((<div class=\"gallery_list\"><a title='[a-zA-Z0-9, \\-_]+' href='/gallery/[a-zA-Z0-9_\\-/]+'><img src='[a-zA-Z0-9_\\.-/]+' alt='[a-zA-Z0-9 _\\-]+' border='0'><br /> *\\d+ photos</a></div>)+)");
-
         String[][] matches = girlGalleriesRex.getMatches();
-
         for (String[] match : matches) {
             for (String gallerymatch : match) {
                 Regex galleryDetailRex = new Regex(gallerymatch, "<div class=\"gallery_list\"><a title='([a-zA-Z0-9, \\-_]+)' href='(/gallery/[a-zA-Z0-9_\\-/]+)'><img src='[a-zA-Z0-9_\\.-/]+' alt='[a-zA-Z0-9 _\\-]+' border='0'><br /> *(\\d+) photos</a></div>");
-                String link = "http://www.kindgirls.com" + galleryDetailRex.getMatch(1);
+                String link = "https://www.kindgirls.com" + galleryDetailRex.getMatch(1);
                 Browser galleryBrowser = br.cloneBrowser();
                 galleryBrowser.getPage(link);
                 for (DownloadLink currentLink : decryptGalleryLinks(galleryBrowser)) {
@@ -83,8 +80,10 @@ public class KndGrlsCom extends PluginForDecrypt {
             logger.info("Link offline: " + br.getURL());
             return decryptedLinks;
         }
-        String link = br.getRegex("\\'flashvars\\',\\'\\&amp;file=(http://[^<>\"]*?)\\&amp;volume=\\d+\\'\\)").getMatch(0);
-        if (link == null) link = br.getRegex("(\"|\\')(http://vids\\.kindgirls\\.com/[^<>\"]*?)(\"|\\')").getMatch(1);
+        String link = br.getRegex("\\'flashvars\\',\\'\\&amp;file=(https?://[^<>\"]*?)\\&amp;volume=\\d+\\'\\)").getMatch(0);
+        if (link == null) {
+            link = br.getRegex("(\"|\\')(https?://vids\\.kindgirls\\.com/[^<>\"]*?)(\"|\\')").getMatch(1);
+        }
         if (link == null || link.length() == 0) {
             logger.severe("Variable 'link' not found, Please report issue to JDownloader Developement.");
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -101,10 +100,12 @@ public class KndGrlsCom extends PluginForDecrypt {
 
     private ArrayList<DownloadLink> decryptGalleryLinks(Browser br) {
         ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
-        final String[] links = br.getRegex("\"http://gals\\.kindgirls\\.com/([^<>\"]*?)\"").getColumn(0);
-        if (links == null || links.length == 0) return null;
+        final String[] links = br.getRegex("\"https?://gals\\.kindgirls\\.com/([^<>\"]*?)\"[^<>]*?target=\"_blank\"").getColumn(0);
+        if (links == null || links.length == 0) {
+            return null;
+        }
         for (String finallink : links) {
-            final DownloadLink dlLink = createDownloadlink("directhttp://http://gals.kindgirls.com/" + finallink.replace("thumbnails/tn", ""));
+            final DownloadLink dlLink = createDownloadlink("directhttp://https://gals.kindgirls.com/" + finallink.replace("thumbnails/tn", ""));
             // rename files if required. Fixes alpha numeric sorting issues
             Regex regex = new Regex(dlLink.getName(), "(.*_)(\\d\\.[a-zA-Z0-9]+)$");
             if (regex.matches()) {
@@ -112,7 +113,10 @@ public class KndGrlsCom extends PluginForDecrypt {
             }
             decryptedLinks.add(dlLink);
         }
-        final String girlsname = br.getRegex("<h3>Photo.*<a href=\\'/girls/[a-zA-Z0-9 _\\-/]+\\'>([a-zA-Z0-9 _\\-]+)</a>.*</h3>").getMatch(0);
+        String girlsname = br.getRegex("<h3>.*?<a href='/girls/[a-zA-Z0-9 _\\-/]+'>([a-zA-Z0-9 _\\-]+)</a>.*?</h3>").getMatch(0);
+        if (girlsname == null) {
+            girlsname = br.getRegex("<div id='up_izq'><h3>([a-zA-Z0-9 _\\-]+)</h3>").getMatch(0);
+        }
         if (girlsname != null) {
             FilePackage fp = FilePackage.getInstance();
             fp.setName("Kindgirls - " + girlsname.trim());
@@ -125,5 +129,4 @@ public class KndGrlsCom extends PluginForDecrypt {
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

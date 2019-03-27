@@ -13,10 +13,8 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.IOException;
 import java.util.LinkedHashMap;
 
 import jd.PluginWrapper;
@@ -38,9 +36,8 @@ import jd.plugins.PluginForHost;
 
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "jianguoyun.com" }, urls = { "http://jianguoyundecrypted\\.com/\\d+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "jianguoyun.com" }, urls = { "http://jianguoyundecrypted\\.com/\\d+" })
 public class JianguoyunCom extends PluginForHost {
-
     public JianguoyunCom(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium("https://www.jianguoyun.com/d/signup");
@@ -55,12 +52,11 @@ public class JianguoyunCom extends PluginForHost {
     private String       folderid               = null;
     private String       passCode               = null;
     private boolean      possiblePremiumonly    = false;
-
     private final String html_passwordprotected = "id=\"pwd\\-verify\\-view\"";
 
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
-        prepBR(this.br);
+        prepBR(br);
         dllink = null;
         folderid = link.getStringProperty("folderid", null);
         passCode = link.getDownloadPassword();
@@ -71,18 +67,20 @@ public class JianguoyunCom extends PluginForHost {
         if (folderid == null || relPath == null || mainlink == null) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-
         if (singlefile) {
             accessMainlink(mainlink);
-            scanFileinfoFromWebsite(this.br, link);
+            if (br.getHttpConnection().getResponseCode() == 404 || br.containsHTML("class=\"owner\"><")) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
+            scanFileinfoFromWebsite(br, link);
             final boolean download_need_signin = link.getBooleanProperty("download_need_signin", false);
             if (download_need_signin) {
                 /* Only available for signed-in users but if its a photo we might be able to download it anways! */
                 possiblePremiumonly = true;
-                this.dllink = this.br.getRegex("photoURL:[\t\n\r ]*?\\'([^<>\"\\']+)\\'").getMatch(0);
+                this.dllink = br.getRegex("photoURL:[\t\n\r ]*?\\'([^<>\"\\']+)\\'").getMatch(0);
             }
         } else {
-            this.br.getPage("https://www.jianguoyun.com/d/ajax/dirops/pubDIRLink?k=" + folderid + "&dn=null&p=" + Encoding.urlEncode(relPath) + "&forwin=1&_=" + System.currentTimeMillis());
+            br.getPage("https://www.jianguoyun.com/d/ajax/dirops/pubDIRLink?k=" + folderid + "&dn=null&p=" + Encoding.urlEncode(relPath) + "&forwin=1&_=" + System.currentTimeMillis());
             getDllink();
         }
         // final String filename = getJson(br.toString(), "n");
@@ -97,7 +95,7 @@ public class JianguoyunCom extends PluginForHost {
 
     @SuppressWarnings("unchecked")
     private void getDllink() throws Exception {
-        if (this.br.getHttpConnection().getResponseCode() == 404) {
+        if (br.getHttpConnection().getResponseCode() == 404) {
             /*
              * {"errorCode":"ObjectNotFound","detailMsg":"the Object /P802 Release File/Important No56757467ce.jpg doesn't
              * exist","payload":null}
@@ -109,8 +107,8 @@ public class JianguoyunCom extends PluginForHost {
     }
 
     public static void scanFileinfoFromWebsite(final Browser br, final DownloadLink dl) {
-        if (br.getHttpConnection().getResponseCode() == 404) {
-            dl.setAvailable(false);
+        if (br.getHttpConnection().getResponseCode() == 404 || br.containsHTML("class=\"owner\"><")) {
+            dl.setAvailable(false); // Suitable for decrypter plugin only, hoster plugin needs PluginException
             return;
         }
         final String pageJson = getWebsiteJson(br);
@@ -152,7 +150,7 @@ public class JianguoyunCom extends PluginForHost {
                 /* Make sure we get the correct filename after user entered download password. */
                 requestFileInformation(downloadLink);
             }
-            this.br.getPage("https://www.jianguoyun.com/d/ajax/fileops/pubFileLink?k=" + this.folderid + "&name=" + Encoding.urlEncode(downloadLink.getName()) + "&forwin=1&_=" + System.currentTimeMillis());
+            br.getPage("https://www.jianguoyun.com/d/ajax/fileops/pubFileLink?k=" + this.folderid + "&name=" + Encoding.urlEncode(downloadLink.getName()) + "&forwin=1&_=" + System.currentTimeMillis());
             getDllink();
         }
         if (dllink == null) {
@@ -161,7 +159,7 @@ public class JianguoyunCom extends PluginForHost {
             }
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, false, 1);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, false, 1);
         if (dl.getConnection().getContentType().contains("html")) {
             logger.warning("Finallink does not lead to a file...");
             br.followConnection();
@@ -172,11 +170,11 @@ public class JianguoyunCom extends PluginForHost {
     }
 
     private boolean handlePasswordProtected(final DownloadLink dl) throws Exception {
-        if (this.br.containsHTML(html_passwordprotected)) {
+        if (br.containsHTML(html_passwordprotected)) {
             if (this.passCode == null) {
                 passCode = getUserInput("Password?", dl);
-                this.br.postPage("/d/ajax/pubops/unlockPubObject", "sp=" + Encoding.urlEncode(passCode) + "&key=" + this.folderid);
-                if (this.br.getHttpConnection().getResponseCode() != 200) {
+                br.postPage("/d/ajax/pubops/unlockPubObject", "sp=" + Encoding.urlEncode(passCode) + "&key=" + this.folderid);
+                if (br.getHttpConnection().getResponseCode() != 200) {
                     dl.setDownloadPassword(null);
                     throw new PluginException(LinkStatus.ERROR_RETRY, "Wrong password entered");
                 }
@@ -184,7 +182,7 @@ public class JianguoyunCom extends PluginForHost {
                 final LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
                 final String continue_url = (String) entries.get("url");
                 if (continue_url != null) {
-                    this.br.getPage(continue_url);
+                    br.getPage(continue_url);
                 }
             }
             return true;
@@ -192,11 +190,11 @@ public class JianguoyunCom extends PluginForHost {
         return false;
     }
 
-    private void accessMainlink(String mainlink) throws IOException {
+    private void accessMainlink(String mainlink) throws Exception {
         if (this.passCode != null) {
             mainlink += "?pd=" + Encoding.urlEncode(this.passCode);
         }
-        this.br.getPage(mainlink);
+        br.getPage(mainlink);
     }
 
     private Browser prepBR(final Browser br) {
@@ -230,27 +228,28 @@ public class JianguoyunCom extends PluginForHost {
     private void login(final Account account, final boolean force) throws Exception {
         synchronized (LOCK) {
             try {
-                prepBR(this.br);
+                prepBR(br);
                 final Cookies cookies = account.loadCookies("");
                 if (cookies != null && !force) {
-                    this.br.setCookies(this.getHost(), cookies);
-                    this.br.getPage("https://www." + this.getHost() + "/d/ajax/userop/getUserInfo?start=1&_=" + System.currentTimeMillis());
-                    if (this.br.getHttpConnection().getResponseCode() == 200) {
+                    br.setCookies(this.getHost(), cookies);
+                    br.getPage("https://www." + this.getHost() + "/d/ajax/userop/getUserInfo?start=1&_=" + System.currentTimeMillis());
+                    if (br.getHttpConnection().getResponseCode() == 200) {
                         /* 401 */
                         return;
                     }
                     /* Usually 401 == Not logged in */
-                    this.br = this.prepBR(new Browser());
+                    br = this.prepBR(new Browser());
                 }
-                this.br.postPage("https://www." + this.getHost() + "/d/login", "login_email=" + Encoding.urlEncode(account.getUser()) + "&login_password=" + Encoding.urlEncode(account.getPass()) + "&remember_me=on");
-                if (this.br.getCookie(this.getHost(), "umn") == null) {
+                br.getPage("https://www." + this.getHost() + "/d/login");
+                br.postPage(br.getURL(), "login_email=" + Encoding.urlEncode(account.getUser()) + "&login_password=" + Encoding.urlEncode(account.getPass()) + "&remember_me=on");
+                if (br.getCookie(this.getHost(), "umn") == null) {
                     if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     } else {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!\r\nQuick help:\r\nYou're sure that the username and password you entered are correct?\r\nIf your password contains special characters, change it (remove them) and try again!", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     }
                 }
-                account.saveCookies(this.br.getCookies(this.getHost()), "");
+                account.saveCookies(br.getCookies(this.getHost()), "");
             } catch (final PluginException e) {
                 account.clearCookies("");
                 throw e;
@@ -275,22 +274,18 @@ public class JianguoyunCom extends PluginForHost {
             account.setValid(false);
             throw e;
         }
-        this.br.getPage("https://www." + this.getHost() + "/d/ajax/userop/getUserInfo?start=1&_=" + System.currentTimeMillis());
+        br.getPage("/d/ajax/userop/getUserInfo?start=1&_=" + System.currentTimeMillis());
         @SuppressWarnings("unused")
         final LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
         final long accountExpireLeftTime = JavaScriptEngineFactory.toLong("accountExpireLeftTime", 0);
-        String accstatus;
         if (accountExpireLeftTime <= 0) {
             account.setType(AccountType.FREE);
-            accstatus = "Registered (free) user";
         } else {
             /* TODO: Check this account type */
             account.setType(AccountType.PREMIUM);
             ai.setValidUntil(accountExpireLeftTime);
-            accstatus = "Premium";
         }
         account.setValid(true);
-        ai.setStatus(accstatus);
         ai.setUnlimitedTraffic();
         return ai;
     }
@@ -319,5 +314,4 @@ public class JianguoyunCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

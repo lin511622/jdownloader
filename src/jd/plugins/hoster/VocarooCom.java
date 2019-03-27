@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -30,13 +29,11 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "vocaroo.com" }, urls = { "http://(?:www\\.)?vocaroo\\.com/i/[A-Za-z0-9]+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "vocaroo.com" }, urls = { "https?://(?:www\\.)?vocaroo\\.com/i/[A-Za-z0-9]+" })
 public class VocarooCom extends PluginForHost {
-
     public VocarooCom(PluginWrapper wrapper) {
         super(wrapper);
     }
-
     /* DEV NOTES */
     // Tags:
     // protocol: no https
@@ -46,13 +43,12 @@ public class VocarooCom extends PluginForHost {
     private static final boolean free_resume       = false;
     private static final int     free_maxchunks    = 1;
     private static final int     free_maxdownloads = -1;
-
     private String               dllink            = null;
     private boolean              server_issues     = false;
 
     @Override
     public String getAGBLink() {
-        return "http://vocaroo.com/?info";
+        return "https://vocaroo.com/?info";
     }
 
     @SuppressWarnings("deprecation")
@@ -72,7 +68,7 @@ public class VocarooCom extends PluginForHost {
             filename = fid;
         }
         /* Other possible formats via command={download_ogg, download_flac, download_wav, download_webm} */
-        dllink = "http://vocaroo.com/media_command.php?command=download_mp3&media=" + fid;
+        dllink = "https://vocaroo.com/media_command.php?command=download_mp3&media=" + fid;
         if (filename == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
@@ -80,10 +76,7 @@ public class VocarooCom extends PluginForHost {
         filename = Encoding.htmlDecode(filename);
         filename = filename.trim();
         filename = encodeUnicode(filename);
-        String ext = getFileNameExtensionFromString(dllink, ".mp3");
-        if (!filename.endsWith(ext)) {
-            filename += ext;
-        }
+        filename += ".mp3";
         link.setFinalFileName(filename);
         final Browser br2 = br.cloneBrowser();
         // In case the link redirects to the finallink

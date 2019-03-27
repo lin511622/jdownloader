@@ -27,6 +27,7 @@ import org.appwork.utils.swing.SwingUtils;
 import org.appwork.utils.swing.dialog.AbstractDialog;
 import org.appwork.utils.swing.dialog.Dialog;
 import org.jdownloader.actions.AppAction;
+import org.jdownloader.controlling.packagizer.PackagizerController;
 import org.jdownloader.gui.IconKey;
 import org.jdownloader.gui.translate._GUI;
 import org.jdownloader.gui.views.SelectionInfo;
@@ -35,7 +36,6 @@ import org.jdownloader.images.AbstractIcon;
 import org.jdownloader.settings.staticreferences.CFG_GUI;
 
 public class RenameDialog extends AbstractDialog<Object> {
-
     private ExtTextField             txtSearch;
     private ExtTextField             txtReplace;
     private ExtCheckBox              cbRegex;
@@ -74,12 +74,15 @@ public class RenameDialog extends AbstractDialog<Object> {
                         } else if (node instanceof DownloadLink) {
                             final DownloadLink link = ((DownloadLink) node);
                             final String name = link.getName();
-                            final String newName = pattern.matcher(name).replaceAll(rep);
+                            final FilePackage fp = link.getFilePackage();
+                            String newName = pattern.matcher(name).replaceAll(rep);
+                            newName = PackagizerController.replaceDynamicTags(newName, fp.getName(), node);
                             list.add(new Result(name, newName, node));
                         } else if (node instanceof FilePackage) {
                             final FilePackage pkg = (FilePackage) node;
                             final String name = pkg.getName();
-                            final String newName = pattern.matcher(name).replaceAll(rep);
+                            String newName = pattern.matcher(name).replaceAll(rep);
+                            newName = PackagizerController.replaceDynamicTags(newName, name, node);
                             list.add(new Result(name, newName, node));
                         } else if (node instanceof CrawledPackage) {
                             final CrawledPackage pkg = (CrawledPackage) node;
@@ -94,7 +97,6 @@ public class RenameDialog extends AbstractDialog<Object> {
                     Dialog.getInstance().showExceptionDialog(_GUI.T.lit_error_occured(), e.getMessage(), e);
                 }
             }
-
         });
     }
 
@@ -110,12 +112,12 @@ public class RenameDialog extends AbstractDialog<Object> {
             regex = regex.replaceAll("\\*+", "*").trim();
             final StringBuilder sb = new StringBuilder();
             if (StringUtils.isEmpty(regex)) {
-                sb.append("(.*)");
+                sb.append("^(.*)");
             } else if (regex.equals("*")) {
-                sb.append("(.*)");
+                sb.append("^(.*)");
             } else {
                 if (regex.startsWith("*")) {
-                    sb.append("(.*)");
+                    sb.append("^(.*)");
                 }
                 final String[] parts = regex.split("\\*+");
                 int actualParts = 0;
@@ -129,7 +131,7 @@ public class RenameDialog extends AbstractDialog<Object> {
                     }
                 }
                 if (sb.length() == 0) {
-                    sb.append("(.*)");
+                    sb.append("^(.*)");
                 } else {
                     if (regex.endsWith("*")) {
                         sb.append("(.*)");
@@ -158,7 +160,9 @@ public class RenameDialog extends AbstractDialog<Object> {
                     } else if (node instanceof DownloadLink) {
                         final DownloadLink link = ((DownloadLink) node);
                         final String name = link.getName();
-                        final String newName = pattern.matcher(name).replaceAll(rep);
+                        final FilePackage fp = link.getFilePackage();
+                        String newName = pattern.matcher(name).replaceAll(rep);
+                        newName = PackagizerController.replaceDynamicTags(newName, fp.getName(), node);
                         DownloadWatchDog.getInstance().renameLink(link, newName);
                     } else if (node instanceof FilePackage) {
                         final FilePackage pkg = (FilePackage) node;
@@ -168,7 +172,8 @@ public class RenameDialog extends AbstractDialog<Object> {
                     } else if (node instanceof CrawledPackage) {
                         final CrawledPackage pkg = (CrawledPackage) node;
                         final String name = pkg.getName();
-                        final String newName = pattern.matcher(name).replaceAll(rep);
+                        String newName = pattern.matcher(name).replaceAll(rep);
+                        newName = PackagizerController.replaceDynamicTags(newName, name, node);
                         pkg.setName(newName);
                     }
                 }
@@ -192,17 +197,17 @@ public class RenameDialog extends AbstractDialog<Object> {
                 }
             }
         }
-        boolean regex = CFG_GUI.CFG.isRenameActionRegexEnabled();
+        final boolean regex = CFG_GUI.CFG.isRenameActionRegexEnabled();
         if (StringUtils.isEmpty(allRegex)) {
-            allRegex = regex ? "(.*)" : "*";
+            allRegex = regex ? "^(.*)" : "*";
             allReplace = "$1";
         } else {
             if (length == allRegex.length()) {
                 allReplace = allRegex;
-                allRegex = quote(allRegex, regex);
+                allRegex = (regex ? "^" : "") + quote(allRegex, regex);
             } else {
                 allReplace = Matcher.quoteReplacement(allRegex) + "$1";
-                allRegex = quote(allRegex, regex) + (regex ? "(.*)" : "*");
+                allRegex = (regex ? "^" : "") + quote(allRegex, regex) + (regex ? "(.*)" : "*");
             }
         }
         txtSearch = new ExtTextField();
@@ -245,7 +250,9 @@ public class RenameDialog extends AbstractDialog<Object> {
                 case '.':
                 case '[':
                 case '{':
+                case '}':
                 case '(':
+                case ')':
                 case '*':
                 case '+':
                 case '?':
@@ -266,8 +273,8 @@ public class RenameDialog extends AbstractDialog<Object> {
     private String merge(String name, String allRegex) {
         if (allRegex == null) {
             return name;
+        } else {
+            return StringUtils.getCommonalities(name, allRegex);
         }
-        return StringUtils.getCommonalities(name, allRegex);
     }
-
 }

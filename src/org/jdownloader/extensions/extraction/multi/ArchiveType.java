@@ -22,11 +22,9 @@ import org.jdownloader.extensions.extraction.MissingArchiveFile;
 import org.jdownloader.logging.LogController;
 
 public enum ArchiveType {
-
     /**
      * DO NOT CHANGE ORDER: some archiveTypes share same extension!
      */
-
     /**
      * Multipart RAR Archive (.part01.rar, .part02.rar...), 0-999 -> max 1000 parts
      */
@@ -100,13 +98,11 @@ public enum ArchiveType {
         protected Boolean isMultiPart(ArchiveFile archiveFile) {
             return RAR_SINGLE.isMultiPart(archiveFile);
         }
-
     },
     /**
      * Multipart RAR Archive (.000.rar, .001.rar...) 000-999 -> max 1000 parts
      */
     RAR_MULTI2 {
-
         private final Pattern pattern = Pattern.compile("(?i)(.*)\\.(\\d{3})\\.rar$");
 
         @Override
@@ -164,7 +160,7 @@ public enum ArchiveType {
             return 1;
         }
 
-        private final int multiPartThreshold = 90;
+        private final int multiPartThreshold = 50;
 
         @Override
         protected boolean looksLikeAnArchive(BitSet bitset) {
@@ -189,14 +185,12 @@ public enum ArchiveType {
         protected Boolean isMultiPart(ArchiveFile archiveFile) {
             return RAR_SINGLE.isMultiPart(archiveFile);
         }
-
     },
     /**
-     * Multipart RAR Archive (.rar, .r00, .r01...) 00-999 -> max 1000 parts
+     * Multipart RAR Archive (.rar, .r00, .r01...,.s00....), 1(rar) + 9(r,s,t...z)*100(00-99) Parts = 901 parts
      */
     RAR_MULTI3 {
-        private final Pattern patternPart  = Pattern.compile("(?i)(.*)\\.r(\\d{2,3})$");
-
+        private final Pattern patternPart  = Pattern.compile("(?i)(.*)\\.([r-z]\\d{2})$");
         private final Pattern patternStart = Pattern.compile("(?i)(.*)\\.rar$");
 
         @Override
@@ -214,7 +208,7 @@ public enum ArchiveType {
             if (Boolean.FALSE.equals(isMultiPart)) {
                 return null;
             } else {
-                return "\\.(?i)(r\\d{2,}|rar)";
+                return "\\.(?i)([r-z]\\d{2}|rar)";
             }
         }
 
@@ -251,7 +245,9 @@ public enum ArchiveType {
             if (partNumberString == null) {
                 return 0;
             } else {
-                return Integer.parseInt(partNumberString) + 1;
+                final String number = partNumberString.substring(1);
+                final int base = partNumberString.charAt(0) - 'r';
+                return (base * 100) + Integer.parseInt(number) + 1;
             }
         }
 
@@ -284,7 +280,15 @@ public enum ArchiveType {
             if (partIndex == 0) {
                 return matches[0] + ".rar";
             } else {
-                return matches[0] + ".r" + String.format(Locale.US, "%0" + partStringLength + "d", (partIndex - 1));
+                int start = 'r';
+                int index = partIndex - 1;
+                while (true) {
+                    if (index < 100) {
+                        return matches[0] + "." + String.valueOf((char) start) + String.format(Locale.US, "%02d", (index));
+                    }
+                    index -= 100;
+                    start = start + 1;
+                }
             }
         }
 
@@ -292,14 +296,11 @@ public enum ArchiveType {
         protected Boolean isMultiPart(ArchiveFile archiveFile) {
             return RAR_SINGLE.isMultiPart(archiveFile);
         }
-
     },
-
     /**
      * SinglePart RAR Archive (.rar) (.rar)
      */
     RAR_SINGLE {
-
         private final Pattern pattern = Pattern.compile("(?i)(.*)\\.rar$");
 
         @Override
@@ -420,9 +421,7 @@ public enum ArchiveType {
             }
             return null;
         }
-
     },
-
     /**
      * Multipart 7Zip Archive (.7z.001, 7z.002...) 0-9999 -> max 1000 parts
      */
@@ -481,7 +480,7 @@ public enum ArchiveType {
 
         @Override
         protected int getMinimumNeededPartIndex() {
-            return 2;
+            return 1;
         }
 
         @Override
@@ -489,7 +488,6 @@ public enum ArchiveType {
             return matches[0] + ".7z." + String.format(Locale.US, "%0" + partStringLength + "d", partIndex);
         }
     },
-
     /**
      * Multipart Zip Archive (.zip, .z01...) 0-999 -> max 1000 parts
      */
@@ -575,7 +573,6 @@ public enum ArchiveType {
             }
         }
     },
-
     /**
      * Multipart Zip Archive (.zip.001, .zip.002...) 0-999 -> max 1000 parts
      */
@@ -642,7 +639,6 @@ public enum ArchiveType {
             return matches[0] + ".zip." + String.format(Locale.US, "%0" + partStringLength + "d", partIndex);
         }
     },
-
     /**
      * SinglePart 7zip Archive (.7z)
      */
@@ -707,9 +703,7 @@ public enum ArchiveType {
         protected String buildMissingPart(String[] matches, int partIndex, int partStringLength) {
             return matches[0] + ".7z";
         }
-
     },
-
     /**
      * SinglePart Zip Archive (.7z)
      */
@@ -775,7 +769,6 @@ public enum ArchiveType {
             return matches[0] + ".zip";
         }
     },
-
     /**
      * SinglePart LZH Archive (.lzh or .lha)
      */
@@ -841,7 +834,6 @@ public enum ArchiveType {
             return matches[0] + "." + matches[1];
         }
     },
-
     /**
      * SinglePart LZH Archive (.tar)
      */
@@ -907,7 +899,6 @@ public enum ArchiveType {
             return matches[0] + ".tar";
         }
     },
-
     /**
      * SinglePart ARJ Archive (.arj)
      */
@@ -1233,7 +1224,6 @@ public enum ArchiveType {
             return matches[0] + ".bz2";
         }
     },
-
     /**
      * Multipart RAR Archive Archive (.001, .002 ...) MUST BE LAST ONE!! DO NOT CHANGE ORDER 000-999 -> max 1000 parts
      */
@@ -1319,9 +1309,7 @@ public enum ArchiveType {
         protected Boolean isValidPart(int partIndex, ArchiveFile archiveFile) {
             return RAR_SINGLE.isValidPart(partIndex, archiveFile);
         }
-
     };
-
     protected String escapeRegex(String input) {
         if (input.length() == 0) {
             return "";
@@ -1334,7 +1322,7 @@ public enum ArchiveType {
      * http://www.rarlab.com/technote.htm
      */
     private static ArchiveFormat getRARArchiveFormat(final Archive archive) throws IOException {
-        if (isRAR5Supported() && archive != null && archive.getArchiveFiles() != null && archive.getArchiveFiles().size() > 0) {
+        if (Multi.isRAR5Supported() && archive != null && archive.getArchiveFiles() != null && archive.getArchiveFiles().size() > 0) {
             final ArchiveFile firstArchiveFile = archive.getArchiveFiles().get(0);
             final String signatureString = FileSignatures.readFileSignature(new File(firstArchiveFile.getFilePath()), 14);
             if (signatureString.length() >= 16 && StringUtils.startsWithCaseInsensitive(signatureString, "526172211a070100")) {
@@ -1342,14 +1330,6 @@ public enum ArchiveType {
             }
         }
         return ArchiveFormat.RAR;
-    }
-
-    public static boolean isRAR5Supported() {
-        try {
-            return ArchiveFormat.valueOf("RAR5") != null;
-        } catch (Throwable e) {
-            return false;
-        }
     }
 
     public abstract ArchiveFormat getArchiveFormat(Archive archive) throws IOException;
@@ -1382,6 +1362,24 @@ public enum ArchiveType {
 
     protected Boolean isMultiPart(final ArchiveFile archiveFile) {
         return null;
+    }
+
+    public static ArchiveFile getLastArchiveFile(final Archive archive) {
+        final ArchiveType type = archive.getArchiveType();
+        if (type != null) {
+            int index = -1;
+            ArchiveFile ret = null;
+            for (final ArchiveFile archiveFile : archive.getArchiveFiles()) {
+                final int partNum = type.getPartNumber(type.getPartNumberString(archiveFile.getFilePath()));
+                if (index == -1 || partNum > index) {
+                    index = partNum;
+                    ret = archiveFile;
+                }
+            }
+            return ret;
+        } else {
+            return null;
+        }
     }
 
     public ArchiveFile getBestArchiveFileMatch(final Archive archive, final String fileName) {
@@ -1484,9 +1482,8 @@ public enum ArchiveType {
                 }
                 if (archiveType.looksLikeAnArchive(availableParts)) {
                     final String[] fileNameParts = archiveType.getMatches(link.getName());
-                    final Archive archive = link.createArchive();
+                    final Archive archive = link.createArchive(archiveType);
                     archive.setName(fileNameParts[0]);
-                    archive.setArchiveType(archiveType);
                     final String rawID = archiveType.name() + " |" + fileNameParts[0] + archiveType.buildIDPattern(fileNameParts, isMultiPart);
                     final String ID = Hash.getSHA256(rawID);
                     final String archiveID = Archive.getBestArchiveID(foundArchiveFiles, ID);

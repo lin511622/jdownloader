@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.controlling.reconnect.pluginsinc.liveheader.recorder;
 
 import java.io.BufferedInputStream;
@@ -30,12 +29,12 @@ import javax.net.ssl.SSLSocketFactory;
 
 import jd.utils.JDHexUtils;
 
-public class Proxy extends Thread {
+import org.appwork.utils.StringUtils;
 
+public class Proxy extends Thread {
     public final static int FORWARD       = 1 << 1;
     public final static int RECORD_HEADER = 1 << 2;
     public final static int CHANGE_HEADER = 1 << 3;
-
     private Socket          socket;
     private Vector<String>  steps         = null;
     private String          serverip;
@@ -68,7 +67,6 @@ public class Proxy extends Thread {
             thread1.setHost(serverip);
             thread1.setName("Client2Router");
             thread1.start();
-
             ProxyThread thread2 = new ProxyThread(outgoing, incoming, CHANGE_HEADER, steps, ishttps, israw);
             thread2.setHost(serverip);
             thread2.setName("Router2Client");
@@ -96,14 +94,13 @@ public class Proxy extends Thread {
 }
 
 class ProxyThread extends Thread {
-
-    private Socket         incoming;
-    private Socket         outgoing;
-    private Vector<String> steps   = null;
-    private int            dowhat  = 0;
-    private boolean        ishttps = false;
-    private boolean        israw   = true;
-    private String         host    = null;
+    final private Socket         incoming;
+    final private Socket         outgoing;
+    final private Vector<String> steps;
+    private int                  dowhat = 0;
+    final private boolean        ishttps;
+    final private boolean        israw;
+    private String               host   = null;
 
     public String getHost() {
         return host;
@@ -133,25 +130,21 @@ class ProxyThread extends Thread {
     public void run() {
         byte[] minibuffer = new byte[2048];
         ByteBuffer headerbuffer = null;
-        ByteBuffer postdatabuffer = null;
-        int numberRead = 0;
+        byte[] postData = null;
         OutputStream toClient = null;
         InputStream fromClient;
         try {
             toClient = outgoing.getOutputStream();
             fromClient = incoming.getInputStream();
-
             if (dothis(Proxy.CHANGE_HEADER) || dothis(Proxy.RECORD_HEADER)) {
                 headerbuffer = Utils.readheader(fromClient);
             }
-
             if (dothis(Proxy.RECORD_HEADER)) {
                 try {
                     InputStream k = Utils.newInputStream(headerbuffer);
                     BufferedInputStream reader2 = new BufferedInputStream(k);
                     String line = null;
                     LinkedHashMap<String, String> headers = new LinkedHashMap<String, String>();
-
                     while ((line = Utils.readline(reader2)) != null && line.trim().length() > 0) {
                         String key = null;
                         String value = null;
@@ -164,36 +157,29 @@ class ProxyThread extends Thread {
                         }
                         headers.put(key, value);
                     }
-                    String postdata = null;
                     if (headers.containsKey("content-type")) {
-                        if (headers.get("content-type").compareToIgnoreCase("application/x-www-form-urlencoded") == 0) {
+                        final String contentType = headers.get("content-type");
+                        if (StringUtils.containsIgnoreCase(contentType, "x-www-form-urlencoded") || StringUtils.containsIgnoreCase(contentType, "text") || StringUtils.containsIgnoreCase(contentType, "json")) {
                             if (headers.containsKey("content-length")) {
-                                int post_len = new Integer(headers.get("content-length"));
+                                final int post_len = new Integer(headers.get("content-length"));
                                 int post_len_toread = post_len;
                                 int post_len_read = 0;
-                                byte[] cbuf = new byte[post_len];
+                                postData = new byte[post_len];
                                 int indexstart = 0;
                                 while (post_len_toread > 0) {
-
-                                    if ((post_len_read = fromClient.read(cbuf, indexstart, post_len_toread)) == -1) {
+                                    if ((post_len_read = fromClient.read(postData, indexstart, post_len_toread)) == -1) {
                                         break;
                                     }
-
                                     indexstart = indexstart + post_len_read;
                                     post_len_toread = post_len_toread - post_len_read;
                                 }
-                                postdatabuffer = ByteBuffer.wrap(cbuf);
-                                /* CHECK: we should always use new String (bytes,charset) to avoid issues with system charset and utf-8 */
-                                postdata = new String(cbuf).trim();
                             }
-
                         }
                     }
-                    Utils.createStep(headers, postdata, steps, ishttps, israw);
+                    Utils.createStep(headers, postData, steps, ishttps, israw);
                 } catch (Exception e) {
                 }
             }
-
             if (dothis(Proxy.CHANGE_HEADER) || dothis(Proxy.RECORD_HEADER)) {
                 headerbuffer.position(0);
                 renewbuffer = false;
@@ -211,13 +197,11 @@ class ProxyThread extends Thread {
                 } else {
                     headerbuffer = ByteBuffer.wrap(b);
                 }
-
                 try {
                     InputStream k = Utils.newInputStream(headerbuffer.duplicate());
                     BufferedInputStream reader2 = new BufferedInputStream(k);
                     String line = null;
                     HashMap<String, String> headers = new HashMap<String, String>();
-
                     while ((line = Utils.readline(reader2)) != null && line.trim().length() > 0) {
                         String key = null;
                         String value = null;
@@ -232,38 +216,30 @@ class ProxyThread extends Thread {
                     }
                 } catch (Exception e) {
                 }
-
-                InputStream fromClient2 = Utils.newInputStream(headerbuffer);
+                final InputStream fromClient2 = Utils.newInputStream(headerbuffer);
                 while (true) {
-                    numberRead = fromClient2.read(minibuffer, 0, 2000);
+                    final int numberRead = fromClient2.read(minibuffer);
                     if (numberRead == -1) {
                         break;
-                    }
-                    toClient.write(minibuffer, 0, numberRead);
-                }
-                if (postdatabuffer != null) {
-                    fromClient2 = Utils.newInputStream(postdatabuffer);
-                    while (true) {
-                        numberRead = fromClient2.read(minibuffer, 0, 2000);
-                        if (numberRead == -1) {
-                            break;
-                        }
+                    } else {
                         toClient.write(minibuffer, 0, numberRead);
                     }
                 }
+                if (postData != null) {
+                    toClient.write(postData);
+                }
             }
-
             try {
                 while (true) {
-                    numberRead = fromClient.read(minibuffer, 0, 2000);
+                    final int numberRead = fromClient.read(minibuffer);
                     if (numberRead == -1) {
                         break;
+                    } else {
+                        toClient.write(minibuffer, 0, numberRead);
                     }
-                    toClient.write(minibuffer, 0, numberRead);
                 }
             } catch (Exception e) {
             }
-
         } catch (Exception e) {
         }
     }

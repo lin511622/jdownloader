@@ -19,21 +19,27 @@ import org.jdownloader.plugins.config.PluginJsonConfig;
 import org.jdownloader.translate._JDT;
 
 public class AudioVariant extends AbstractVariant<GenericAudioInfo> implements AudioInterface {
-
     public AudioVariant(VariantBase base) {
         super(base);
-
     }
 
     @Override
     public void setJson(String jsonString) {
         setGenericInfo(JSonStorage.restoreFromString(jsonString, new TypeRef<GenericAudioInfo>() {
-
         }));
     }
 
     @Override
     protected void fill(YoutubeClipData vid, List<YoutubeStreamData> audio, List<YoutubeStreamData> video, List<YoutubeStreamData> data) {
+        if (audio != null && vid != null) {
+            for (final YoutubeStreamData a : audio) {
+                if (a.getBitrate() > 0 && vid.duration > 0 && a.getContentLength() > 0) {
+                    final long abr = (8 * a.getContentLength()) / (1024l * vid.duration / 1000);
+                    getGenericInfo().setaBitrate((int) abr);
+                    break;
+                }
+            }
+        }
     }
 
     private static final Icon AUDIO = new AbstractIcon(IconKey.ICON_AUDIO, 16);
@@ -45,15 +51,12 @@ public class AudioVariant extends AbstractVariant<GenericAudioInfo> implements A
 
     @Override
     public String getFileNameQualityTag() {
-
         return getAudioBitrate().getKbit() + "kbits " + getAudioCodec().getLabel();
-
     }
 
     @Override
     public String _getName(Object caller) {
         String id = TYPE_ID_PATTERN;
-
         id = id.replace("*CONTAINER*", getContainer().getLabel().toUpperCase(Locale.ENGLISH) + "");
         id = id.replace("*AUDIO_CODEC*", getAudioCodec().getLabel() + "");
         id = id.replace("*AUDIO_BITRATE*", getAudioBitrate().getKbit() + "");
@@ -61,15 +64,14 @@ public class AudioVariant extends AbstractVariant<GenericAudioInfo> implements A
         switch (getiTagAudioOrVideoItagEquivalent().getAudioCodec()) {
         case AAC_SPATIAL:
         case VORBIS_SPATIAL:
+        case OPUS_SPATIAL:
             id = id.replace("*SPATIAL*", _JDT.T.YOUTUBE_surround());
             break;
         default:
             id = id.replace("*SPATIAL*", "");
         }
-
         id = id.replace(" - ", "-").trim().replaceAll("[ ]+", " ");
         return id;
-
     }
 
     @Override
@@ -79,10 +81,12 @@ public class AudioVariant extends AbstractVariant<GenericAudioInfo> implements A
 
     @Override
     public AudioBitrate getAudioBitrate() {
-        if (getGenericInfo().getaBitrate() > 0) {
-            return AudioBitrate.getByInt(getGenericInfo().getaBitrate());
+        final int bitRate = getGenericInfo().getaBitrate();
+        if (bitRate > 0) {
+            return AudioBitrate.getByInt(bitRate);
+        } else {
+            return getiTagAudioOrVideoItagEquivalent().getAudioBitrate();
         }
-        return getiTagAudioOrVideoItagEquivalent().getAudioBitrate();
     }
 
     @Override
@@ -94,7 +98,6 @@ public class AudioVariant extends AbstractVariant<GenericAudioInfo> implements A
 
     public String getTypeId() {
         String id = TYPE_ID_PATTERN;
-
         id = id.replace("*CONTAINER*", getContainer().name() + "");
         id = id.replace("*AUDIO_CODEC*", getAudioCodec() + "");
         id = id.replace("*AUDIO_BITRATE*", getAudioBitrate().getKbit() + "");
@@ -102,6 +105,7 @@ public class AudioVariant extends AbstractVariant<GenericAudioInfo> implements A
         switch (getiTagAudioOrVideoItagEquivalent().getAudioCodec()) {
         case AAC_SPATIAL:
         case VORBIS_SPATIAL:
+        case OPUS_SPATIAL:
             id = id.replace("*SURROUND*", "Spatial");
             break;
         default:
@@ -109,31 +113,5 @@ public class AudioVariant extends AbstractVariant<GenericAudioInfo> implements A
         }
         id = id.trim().replaceAll("\\s+", "_").toUpperCase(Locale.ENGLISH);
         return id;
-
     }
-
-    // @Override
-    // public String getTypeId() {
-    // StringBuilder sb = new StringBuilder();
-    //
-    // if (getiTagVideo() != null) {
-    // sb.append(getFileExtension().toUpperCase(Locale.ENGLISH));
-    // if (sb.length() > 0) {
-    // sb.append("_");
-    // }
-    // sb.append(getiTagVideo().getAudioBitrate().getKbit()).append("KBIT");
-    //
-    // } else {
-    // if (getBaseVariant().getiTagAudio() != null) {
-    // sb.append(getFileExtension().toUpperCase(Locale.ENGLISH));
-    // if (sb.length() > 0) {
-    // sb.append("_");
-    // }
-    // sb.append(getBaseVariant().getiTagAudio().getAudioBitrate().getKbit()).append("KBIT");
-    // }
-    // }
-    // return sb.toString();
-    //
-    // }
-
 }

@@ -37,6 +37,7 @@ import org.jdownloader.gui.views.SelectionInfo;
 import org.jdownloader.gui.views.SelectionInfo.PackageView;
 import org.jdownloader.gui.views.components.packagetable.PackageControllerTableModelData.PackageControllerTableModelDataPackage;
 import org.jdownloader.logging.LogController;
+import org.jdownloader.settings.staticreferences.CFG_GENERAL;
 import org.jdownloader.settings.staticreferences.CFG_GUI;
 
 public abstract class PackageControllerTableModel<PackageType extends AbstractPackageNode<ChildrenType, PackageType>, ChildrenType extends AbstractPackageChildrenNode<PackageType>> extends ExtTableModel<AbstractNode> {
@@ -134,7 +135,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                                 continue;
                             }
                         }
-
                         if (oldPackageData == null || !oldPackageData.getPackage().getUniqueID().equals(previousParentNodeID)) {
                             oldPackageData = null;
                             for (final PackageControllerTableModelDataPackage dataPackage : oldTableModelData.getModelDataPackages()) {
@@ -170,7 +170,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                         }
                     }
                 }
-
                 lastOldRowIndex = Math.max(0, lastOldRowIndex - 1);
                 if (lastOldRowIndex >= 0) {
                     return new int[] { Math.min(lastOldRowIndex, getRowCount() - 1) };
@@ -193,7 +192,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
     }
 
     public abstract class TableDataModification {
-
         protected abstract void modifyPackageData(PackageType pkg, List<ChildrenType> unfilteredChildren);
 
         protected PackageControllerTableModelCustomizer finalizeTableModification() {
@@ -217,29 +215,20 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
     }
 
     private static final String                                                 SORT_ORIGINAL                   = "ORIGINAL";
-
     private final DelayedRunnable                                               asyncRefresh;
     protected final PackageController<PackageType, ChildrenType>                pc;
     private final DelayedRunnable                                               asyncRecreate;
-
     private CopyOnWriteArrayList<TableDataModification>                         tableModifiers                  = new CopyOnWriteArrayList<TableDataModification>();
-
     private ScheduledExecutorService                                            queue                           = DelayedRunnable.getNewScheduledExecutorService();
-
     private final DelayedRunnable                                               asyncRecreateFast;
-
     private final Storage                                                       storage;
-
     private final AtomicLong                                                    repaintFiredCounter             = new AtomicLong(0);
     private final AtomicLong                                                    structureChangedCounter         = new AtomicLong(0);
     private final AtomicLong                                                    repaintRequested                = new AtomicLong(0);
     private final AtomicLong                                                    structureChangeRequested        = new AtomicLong(0);
     private final AtomicLong                                                    structureChangeProcessed        = new AtomicLong(0);
-
     private volatile boolean                                                    hideSinglePackage               = false;
-
     private volatile PackageControllerTableModelData<PackageType, ChildrenType> packageControllertableModelData = new PackageControllerTableModelData<PackageType, ChildrenType>();
-
     private boolean                                                             scrollPositionRestoreDone;
 
     public boolean isHideSinglePackage() {
@@ -251,20 +240,29 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
         storage = getStorage();
         resetSorting();
         CFG_GUI.HIDE_SINGLE_CHILD_PACKAGES.getEventSender().addListener(new GenericConfigEventListener<Boolean>() {
-
             @Override
             public void onConfigValueModified(KeyHandler<Boolean> keyHandler, Boolean newValue) {
                 hideSinglePackage = Boolean.TRUE.equals(newValue);
+                recreateModel(true);
             }
 
             @Override
             public void onConfigValidatorError(KeyHandler<Boolean> keyHandler, Boolean invalidValue, ValidationException validateException) {
             }
         }, false);
+        CFG_GENERAL.URL_ORDER.getEventSender().addListener(new GenericConfigEventListener<Object>() {
+            @Override
+            public void onConfigValueModified(KeyHandler<Object> keyHandler, Object newValue) {
+                recreateModel(true);
+            }
+
+            @Override
+            public void onConfigValidatorError(KeyHandler<Object> keyHandler, Object invalidValue, ValidationException validateException) {
+            }
+        }, true);
         hideSinglePackage = CFG_GUI.HIDE_SINGLE_CHILD_PACKAGES.isEnabled();
         this.pc = pc;
         asyncRefresh = new DelayedRunnable(queue, 150l, 500l) {
-
             @Override
             public String getID() {
                 return "PackageControllerTableModel_Refresh" + pc.getClass().getName();
@@ -276,7 +274,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
             }
         };
         asyncRecreate = new DelayedRunnable(queue, 50l, 1000l) {
-
             @Override
             public String getID() {
                 return "PackageControllerTableModel_Recreate" + pc.getClass().getName();
@@ -287,9 +284,7 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                 fireStructureChange();
             }
         };
-
         asyncRecreateFast = new DelayedRunnable(queue, 10l, 50l) {
-
             @Override
             public String getID() {
                 return "PackageControllerTableModel_RecreateFast" + pc.getClass().getName();
@@ -412,7 +407,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
         switch (mode) {
         case CURRENT:
             tableModifiers.add(new TableDataModification() {
-
                 @Override
                 protected void modifyPackageData(PackageType pkg, List<ChildrenType> unfilteredChildren) {
                     if (fp2 == pkg) {
@@ -421,7 +415,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                         }
                     }
                 }
-
             });
             break;
         default:
@@ -449,12 +442,10 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                             }
                         }
                     }
-
                 });
             } else {
                 tableModifiers.add(new TableDataModification() {
                     boolean doToggle = false;
-
                     {
                         switch (mode) {
                         case TOP:
@@ -464,7 +455,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                             doToggle = false;
                             break;
                         }
-
                     }
 
                     @Override
@@ -485,7 +475,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                             }
                         }
                     }
-
                 });
             }
             break;
@@ -495,7 +484,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
 
     public void setFilePackageExpand(final boolean expanded, final AbstractPackageNode... fp2) {
         tableModifiers.add(new TableDataModification() {
-
             @Override
             protected void modifyPackageData(PackageType pkg, List<ChildrenType> unfilteredChildren) {
                 for (AbstractPackageNode fp : fp2) {
@@ -504,22 +492,20 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                     }
                 }
             }
-
         });
         recreateModel(false);
     }
 
     private final Comparator<PackageControllerTableModelFilter<PackageType, ChildrenType>> tableFilterComparator = new Comparator<PackageControllerTableModelFilter<PackageType, ChildrenType>>() {
+                                                                                                                     public int compare(int x, int y) {
+                                                                                                                         return (x < y) ? -1 : ((x == y) ? 0 : 1);
+                                                                                                                     }
 
-        public int compare(int x, int y) {
-            return (x < y) ? -1 : ((x == y) ? 0 : 1);
-        }
-
-        @Override
-        public int compare(PackageControllerTableModelFilter<PackageType, ChildrenType> o1, PackageControllerTableModelFilter<PackageType, ChildrenType> o2) {
-            return compare(o1.getComplexity(), o2.getComplexity());
-        }
-    };
+                                                                                                                     @Override
+                                                                                                                     public int compare(PackageControllerTableModelFilter<PackageType, ChildrenType> o1, PackageControllerTableModelFilter<PackageType, ChildrenType> o2) {
+                                                                                                                         return compare(o1.getComplexity(), o2.getComplexity());
+                                                                                                                     }
+                                                                                                                 };
 
     public boolean isFilteredView() {
         return getTableData().isFiltered();
@@ -585,7 +571,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
             this.packageFilters = packageFilters;
             this.childrenFilters = childrenFilters;
         }
-
     }
 
     protected CompiledFilterList compileTableFilters(Collection<PackageControllerTableModelFilter<PackageType, ChildrenType>> filters) {
@@ -636,8 +621,8 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
      * we override sort to have a better sorting of packages/files, to keep their structure alive,data is only used to specify the size of
      * the new ArrayList
      */
-     @Override
-     public java.util.List<AbstractNode> sort(final java.util.List<AbstractNode> data, ExtColumn<AbstractNode> column) {
+    @Override
+    public java.util.List<AbstractNode> sort(final java.util.List<AbstractNode> data, ExtColumn<AbstractNode> column) {
         final boolean hideSingleChildPackages = isHideSinglePackage();
         if (column == null || column.getSortOrderIdentifier() == SORT_ORIGINAL) {
             /* RESET sorting to nothing,tri-state */
@@ -664,7 +649,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
             /* filter packages */
             packages = new ArrayList<PackageType>();
             pc.visitNodes(new AbstractNodeVisitor<ChildrenType, PackageType>() {
-
                 @Override
                 public Boolean visitPackageNode(PackageType pkg) {
                     for (final PackageControllerTableModelFilter<PackageType, ChildrenType> filter : tableFiltersCompiled.getPackageFilters()) {
@@ -752,7 +736,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                 final PackageControllerTableModelDataPackage modelDataPackage;
                 if (filteredChildren.size() == 0) {
                     modelDataPackage = new PackageControllerTableModelDataPackage() {
-
                         @Override
                         public boolean isExpanded() {
                             return true;
@@ -776,15 +759,13 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                         @Override
                         public int getPackageIndex() {
                             return packageNodeIndex;
-                        };
-
+                        }
                     };
                 } else {
                     final int filteredIndex = newData.getFilteredChildren().size();
                     final int filteredSize = filteredChildren.size();
                     newData.getFilteredChildren().addAll(filteredChildren);
                     modelDataPackage = new PackageControllerTableModelDataPackage() {
-
                         @Override
                         public boolean isExpanded() {
                             return true;
@@ -809,7 +790,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                         public int getPackageIndex() {
                             return packageNodeIndex;
                         };
-
                     };
                 }
                 newData.add(modelDataPackage);
@@ -835,7 +815,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                     final int visibleSize = visibleChildren.size();
                     if (filteredChildren.size() == 0) {
                         modelDataPackage = new PackageControllerTableModelDataPackage() {
-
                             @Override
                             public boolean isExpanded() {
                                 return true;
@@ -860,14 +839,12 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                             public int getPackageIndex() {
                                 return packageNodeIndex;
                             };
-
                         };
                     } else {
                         final int filteredIndex = newData.getFilteredChildren().size();
                         final int filteredSize = filteredChildren.size();
                         newData.getFilteredChildren().addAll(filteredChildren);
                         modelDataPackage = new PackageControllerTableModelDataPackage() {
-
                             @Override
                             public boolean isExpanded() {
                                 return true;
@@ -892,7 +869,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                             public int getPackageIndex() {
                                 return packageNodeIndex;
                             };
-
                         };
                     }
                 } else {
@@ -901,7 +877,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                     newData.getHiddenChildren().addAll(visibleChildren);
                     if (filteredChildren.size() == 0) {
                         modelDataPackage = new PackageControllerTableModelDataPackage() {
-
                             @Override
                             public boolean isExpanded() {
                                 return false;
@@ -926,14 +901,12 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                             public int getPackageIndex() {
                                 return packageNodeIndex;
                             };
-
                         };
                     } else {
                         final int filteredIndex = newData.getFilteredChildren().size();
                         final int filteredSize = filteredChildren.size();
                         newData.getFilteredChildren().addAll(filteredChildren);
                         modelDataPackage = new PackageControllerTableModelDataPackage() {
-
                             @Override
                             public boolean isExpanded() {
                                 return false;
@@ -958,7 +931,6 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
                             public int getPackageIndex() {
                                 return packageNodeIndex;
                             };
-
                         };
                     }
                 }
@@ -978,126 +950,115 @@ public abstract class PackageControllerTableModel<PackageType extends AbstractPa
         newData.setChildrenFilters(tableFiltersCompiled.getChildrenFilters());
         newData.setTableModelCustomizer(tableDataCustomizer);
         return newData;
-     }
+    }
 
-     @Override
-     protected boolean postSetTableData(List<AbstractNode> newtableData) {
-         boolean ret = true;
-         if (!(newtableData instanceof PackageControllerTableModelData)) {
-             throw new IllegalArgumentException("data must be instanceof PackageControllerTableModelData");
-         } else {
-             PackageControllerTableModelData<?, ?> data = (PackageControllerTableModelData<?, ?>) newtableData;
-             try {
-                 if (data.getTableModelCustomizer() != null) {
-                     for (PackageControllerTableModelCustomizer customizer : data.getTableModelCustomizer()) {
-                         ret = customizer.customizedTableData();
-                     }
-                 }
-             } finally {
-                 data.setTableModelCustomizer(null);
-             }
-         }
-         ret = ret && super.postSetTableData(newtableData);
+    @Override
+    protected boolean postSetTableData(List<AbstractNode> newtableData) {
+        boolean ret = true;
+        if (!(newtableData instanceof PackageControllerTableModelData)) {
+            throw new IllegalArgumentException("data must be instanceof PackageControllerTableModelData");
+        } else {
+            PackageControllerTableModelData<?, ?> data = (PackageControllerTableModelData<?, ?>) newtableData;
+            try {
+                if (data.getTableModelCustomizer() != null) {
+                    for (PackageControllerTableModelCustomizer customizer : data.getTableModelCustomizer()) {
+                        ret = customizer.customizedTableData();
+                    }
+                }
+            } finally {
+                data.setTableModelCustomizer(null);
+            }
+        }
+        ret = ret && super.postSetTableData(newtableData);
+        if (!scrollPositionRestoreDone && newtableData.size() > 0) {
+            scrollPositionRestoreDone = true;
+            int[] rows = getScrollPositionFromConfig();
+            if (rows != null && rows.length == 2) {
+                getTable().scrollToRow(rows[0], rows[1]);
+            }
+        }
+        return ret;
+    }
 
-         if (!scrollPositionRestoreDone && newtableData.size() > 0) {
-             scrollPositionRestoreDone = true;
-             int[] rows = getScrollPositionFromConfig();
-             if (rows != null && rows.length == 2) {
-                 getTable().scrollToRow(rows[0], rows[1]);
+    /**
+     * @return
+     */
+    protected abstract int[] getScrollPositionFromConfig();
 
-             }
-         }
-         return ret;
+    @Override
+    protected void setTableData(List<AbstractNode> data) {
+        if (!(data instanceof PackageControllerTableModelData)) {
+            throw new IllegalArgumentException("data must be instanceof PackageControllerTableModelData");
+        } else {
+            packageControllertableModelData = (PackageControllerTableModelData<PackageType, ChildrenType>) data;
+            boolean vs = false;
+            for (final AbstractNode node : data) {
+                if (node instanceof AbstractPackageChildrenNode) {
+                    if (((AbstractPackageChildrenNode) node).hasVariantSupport()) {
+                        vs = true;
+                        break;
+                    }
+                }
+            }
+            setVariantsSupport(vs);
+        }
+    }
 
-     }
+    protected void setVariantsSupport(boolean vs) {
+    }
 
-     /**
-      * @return
-      */
-     protected abstract int[] getScrollPositionFromConfig();
+    protected ExtColumn<AbstractNode> getDefaultSortColumn() {
+        return null;
+    }
 
-     @Override
-     protected void setTableData(List<AbstractNode> data) {
-         if (!(data instanceof PackageControllerTableModelData)) {
-             throw new IllegalArgumentException("data must be instanceof PackageControllerTableModelData");
-         } else {
-             packageControllertableModelData = (PackageControllerTableModelData<PackageType, ChildrenType>) data;
-             boolean vs = false;
-             for (final AbstractNode node : data) {
-                 if (node instanceof AbstractPackageChildrenNode) {
-                     if (((AbstractPackageChildrenNode) node).hasVariantSupport()) {
-                         vs = true;
-                         break;
-                     }
-                 }
-             }
-             setVariantsSupport(vs);
-         }
-     }
+    protected boolean isSortStateSaverEnabled() {
+        return false;
+    }
 
-     protected void setVariantsSupport(boolean vs) {
-     }
+    @Override
+    public String getNextSortIdentifier(String sortOrderIdentifier) {
+        if (sortOrderIdentifier == null) {
+            if (CFG_GUI.CFG.isPrimaryTableSorterDesc()) {
+                sortOrderIdentifier = ExtColumn.SORT_ASC;
+            } else {
+                sortOrderIdentifier = ExtColumn.SORT_DESC;
+            }
+        }
+        if (!isTristateSorterEnabled()) {
+            if (sortOrderIdentifier.equals(ExtColumn.SORT_ASC)) {
+                return ExtColumn.SORT_DESC;
+            } else {
+                return ExtColumn.SORT_ASC;
+            }
+        } else {
+            if (CFG_GUI.CFG.isPrimaryTableSorterDesc()) {
+                if (sortOrderIdentifier.equals(SORT_ORIGINAL)) {
+                    return ExtColumn.SORT_DESC;
+                } else if (sortOrderIdentifier.equals(ExtColumn.SORT_DESC)) {
+                    return ExtColumn.SORT_ASC;
+                } else {
+                    return SORT_ORIGINAL;
+                }
+            } else {
+                if (sortOrderIdentifier.equals(SORT_ORIGINAL)) {
+                    return ExtColumn.SORT_ASC;
+                } else if (sortOrderIdentifier.equals(ExtColumn.SORT_ASC)) {
+                    return ExtColumn.SORT_DESC;
+                } else {
+                    return SORT_ORIGINAL;
+                }
+            }
+        }
+    }
 
-     protected ExtColumn<AbstractNode> getDefaultSortColumn() {
-         return null;
-     }
+    public Icon getSortIcon(String sortOrderIdentifier) {
+        if (SORT_ORIGINAL.equals(sortOrderIdentifier)) {
+            return null;
+        }
+        return super.getSortIcon(sortOrderIdentifier);
+    }
 
-     protected boolean isSortStateSaverEnabled() {
-         return false;
-     }
-
-     @Override
-     public String getNextSortIdentifier(String sortOrderIdentifier) {
-         if (sortOrderIdentifier == null) {
-
-             if (CFG_GUI.CFG.isPrimaryTableSorterDesc()) {
-                 sortOrderIdentifier = ExtColumn.SORT_ASC;
-             } else {
-                 sortOrderIdentifier = ExtColumn.SORT_DESC;
-             }
-
-         }
-         if (!isTristateSorterEnabled()) {
-             if (sortOrderIdentifier.equals(ExtColumn.SORT_ASC)) {
-                 return ExtColumn.SORT_DESC;
-             } else {
-                 return ExtColumn.SORT_ASC;
-             }
-         } else {
-
-             if (CFG_GUI.CFG.isPrimaryTableSorterDesc()) {
-
-                 if (sortOrderIdentifier.equals(SORT_ORIGINAL)) {
-                     return ExtColumn.SORT_DESC;
-
-                 } else if (sortOrderIdentifier.equals(ExtColumn.SORT_DESC)) {
-                     return ExtColumn.SORT_ASC;
-                 } else {
-                     return SORT_ORIGINAL;
-                 }
-             } else {
-
-                 if (sortOrderIdentifier.equals(SORT_ORIGINAL)) {
-                     return ExtColumn.SORT_ASC;
-
-                 } else if (sortOrderIdentifier.equals(ExtColumn.SORT_ASC)) {
-                     return ExtColumn.SORT_DESC;
-                 } else {
-                     return SORT_ORIGINAL;
-                 }
-             }
-
-         }
-     }
-
-     public Icon getSortIcon(String sortOrderIdentifier) {
-         if (SORT_ORIGINAL.equals(sortOrderIdentifier)) {
-             return null;
-         }
-         return super.getSortIcon(sortOrderIdentifier);
-     }
-
-     public long getTableDataVersion() {
-         return getTableData().getVersion();
-     }
+    public long getTableDataVersion() {
+        return getTableData().getVersion();
+    }
 }

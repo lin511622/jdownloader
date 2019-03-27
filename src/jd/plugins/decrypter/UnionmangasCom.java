@@ -13,10 +13,11 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
+
+import org.jdownloader.plugins.components.antiDDoSForDecrypt;
 
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
@@ -26,47 +27,59 @@ import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
-import jd.plugins.PluginForDecrypt;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "unionmangas.com" }, urls = { "https?://(?:www\\.)?unionmangas\\.(com|net)/leitor/[^/]+/\\d+([\\.,]\\d+)?" }) 
-public class UnionmangasCom extends PluginForDecrypt {
-
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "unionmangas.com" }, urls = { "https?://(?:www\\.)?unionmangas\\.(?:com|net|cc|site|top)/(?:leitor/[^/]+/[a-z0-9\\.]+[^/\\s]*|manga/[a-z0-9\\-\\.]+)" })
+public class UnionmangasCom extends antiDDoSForDecrypt {
     public UnionmangasCom(PluginWrapper wrapper) {
         super(wrapper);
     }
 
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
-        ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
+        final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         final String parameter = param.toString();
-        this.br.setFollowRedirects(true);
-        br.getPage(parameter);
-        if (br.getHttpConnection().getResponseCode() == 404 || !this.br.getURL().contains("/leitor/")) {
-            decryptedLinks.add(this.createOfflinelink(parameter));
-            return decryptedLinks;
+        br.setFollowRedirects(true);
+        getPage(parameter);
+        final String url_fpname;
+        final String url_name;
+        if (parameter.matches(".+/leitor/.+")) {
+            /* Decrypt single chapter */
+            if (br.getHttpConnection().getResponseCode() == 404 || !br.getURL().contains("/leitor/")) {
+                decryptedLinks.add(this.createOfflinelink(parameter));
+                return decryptedLinks;
+            }
+            final Regex urlinfo = new Regex(parameter, "unionmangas\\.[a-z0-9]+/leitor/([^/]+)/([a-z0-9\\-\\.]+)");
+            final String chapter_str = urlinfo.getMatch(1);
+            url_name = urlinfo.getMatch(0);
+            url_fpname = Encoding.urlDecode(url_name + "_chapter_" + chapter_str, false);
+            String[] links = br.getRegex("data\\-lazy=\"(http[^<>\"]+)\"").getColumn(0);
+            if (links == null || links.length == 0) {
+                links = br.getRegex("<img\\s*src=\"(.*?\\.(jpe?g|png|gif))\"").getColumn(0);
+            }
+            if (links == null) {
+                logger.warning("Decrypter broken for link: " + parameter);
+                return null;
+            }
+            for (String url : links) {
+                url = br.getURL(url).toString();
+                final DownloadLink dl = this.createDownloadlink("directhttp://" + Encoding.urlEncode_light(url), false);
+                dl.setAvailable(true);
+                decryptedLinks.add(dl);
+            }
+        } else {
+            url_name = new Regex(parameter, "/([^/]+)$").getMatch(0);
+            url_fpname = url_name;
+            if (br.getHttpConnection().getResponseCode() == 404 || !br.getURL().contains("/manga/")) {
+                decryptedLinks.add(this.createOfflinelink(parameter));
+                return decryptedLinks;
+            }
+            final String[] chapterUrls = br.getRegex("\"(https?://unionmangas\\.[a-z0-9]+/leitor/[^\"\\']+)\"").getColumn(0);
+            for (final String chapterUrl : chapterUrls) {
+                decryptedLinks.add(this.createDownloadlink(chapterUrl));
+            }
         }
-        final Regex urlinfo = new Regex(parameter, "unionmangas\\.(?:com|net)/leitor/([^/]+)/(\\d+([\\.,]\\d+)?)");
-        final String chapter_str = urlinfo.getMatch(1);
-        final String url_name = urlinfo.getMatch(0);
-        final String url_fpname = url_name + "_chapter_" + chapter_str;
-
-        final String[] links = this.br.getRegex("data\\-lazy=\"(http[^<>\"]+)\"").getColumn(0);
-
-        if (links == null) {
-            logger.warning("Decrypter broken for link: " + parameter);
-            return null;
-        }
-
-        for (final String url : links) {
-            final DownloadLink dl = this.createDownloadlink("directhttp://" + Encoding.urlEncode_light(url), false);
-            dl.setAvailable(true);
-            decryptedLinks.add(dl);
-        }
-
         final FilePackage fp = FilePackage.getInstance();
         fp.setName(url_fpname);
         fp.addLinks(decryptedLinks);
-
         return decryptedLinks;
     }
-
 }

@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
@@ -22,14 +21,14 @@ import jd.PluginWrapper;
 import jd.controlling.ProgressController;
 import jd.parser.html.HTMLParser;
 import jd.plugins.CryptedLink;
+import jd.plugins.DecrypterException;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
 import jd.plugins.PluginForDecrypt;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "ultrastar-base.com" }, urls = { "http://(www\\.)?ultrastar-(warez|base)\\.com/index\\.php\\?section=download\\&cat=\\d+\\&id=\\d+" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "ultrastar-base.com" }, urls = { "http://(www\\.)?ultrastar-(warez|base)\\.com/index\\.php\\?section=download\\&cat=\\d+\\&id=\\d+" })
 public class LtrstrWzCom extends PluginForDecrypt {
-
     public LtrstrWzCom(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -42,19 +41,27 @@ public class LtrstrWzCom extends PluginForDecrypt {
             logger.info("Link offline: " + parameter);
             return decryptedLinks;
         }
-        String fpName = br.getRegex("<span class=\"title\">(.*?)</span>").getMatch(0);
-        final String mirrors[] = br.getRegex("<b>Download (\\d+)?:</b></td>[\t\r\n ]+<td colspan=\"4\" align=\"left\">(.*?)</td>").getColumn(1);
-        if (mirrors == null || mirrors.length == 0) return null;
+        final String mirrors[] = br.getRegex("<b>Download\\(s\\) (\\d+)?:</b></td>[\t\r\n ]+<td colspan=\"4\" align=\"left\">(.*?)</td>").getColumn(1);
+        if (mirrors == null || mirrors.length == 0) {
+            throw new DecrypterException("Decrypter broken for link: " + parameter);
+        }
         for (String mirror : mirrors) {
             final String[] links = HTMLParser.getHttpLinks(mirror, "");
-            if (links == null || links.length == 0) continue;
-            for (String dl : links)
+            if (links == null || links.length == 0) {
+                continue;
+            }
+            for (String dl : links) {
                 decryptedLinks.add(createDownloadlink(dl));
+            }
+        }
+        if (decryptedLinks.size() == 0 && !br.containsHTML("target=\"_blank\">\\[")) {
+            decryptedLinks.add(createOfflinelink(parameter));
+            return decryptedLinks;
         }
         if (decryptedLinks.size() == 0) {
-            logger.warning("Decrypter broken for link: " + parameter);
-            return null;
+            throw new DecrypterException("Decrypter broken for link: " + parameter);
         }
+        String fpName = br.getRegex("<span class=\"title\">(?:<center><p class=\"heading_download\">)?(.*?)(</center></p>)?</span>").getMatch(0);
         if (fpName != null) {
             FilePackage fp = FilePackage.getInstance();
             fp.setName(fpName.trim());
@@ -67,5 +74,4 @@ public class LtrstrWzCom extends PluginForDecrypt {
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

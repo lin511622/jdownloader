@@ -7,23 +7,6 @@ import java.util.Map;
 
 import javax.swing.Icon;
 
-import org.appwork.storage.config.JsonConfig;
-import org.appwork.swing.components.tooltips.ExtTooltip;
-import org.appwork.utils.Application;
-import org.appwork.utils.os.CrossSystem;
-import org.jdownloader.DomainInfo;
-import org.jdownloader.actions.AppAction;
-import org.jdownloader.captcha.v2.ChallengeSolverConfig;
-import org.jdownloader.captcha.v2.solver.dbc.DeathByCaptchaSolverService;
-import org.jdownloader.captcha.v2.solver.jac.JacSolverService;
-import org.jdownloader.captcha.v2.solver.service.AbstractSolverService;
-import org.jdownloader.gui.IconKey;
-import org.jdownloader.gui.translate._GUI;
-import org.jdownloader.images.AbstractIcon;
-import org.jdownloader.images.NewTheme;
-import org.jdownloader.settings.advanced.AdvancedConfigManager;
-import org.jdownloader.settings.staticreferences.CFG_IMAGE_TYPERZ;
-
 import jd.gui.swing.jdgui.components.premiumbar.ServiceCollection;
 import jd.gui.swing.jdgui.components.premiumbar.ServicePanel;
 import jd.gui.swing.jdgui.components.premiumbar.ServicePanelExtender;
@@ -33,15 +16,31 @@ import jd.gui.swing.jdgui.views.settings.components.SettingsButton;
 import jd.gui.swing.jdgui.views.settings.components.TextInput;
 import jd.gui.swing.jdgui.views.settings.panels.anticaptcha.AbstractCaptchaSolverConfigPanel;
 
+import org.appwork.storage.config.JsonConfig;
+import org.appwork.swing.components.tooltips.ExtTooltip;
+import org.appwork.utils.Application;
+import org.appwork.utils.os.CrossSystem;
+import org.jdownloader.DomainInfo;
+import org.jdownloader.actions.AppAction;
+import org.jdownloader.captcha.v2.ChallengeSolverConfig;
+import org.jdownloader.captcha.v2.solver.jac.JacSolverService;
+import org.jdownloader.captcha.v2.solver.service.AbstractSolverService;
+import org.jdownloader.captcha.v2.solver.solver9kw.NineKwSolverService;
+import org.jdownloader.captcha.v2.solver.twocaptcha.TwoCaptchaSolverService;
+import org.jdownloader.gui.IconKey;
+import org.jdownloader.gui.translate._GUI;
+import org.jdownloader.images.AbstractIcon;
+import org.jdownloader.images.NewTheme;
+import org.jdownloader.settings.advanced.AdvancedConfigManager;
+import org.jdownloader.settings.staticreferences.CFG_IMAGE_TYPERZ;
+
 public class ImageTyperzSolverService extends AbstractSolverService implements ServicePanelExtender {
     private ImageTyperzConfigInterface config;
     private ImageTyperzCaptchaSolver   solver;
 
     public ImageTyperzSolverService() {
         config = JsonConfig.create(ImageTyperzConfigInterface.class);
-
         AdvancedConfigManager.getInstance().register(config);
-
         if (!Application.isHeadless()) {
             ServicePanel.getInstance().addExtender(this);
             initServicePanel(CFG_IMAGE_TYPERZ.USER_NAME, CFG_IMAGE_TYPERZ.PASSWORD, CFG_IMAGE_TYPERZ.ENABLED);
@@ -62,7 +61,6 @@ public class ImageTyperzSolverService extends AbstractSolverService implements S
     public AbstractCaptchaSolverConfigPanel getConfigPanel() {
         AbstractCaptchaSolverConfigPanel ret = new AbstractCaptchaSolverConfigPanel() {
             private TextInput     username;
-
             private PasswordInput password;
 
             @Override
@@ -73,38 +71,30 @@ public class ImageTyperzSolverService extends AbstractSolverService implements S
             {
                 addHeader(getTitle(), new AbstractIcon(IconKey.ICON_LOGO_IMAGE_TYPERZ, 32));
                 addDescription(_GUI.T.AntiCaptchaConfigPanel_onShow_description_paid_service());
-
                 add(new SettingsButton(new AppAction() {
                     {
                         setName(_GUI.T.lit_open_website());
-
                     }
 
                     @Override
                     public void actionPerformed(ActionEvent e) {
                         CrossSystem.openURL("http://www.ImageTyperz.com/");
-
                     }
                 }), "gapleft 37,spanx,pushx,growx");
                 username = new TextInput(CFG_IMAGE_TYPERZ.USER_NAME);
                 password = new PasswordInput(CFG_IMAGE_TYPERZ.PASSWORD);
-
                 this.addHeader(_GUI.T.MyJDownloaderSettingsPanel_MyJDownloaderSettingsPanel_logins_(), NewTheme.I().getIcon(IconKey.ICON_LOGINS, 32));
                 // addPair(_GUI.T.MyJDownloaderSettingsPanel_MyJDownloaderSettingsPanel_enabled(), null, checkBox);
                 this.addDescriptionPlain(_GUI.T.captchasolver_configpanel_my_account_description(ImageTyperzSolverService.this.getName()));
                 addPair(_GUI.T.captchasolver_configpanel_enabled(ImageTyperzSolverService.this.getName()), null, new Checkbox(CFG_IMAGE_TYPERZ.ENABLED, username, password));
                 addPair(_GUI.T.captchabrotherhoodService_createPanel_username(), null, username);
                 addPair(_GUI.T.captchabrotherhoodService_createPanel_password(), null, password);
-
                 addPair(_GUI.T.DeatchbyCaptcha_Service_createPanel_feedback(), null, new Checkbox(CFG_IMAGE_TYPERZ.FEED_BACK_SENDING_ENABLED));
-
                 addBlackWhiteList(CFG_IMAGE_TYPERZ.CFG);
-
             }
 
             @Override
             public void save() {
-
             }
 
             @Override
@@ -120,7 +110,6 @@ public class ImageTyperzSolverService extends AbstractSolverService implements S
             public String getTitle() {
                 return "ImageTyperz.com";
             }
-
         };
         return ret;
     }
@@ -144,7 +133,6 @@ public class ImageTyperzSolverService extends AbstractSolverService implements S
     public void extendServicePabel(List<ServiceCollection<?>> services) {
         if (solver.validateLogins()) {
             services.add(new ServiceCollection<ImageTyperzCaptchaSolver>() {
-
                 @Override
                 public Icon getIcon() {
                     return DomainInfo.getInstance("ImageTyperz.com").getFavIcon();
@@ -169,7 +157,6 @@ public class ImageTyperzSolverService extends AbstractSolverService implements S
                 public ExtTooltip createTooltip(ServicePanel owner) {
                     return new ServicePanelImageTyperzTooltip(owner, solver);
                 }
-
             });
         }
     }
@@ -177,17 +164,13 @@ public class ImageTyperzSolverService extends AbstractSolverService implements S
     @Override
     public Map<String, Integer> getWaitForOthersDefaultMap() {
         HashMap<String, Integer> ret = new HashMap<String, Integer>();
-        // ret.put(Captcha9kwSolverClick.ID, 60000);
-        // ret.put(DialogClickCaptchaSolver.ID, 60000);
-        // ret.put(DialogBasicCaptchaSolver.ID, 60000);
-        // ret.put(CaptchaAPISolver.ID, 60000);
         ret.put(JacSolverService.ID, 30000);
-        ret.put(DeathByCaptchaSolverService.ID, 60000);
-        // ret.put(Captcha9kwSolver.ID, 60000);
-        // ret.put(CaptchaMyJDSolver.ID, 60000);
-        // ret.put(CBSolver.ID, 60000);
-        // ret.put(ImageTyperzSolver.ID, 60000);
-
+        // ret.put(DeathByCaptchaSolverService.ID, 60000);
+        ret.put(NineKwSolverService.ID, 120000);
+        // ret.put(CaptchaMyJDSolverService.ID, 60000);
+        // ret.put(CheapCaptchaSolverService.ID, 60000);
+        // ret.put(EndCaptchaSolverService.ID, 60000);
+        ret.put(TwoCaptchaSolverService.ID, 60000);
         return ret;
     }
 

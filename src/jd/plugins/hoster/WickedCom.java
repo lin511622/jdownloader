@@ -290,7 +290,7 @@ public class WickedCom extends PluginForHost {
     public boolean allowHandle(final DownloadLink downloadLink, final PluginForHost plugin) {
         final boolean is_this_plugin = downloadLink.getHost().equalsIgnoreCase(plugin.getHost());
         if (is_this_plugin) {
-            /* The original brazzers plugin is always allowed to download. */
+            /* The original plugin is always allowed to download. */
             return true;
         } else {
             /* Multihosts should not be tried for picture-downloads! */

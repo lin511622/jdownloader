@@ -39,10 +39,11 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
+import jd.plugins.components.PluginJSonUtils;
 
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "my.mail.ru" }, urls = { "http://my\\.mail\\.ru/jdeatme\\d+|http://my\\.mail\\.ru/[^<>\"]*?video/(top#video=/[a-z0-9\\-_]+/[a-z0-9\\-_]+/[a-z0-9\\-_]+/\\d+|[^<>\"]*?/\\d+\\.html)|http://(videoapi\\.my|api\\.video)\\.mail\\.ru/videos/embed/mail/[^/]+/[a-z0-9\\-_]+/\\d+\\.html" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "my.mail.ru" }, urls = { "http://my\\.mail\\.ru/jdeatme\\d+|https?://my\\.mail\\.ru/[^<>\"]*?video/(?:top#video=/[a-z0-9\\-_]+/[a-z0-9\\-_]+/[a-z0-9\\-_]+/\\d+|[^<>\"]*?/\\d+\\.html)|https?://(?:videoapi\\.my|api\\.video)\\.mail\\.ru/videos/embed/[^/]+/[^/]+/[a-z0-9\\-_]+/\\d+\\.html|https?://my\\.mail\\.ru/[^/]+/[^/]+/video/embed/[a-z0-9\\-_]+/\\d+|https?://my\\.mail\\.ru/video/embed/\\d+" })
 public class MyMailRu extends PluginForHost {
 
     public MyMailRu(PluginWrapper wrapper) {
@@ -55,23 +56,40 @@ public class MyMailRu extends PluginForHost {
         return "http://my.mail.ru/";
     }
 
-    private String              DLLINK         = null;
-    private static final String TYPE_VIDEO_ALL = "http://my\\.mail\\.ru/[^<>\"]*?video/(top#video=/[a-z0-9\\-_]+/[a-z0-9\\-_]+/[a-z0-9\\-_]+/\\d+|[^<>\"]*?/\\d+\\.html)";
-    private static final String TYPE_VIDEO_1   = "http://my\\.mail\\.ru/[^<>\"]*?video/top#video=/[a-z0-9\\-_]+/[a-z0-9\\-_]+/[a-z0-9\\-_]+/\\d+";
-    private static final String TYPE_VIDEO_2   = "http://my\\.mail\\.ru/[^<>\"]*?video/[a-z0-9\\-_]+/[a-z0-9\\-_]+/[a-z0-9\\-_]+/\\d+\\.html";
-    private static final String TYPE_VIDEO_3   = "http://(videoapi\\.my|api\\.video)\\.mail\\.ru/videos/embed/mail/[^/]+/[a-z0-9\\-_]+/\\d+\\.html";
+    private String              DLLINK                     = null;
+    private static final String TYPE_VIDEO_ALL             = "https?://[^/]+/[^<>\"]*?video/.+";
+    private static final String TYPE_VIDEO_1               = "https?://my\\.mail\\.ru/[^<>\"]*?video/top#video=/[a-z0-9\\-_]+/[a-z0-9\\-_]+/[a-z0-9\\-_]+/\\d+";
+    private static final String TYPE_VIDEO_2               = "https?://my\\.mail\\.ru/[^<>\"]*?video/[a-z0-9\\-_]+/[a-z0-9\\-_]+/[a-z0-9\\-_]+/\\d+\\.html";
+    private static final String TYPE_VIDEO_3               = "https?://(?:videoapi\\.my|api\\.video)\\.mail\\.ru/videos/embed/([^/]+/[^/]+)/([a-z0-9\\-_]+/\\d+)\\.html";
+    private static final String TYPE_VIDEO_4_EMBED         = "https?://[^/]+/([^/]+/[^/]+)/video/embed/([a-z0-9\\-_]+/\\d+)$";
+    private static final String TYPE_VIDEO_5_EMBED_SPECIAL = "https?://my\\.mail\\.ru/video/embed/\\d+";
 
-    private static final String html_private   = ">Access to video denied<";
+    private static final String html_private               = ">Access to video denied<";
 
     @SuppressWarnings("deprecation")
     public void correctDownloadLink(final DownloadLink link) {
         final String addedlink = link.getDownloadURL();
+        final Regex urlregex;
+        final String user;
+        final String urlpart;
         if (addedlink.matches(TYPE_VIDEO_3)) {
-            final Regex urlregex = new Regex(addedlink, "videos/embed/mail/([^/]+)/([a-z0-9\\-_]+/\\d+\\.html)");
-            final String user = urlregex.getMatch(0);
-            final String urlpart = urlregex.getMatch(1);
-            link.setUrlDownload("http://my.mail.ru/mail/" + user + "/video/" + urlpart);
+            urlregex = new Regex(addedlink, TYPE_VIDEO_3);
+            user = urlregex.getMatch(0);
+            urlpart = urlregex.getMatch(1);
+            link.setUrlDownload(buildOriginalVideourl(user, urlpart));
+        } else if (addedlink.matches(TYPE_VIDEO_4_EMBED)) {
+            urlregex = new Regex(addedlink, TYPE_VIDEO_4_EMBED);
+            user = urlregex.getMatch(0);
+            urlpart = urlregex.getMatch(1);
+            link.setUrlDownload(buildOriginalVideourl(user, urlpart));
         }
+    }
+
+    private String buildOriginalVideourl(final String user, final String urlpart) {
+        if (user == null || urlpart == null) {
+            return null;
+        }
+        return String.format("https://my.mail.ru/%s/video/%s.html", user, urlpart);
     }
 
     @SuppressWarnings("deprecation")
@@ -79,23 +97,46 @@ public class MyMailRu extends PluginForHost {
     public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         this.setBrowserExclusive();
         if (link.getDownloadURL().matches(TYPE_VIDEO_ALL)) {
+            /* Video download. */
             br.setFollowRedirects(true);
             br.getPage(link.getDownloadURL());
+            if (this.br.getHttpConnection().getResponseCode() == 404) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
+            if (link.getDownloadURL().matches(TYPE_VIDEO_5_EMBED_SPECIAL)) {
+                /* Special embed url --> Find original video-url. */
+                final String original_videourl_part = PluginJSonUtils.getJsonValue(this.br, "movieSrc");
+                if (original_videourl_part == null) {
+                    /* High chances that the video is offline. */
+                    throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+                }
+                final Regex urlregex = new Regex(original_videourl_part, "([^/]+/[^/]+)/([^/]+/\\d+)");
+                final String user = urlregex.getMatch(0);
+                final String urlpart = urlregex.getMatch(1);
+                if (user == null || urlpart == null) {
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                }
+                link.setUrlDownload(buildOriginalVideourl(user, urlpart));
+                this.br.getPage(link.getDownloadURL());
+            }
             /* TODO: Fix handling for private videos */
             // if (br.containsHTML("class=\"unauthorised\\-user window\\-loading\"")) {
             // link.getLinkStatus().setStatusText("Private video");
             // return AvailableStatus.TRUE;
             // }
-            br.setFollowRedirects(false);
             /* Without these Headers, API will return response code 400 */
             br.getHeaders().put("Accept", "application/json, text/javascript, */*; q=0.01");
             br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
             final String videoID = new Regex(link.getDownloadURL(), "(\\d+)\\.html$").getMatch(0);
             final String videourlpart = new Regex(br.getURL(), "my\\.mail\\.ru/([^<>\"]*?)/video/").getMatch(0);
             if (videourlpart == null) {
-                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                /*
+                 * 2017-01-27: ERROR_FILE_NOT_FOUND instead of PLUGIN_DEFECT as chances are very high that we do not have a video or the
+                 * video is offline at this stage.
+                 */
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
-            br.getPage("http://my.mail.ru/" + videourlpart + "/ajax?ajax_call=1&func_name=video.get_item&mna=&mnb=&arg_id=" + videoID + "&_=" + System.currentTimeMillis());
+            br.getPage("https://my.mail.ru/" + videourlpart + "/ajax?ajax_call=1&func_name=video.get_item&mna=&mnb=&arg_id=" + videoID + "&_=" + System.currentTimeMillis());
             br.getRequest().setHtmlCode(br.toString().replace("\\", ""));
             if (br.containsHTML(html_private)) {
                 logger.info("Video is private or offline");
@@ -136,6 +177,7 @@ public class MyMailRu extends PluginForHost {
                 }
             }
         } else {
+            /* Image download. */
             final String originalLink = link.getStringProperty("mainlink", null);
             // final Regex linkInfo = new Regex(originalLink, "\\.mail\\.ru/([^<>\"/]*?)/([^<>\"/]*?)/([^<>\"/]*?)/(\\d+)\\.html");
             final String fid = new Regex(originalLink, "(\\d+)(?:\\.html)?$").getMatch(0);

@@ -3,9 +3,6 @@ package org.jdownloader.settings;
 import java.io.File;
 import java.util.ArrayList;
 
-import jd.controlling.downloadcontroller.DownloadLinkCandidateSelector;
-import jd.utils.JDUtilities;
-
 import org.appwork.storage.config.ConfigInterface;
 import org.appwork.storage.config.annotations.AboutConfig;
 import org.appwork.storage.config.annotations.AbstractCustomValueGetter;
@@ -28,19 +25,11 @@ import org.appwork.utils.os.CrossSystem;
 import org.jdownloader.controlling.domainrules.DomainRule;
 import org.jdownloader.gui.translate._GUI;
 
+import jd.controlling.downloadcontroller.DownloadLinkCandidateSelector;
+import jd.utils.JDUtilities;
+
 public interface GeneralSettings extends ConfigInterface {
-
-    class DefaultBrowserCommand extends AbstractDefaultFactory<String[]> {
-
-        @Override
-        public String[] getDefaultValue() {
-            return CrossSystem.isWindows() ? new String[] { "rundll32.exe", "url.dll,FileProtocolHandler", "%s" } : null;
-        }
-
-    }
-
     class DefaultDownloadFolder extends AbstractDefaultFactory<String> {
-
         @Override
         public String getDefaultValue() {
             /* convert old value */
@@ -49,6 +38,16 @@ public interface GeneralSettings extends ConfigInterface {
                 final File file = new File(oldDownloadDirectory);
                 if (file.exists() && file.isDirectory()) {
                     return oldDownloadDirectory;
+                }
+            }
+            if (CrossSystem.isLinux()) {
+                // special handling for 3rd party nas packages
+                if (new File("/var/packages/JDownloader/scripts/start-stop-status").exists()) {
+                    // Synology 3rd Party Package
+                    final String defaultDownloadFolder = "/volume1/public";
+                    if (new File(defaultDownloadFolder).exists()) {
+                        return defaultDownloadFolder;
+                    }
                 }
             }
             return CrossSystem.getDefaultDownloadDirectory();
@@ -127,7 +126,6 @@ public interface GeneralSettings extends ConfigInterface {
     String getDefaultDownloadFolder();
 
     // ArrayList<String[]> getDownloadFolderHistory();
-
     @AboutConfig
     @DefaultLongValue(5 * 60 * 1000l)
     @DescriptionForConfigEntry("Waittime in ms if a Download HashCheck Failed")
@@ -207,6 +205,13 @@ public interface GeneralSettings extends ConfigInterface {
     @DefaultIntValue(128)
     @SpinnerValidator(min = 0, max = Integer.MAX_VALUE)
     int getForcedFreeSpaceOnDisk();
+
+    @AboutConfig
+    @DefaultBooleanValue(false)
+    @DescriptionForConfigEntry("Allow unsafe filenames for file exists check")
+    boolean isAllowUnsafeFileNameForFileExistsCheck();
+
+    void setAllowUnsafeFileNameForFileExistsCheck(boolean b);
 
     @AboutConfig
     @DefaultEnumValue("ASK_FOR_EACH_FILE")
@@ -357,7 +362,6 @@ public interface GeneralSettings extends ConfigInterface {
     @DefaultEnumValue("ONLY_IF_EXIT_WITH_RUNNING_DOWNLOADS")
     void setAutoStartDownloadOption(AutoDownloadStartOption option);
 
-    @DefaultFactory(DefaultBrowserCommand.class)
     @AboutConfig
     @DescriptionForConfigEntry("CommandLine to open a link in a browser. Use %s as wildcard for the url")
     void setBrowserCommandLine(String[] b);
@@ -379,7 +383,6 @@ public interface GeneralSettings extends ConfigInterface {
     void setDefaultDownloadFolder(String ddl);
 
     // void setDownloadFolderHistory(ArrayList<String[]> history);
-
     void setDownloadHashCheckFailedRetryWaittime(long ms);
 
     void setDownloadSpeedLimit(int bytes);
@@ -463,7 +466,7 @@ public interface GeneralSettings extends ConfigInterface {
     }
 
     @AboutConfig
-    @DefaultEnumValue("ASK_FOR_DELETE")
+    @DefaultEnumValue("DONT_DELETE")
     @DescriptionForConfigEntry("What Action should be performed after adding a container (DLC RSDF,METALINK,CCF,...)")
     DeleteContainerAction getDeleteContainerFilesAfterAddingThemAction();
 
@@ -474,7 +477,6 @@ public interface GeneralSettings extends ConfigInterface {
         ON_DOWNLOAD_START,
         @EnumLabel("When the links are added to the Downloadlist")
         ON_LINKS_ADDED,
-
     }
 
     @AboutConfig
@@ -516,25 +518,21 @@ public interface GeneralSettings extends ConfigInterface {
     void setCrawlerCrawlerPluginBlacklist(String[] blacklist);
 
     public static enum OnSkipDueToAlreadyExistsAction implements LabelInterface {
-
         SKIP_FILE() {
             public String getLabel() {
                 return _GUI.T.OnSkipDueToAlreadyExistsAction_skip_file();
             }
-
         },
         SET_FILE_TO_SUCCESSFUL {
             public String getLabel() {
                 return _GUI.T.OnSkipDueToAlreadyExistsAction_mark_successful();
             }
         },
-
         SET_FILE_TO_SUCCESSFUL_MIRROR {
             public String getLabel() {
                 return _GUI.T.OnSkipDueToAlreadyExistsAction_mark_successful_mirror();
             }
         }
-
     }
 
     @AboutConfig
@@ -653,11 +651,12 @@ public interface GeneralSettings extends ConfigInterface {
     boolean isPreferBouncyCastleForTLS();
 
     void setPreferBouncyCastleForTLS(boolean b);
-
     // @AboutConfig
     // @DefaultBooleanValue(true)
     // @DescriptionForConfigEntry("Enable/Disable JXBrowser usage. JXBrowser Plugin required!")
     // boolean isJxBrowserEnabled();
     //
     // void setJxBrowserEnabled(boolean b);
+
+
 }

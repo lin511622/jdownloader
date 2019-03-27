@@ -17,6 +17,7 @@ import org.jdownloader.captcha.v2.solver.imagetyperz.ImageTyperzSolverService;
 import org.jdownloader.captcha.v2.solver.jac.JacSolverService;
 import org.jdownloader.captcha.v2.solver.myjd.CaptchaMyJDSolverService;
 import org.jdownloader.captcha.v2.solver.solver9kw.NineKwSolverService;
+import org.jdownloader.captcha.v2.solver.twocaptcha.TwoCaptchaSolverService;
 import org.jdownloader.gui.IconKey;
 import org.jdownloader.gui.translate._GUI;
 import org.jdownloader.images.NewTheme;
@@ -27,7 +28,9 @@ public class DialogSolverService extends AbstractSolverService {
     private static DialogCaptchaSolverConfig config;
 
     public static DialogSolverService getInstance() {
-        config = JsonConfig.create(DialogCaptchaSolverConfig.class);
+        if (config == null) {
+            config = JsonConfig.create(DialogCaptchaSolverConfig.class);
+        }
         return INSTANCE;
     }
 
@@ -49,13 +52,10 @@ public class DialogSolverService extends AbstractSolverService {
     @Override
     public AbstractCaptchaSolverConfigPanel getConfigPanel() {
         AbstractCaptchaSolverConfigPanel ret = new AbstractCaptchaSolverConfigPanel() {
-
             {
                 addHeader(getTitle(), DialogSolverService.this.getIcon(32));
                 addDescription(DialogSolverService.this.getType());
-
                 addBlackWhiteList(config);
-
             }
 
             @Override
@@ -80,7 +80,6 @@ public class DialogSolverService extends AbstractSolverService {
             @Override
             public void updateContents() {
             }
-
         };
         return ret;
     }
@@ -98,18 +97,17 @@ public class DialogSolverService extends AbstractSolverService {
     @Override
     public Map<String, Integer> getWaitForOthersDefaultMap() {
         HashMap<String, Integer> ret = new HashMap<String, Integer>();
-
         // ret.put(DialogClickCaptchaSolver.ID, 0);
         // ret.put(DialogBasicCaptchaSolver.ID, 0);
         // ret.put(CaptchaAPISolver.ID, 0);
         ret.put(JacSolverService.ID, 30000);
-        ret.put(NineKwSolverService.ID, 120000);
+        ret.put(NineKwSolverService.ID, 300000);
         ret.put(CaptchaMyJDSolverService.ID, 60000);
         ret.put(DeathByCaptchaSolverService.ID, 60000);
         ret.put(ImageTyperzSolverService.ID, 60000);
         ret.put(CheapCaptchaSolverService.ID, 60000);
         ret.put(EndCaptchaSolverService.ID, 60000);
-
+        ret.put(TwoCaptchaSolverService.ID, 60000);
         return ret;
     }
 
@@ -117,5 +115,4 @@ public class DialogSolverService extends AbstractSolverService {
     public String getID() {
         return ID;
     }
-
 }

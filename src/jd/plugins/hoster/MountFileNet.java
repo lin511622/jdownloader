@@ -13,10 +13,8 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -26,6 +24,11 @@ import java.util.Locale;
 import java.util.Map.Entry;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
+
+import org.appwork.utils.formatter.SizeFormatter;
+import org.appwork.utils.formatter.TimeFormatter;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
+import org.jdownloader.plugins.components.antiDDoSForHost;
 
 import jd.PluginWrapper;
 import jd.config.ConfigContainer;
@@ -42,18 +45,13 @@ import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
+import jd.plugins.components.PluginJSonUtils;
 import jd.utils.locale.JDL;
 
-import org.appwork.utils.formatter.SizeFormatter;
-import org.appwork.utils.formatter.TimeFormatter;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
-import org.jdownloader.plugins.components.antiDDoSForHost;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "mountfile.net" }, urls = { "http://(www\\.)?mountfile\\.net/(?!d/)[A-Za-z0-9]+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "mountfile.net" }, urls = { "https?://(www\\.)?mountfile\\.net/(?!d/)[A-Za-z0-9]+" })
 public class MountFileNet extends antiDDoSForHost {
 
     private final String                   MAINPAGE                   = "http://mountfile.net";
-
     /* For reconnect special handling */
     private static Object                  CTRLLOCK                   = new Object();
     private final String                   EXPERIMENTALHANDLING       = "EXPERIMENTALHANDLING";
@@ -64,7 +62,6 @@ public class MountFileNet extends antiDDoSForHost {
     private static AtomicReference<String> lastIP                     = new AtomicReference<String>();
     private static AtomicReference<String> currentIP                  = new AtomicReference<String>();
     private final Pattern                  IPREGEX                    = Pattern.compile("(([1-2])?([0-9])?([0-9])\\.([1-2])?([0-9])?([0-9])\\.([1-2])?([0-9])?([0-9])\\.([1-2])?([0-9])?([0-9]))", Pattern.CASE_INSENSITIVE);
-
     private static final long              FREE_RECONNECTWAIT_GENERAL = 1 * 60 * 60 * 1000L;
 
     public MountFileNet(PluginWrapper wrapper) {
@@ -124,7 +121,6 @@ public class MountFileNet extends antiDDoSForHost {
         final boolean useExperimentalHandling = this.getPluginConfig().getBooleanProperty(this.EXPERIMENTALHANDLING, false);
         long lastdownload = 0;
         long passedTimeSinceLastDl = 0;
-
         synchronized (CTRLLOCK) {
             /* Load list of saved IPs + timestamp of last download */
             final Object lastdownloadmap = this.getPluginConfig().getProperty(PROPERTY_LASTDOWNLOAD);
@@ -132,12 +128,11 @@ public class MountFileNet extends antiDDoSForHost {
                 blockedIPsMap = (HashMap<String, Long>) lastdownloadmap;
             }
         }
-
         if (useExperimentalHandling) {
             /*
-             * If the user starts a download in free (unregistered) mode the waittime is on his IP. This also affects free accounts if he
-             * tries to start more downloads via free accounts afterwards BUT nontheless the limit is only on his IP so he CAN download
-             * using the same free accounts after performing a reconnect!
+             * If the user starts a download in free (unregistered) mode the waittime is on his IP. This also affects free accounts if he tries to start
+             * more downloads via free accounts afterwards BUT nontheless the limit is only on his IP so he CAN download using the same free accounts
+             * after performing a reconnect!
              */
             lastdownload = getPluginSavedLastDownloadTimestamp();
             passedTimeSinceLastDl = System.currentTimeMillis() - lastdownload;
@@ -147,21 +142,11 @@ public class MountFileNet extends antiDDoSForHost {
         }
         requestFileInformation(downloadLink);
         postPage(br.getURL(), "free=Slow+download&hash=" + fid);
-        final String rcID = br.getRegex("Recaptcha\\.create\\(\\'([^<>\"]*?)\\'").getMatch(0);
-        if (rcID == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-        }
         final long timeBefore = System.currentTimeMillis();
-        final Recaptcha rc = new Recaptcha(br, this);
-        rc.setId(rcID);
-        rc.load();
-        for (int i = 1; i <= 5; i++) {
-            final File cf = rc.downloadCaptcha(getLocalCaptchaFile());
-            final String c = getCaptchaCode("recaptcha", cf, downloadLink);
-            if (i == 1) {
-                waitTime(timeBefore, downloadLink);
-            }
-            postPage(br.getURL(), "free=Get+download+link&hash=" + fid + "&recaptcha_challenge_field=" + rc.getChallenge() + "&recaptcha_response_field=" + Encoding.urlEncode(c));
+        if (br.containsHTML("<div id=\"(\\w+)\".+grecaptcha\\.render\\(\\s*'\\1',")) {
+            final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
+            waitTime(timeBefore, downloadLink);
+            postPage(br.getURL(), "free=Get+download+link&hash=" + fid + "&g-recaptcha-response=" + Encoding.urlEncode(recaptchaV2Response));
             String reconnectWait = br.getRegex("You should wait (\\d+) minutes before downloading next file").getMatch(0);
             if (reconnectWait == null) {
                 reconnectWait = br.getRegex("Please wait (\\d+) minutes before downloading next file or").getMatch(0);
@@ -169,23 +154,18 @@ public class MountFileNet extends antiDDoSForHost {
             if (reconnectWait != null) {
                 throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, Integer.parseInt(reconnectWait) * 60 * 1001l);
             }
-            if (br.containsHTML("Recaptcha\\.create\\(\\'")) {
-                rc.reload();
-                continue;
+            if (br.containsHTML(">Sorry, you have reached a download limit for today \\([\\w \\.]+\\)\\. Please wait for tomorrow")) {
+                throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, "Reached the download limit!", 60 * 60 * 1000l);
             }
-            break;
         }
-        if (br.containsHTML("Recaptcha\\.create\\(\\'")) {
-            throw new PluginException(LinkStatus.ERROR_CAPTCHA);
-        }
-        String dllink = br.getRegex("\"(http://d\\d+\\.mountfile.net/[^<>\"]*?)\"").getMatch(0);
+        String dllink = br.getRegex("\"(https?://d\\d+\\.mountfile.net/[^<>\"]*?)\"").getMatch(0);
         if (dllink == null) {
             dllink = br.getRegex("<div style=\"margin: 10px auto 20px\" class=\"center\">[\t\n\r ]+<a href=\"(http://[^<>\"]*?)\"").getMatch(0);
         }
         if (dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, false, 1);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, false, 1);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             if (br.containsHTML("not found")) {
@@ -313,20 +293,21 @@ public class MountFileNet extends antiDDoSForHost {
         } else {
             requestFileInformation(link);
             login(account, false);
-            dl = jd.plugins.BrowserAdapter.openDownload(br, link, link.getDownloadURL(), true, 0);
+            /* First check if user has direct download enabled. */
+            dl = new jd.plugins.BrowserAdapter().openDownload(br, link, link.getDownloadURL(), true, 0);
             if (!dl.getConnection().isContentDisposition()) {
+                /* No direct download? Manually get directurl ... */
                 br.followConnection();
                 errorhandlingPremium();
                 br.getHeaders().put("Accept", "application/json, text/javascript, */*; q=0.01");
                 br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
-                postPage("http://mountfile.net/load/premium/", "js=1&hash=" + new Regex(link.getDownloadURL(), "([A-Za-z0-9]+)$").getMatch(0));
+                postPage("/load/premium/", "js=1&hash=" + new Regex(link.getDownloadURL(), "([A-Za-z0-9]+)$").getMatch(0));
                 errorhandlingPremium();
-                String dllink = br.getRegex("\"ok\":\"(http:[^<>\"]*?)\"").getMatch(0);
+                String dllink = PluginJSonUtils.getJsonValue(this.br, "ok");
                 if (dllink == null) {
                     throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
-                dllink = dllink.replace("\\", "");
-                dl = jd.plugins.BrowserAdapter.openDownload(br, link, dllink, true, 0);
+                dl = new jd.plugins.BrowserAdapter().openDownload(br, link, dllink, true, 0);
                 if (!dl.getConnection().isContentDisposition()) {
                     br.followConnection();
                     throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -342,6 +323,9 @@ public class MountFileNet extends antiDDoSForHost {
             logger.info("Daily downloadlimit reached");
             throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_TEMP_DISABLE);
         }
+        if (br.containsHTML("File was deleted by owner or due to a violation of service rules")) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        }
     }
 
     @Override
@@ -355,7 +339,6 @@ public class MountFileNet extends antiDDoSForHost {
     }
 
     /* Stuff for special reconnect errorhandling */
-
     private String getIP() throws PluginException {
         final Browser ip = new Browser();
         String currentIP = null;
@@ -449,5 +432,4 @@ public class MountFileNet extends antiDDoSForHost {
     @Override
     public void resetDownloadlink(final DownloadLink link) {
     }
-
 }

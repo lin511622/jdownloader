@@ -13,7 +13,6 @@ import org.jdownloader.extensions.extraction.FileSignatures;
 import org.jdownloader.extensions.extraction.Signature;
 
 public class SignatureCheckingOutStream implements ISequentialOutStream {
-
     private final AtomicBoolean                 passwordfound;
     private final FileSignatures                filesignatures;
     private final ReusableByteArrayOutputStream buffer;
@@ -24,6 +23,7 @@ public class SignatureCheckingOutStream implements ISequentialOutStream {
     private final boolean                       optimized;
     private boolean                             ignoreWrite        = false;
     private final ExtractionController          ctrl;
+    private Signature                           lastSignature      = null;
 
     public SignatureCheckingOutStream(final ExtractionController ctrl, AtomicBoolean passwordfound, FileSignatures filesignatures, ReusableByteArrayOutputStream buffer, long maxPWCheckSize, boolean optimized) {
         this.passwordfound = passwordfound;
@@ -59,13 +59,17 @@ public class SignatureCheckingOutStream implements ISequentialOutStream {
                 if (signature != null) {
                     if (signature.getExtensionSure() != null && (itemName == null || signature.getExtensionSure().matcher(itemName).matches())) {
                         /* signature matches, lets abort PWFinding now */
-                        passwordfound.set(true);
-                        return 0;
+                        if (signature.isPrecisePatternStart()) {
+                            passwordfound.set(true);
+                            return 0;
+                        } else {
+                            lastSignature = signature;
+                        }
                     }
                 }
             }
         }
-        if ((itemSize >= 0 && itemSize <= maxPWCheckSize) || !optimized) {
+        if ((itemSize >= 0 && itemSize <= maxPWCheckSize) || !optimized || lastSignature != null) {
             /* we still allow further extraction as the itemSize <= maxPWCheckSize */
             return data.length;
         } else {
@@ -79,6 +83,7 @@ public class SignatureCheckingOutStream implements ISequentialOutStream {
         signatureMinLength = 32;
         itemName = null;
         itemSize = -1;
+        lastSignature = null;
     }
 
     public long getWritten() {
@@ -86,7 +91,7 @@ public class SignatureCheckingOutStream implements ISequentialOutStream {
     }
 
     public void setSignatureLength(String itemName, long itemSize) {
-        if (new Regex(itemName, ".+\\.iso").matches()) {
+        if (new Regex(itemName, ".+\\.(iso|udf)").matches()) {
             signatureMinLength = 37000;
         } else if (new Regex(itemName, ".+\\.mp3").matches()) {
             signatureMinLength = 512;
@@ -96,5 +101,4 @@ public class SignatureCheckingOutStream implements ISequentialOutStream {
         this.itemName = itemName;
         this.itemSize = itemSize;
     }
-
 }

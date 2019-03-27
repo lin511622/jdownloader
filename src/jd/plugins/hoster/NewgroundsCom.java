@@ -13,15 +13,15 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.IOException;
+import java.util.List;
+import java.util.Map;
 
 import jd.PluginWrapper;
-import jd.config.Property;
+import jd.config.ConfigContainer;
+import jd.config.ConfigEntry;
 import jd.http.Browser;
-import jd.http.Browser.BrowserException;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
@@ -30,13 +30,21 @@ import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
-import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "newgrounds.com" }, urls = { "http://www\\.newgrounds\\.com/((portal/view/|audio/listen/)\\d+|art/view/[A-Za-z0-9\\-_]+/[A-Za-z0-9\\-_]+)" })
-public class NewgroundsCom extends PluginForHost {
+import org.appwork.storage.JSonStorage;
+import org.appwork.storage.TypeRef;
+import org.jdownloader.plugins.components.antiDDoSForHost;
 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "newgrounds.com" }, urls = { "https?://www\\.newgrounds\\.com/((portal/view/|audio/listen/)\\d+|art/view/[A-Za-z0-9\\-_]+/[A-Za-z0-9\\-_]+)" })
+public class NewgroundsCom extends antiDDoSForHost {
     public NewgroundsCom(PluginWrapper wrapper) {
         super(wrapper);
+        setConfigElements();
+    }
+
+    private void setConfigElements() {
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), "Filename_by", "Choose file name + by?").setDefaultValue(true));
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), "Filename_id", "Add id to file name?").setDefaultValue(true));
     }
 
     /* DEV NOTES */
@@ -44,73 +52,152 @@ public class NewgroundsCom extends PluginForHost {
     // Tags:
     // protocol: no https
     // other:
-
     /* Connection stuff */
     private static final boolean free_resume       = true;
     private static final int     free_maxchunks    = 0;
-    private static final int     free_maxdownloads = -1;
-
+    /* 2017-02-02: Only 1 official (audio) download possible every 60 seconds. */
+    private static final int     free_maxdownloads = 1;
     private String               dllink            = null;
+    private boolean              server_issues     = false;
+    private boolean              accountneeded     = false;
 
     @Override
     public String getAGBLink() {
         return "http://www.newgrounds.com/wiki/help-information/terms-of-use";
     }
 
-    private static final String ARTLINK       = "http://(?:www\\.)?newgrounds\\.com/art/view/[A-Za-z0-9\\-_]+/[A-Za-z0-9\\-_]+";
-
-    private boolean             accountneeded = false;
+    private static final String ARTLINK = "https?://(?:www\\.)?newgrounds\\.com/art/view/[A-Za-z0-9\\-_]+/[A-Za-z0-9\\-_]+";
 
     @SuppressWarnings("deprecation")
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
         dllink = null;
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
-        br.getPage(downloadLink.getDownloadURL());
-        if (br.getHttpConnection().getResponseCode() == 404) {
+        getPage(downloadLink.getDownloadURL());
+        final boolean addID2Filename = getPluginConfig().getBooleanProperty("Filename_id", true);
+        if (br.getHttpConnection().getResponseCode() == 404 || br.containsHTML(">This entry was")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-
-        String filename = null;
+        String filename = br.getRegex("property=\"og:title\" content=\"([^<>\"]*?)\"").getMatch(0);
+        // String artist = br.getRegex("<em>(?:Artist|Author|Programming) ?<[^<>]+>([^<>]*?)<").getMatch(0);
+        String artist = br.getRegex("<h4.*?>\\s*<[^<>]+>([^<>]*?)</a>[^~]*?<em>(?:Artist|Author|Programming)").getMatch(0);
+        // logger.info("artist:" + artist + "|");
+        // final String username = br.getRegex("newgrounds\\.com/pm/send/([^<>\"]+)\"").getMatch(0);
+        if (artist != null && getPluginConfig().getBooleanProperty("Filename_by", true)) {
+            filename = filename + " by " + artist;
+        }
+        String ext = null;
+        final boolean checkForFilesize;
+        String url_filename = null;
         if (downloadLink.getDownloadURL().matches(ARTLINK)) {
-            dllink = br.getRegex("id=\"dim_the_lights\" href=\"(http://[^<>\"]*?)\"").getMatch(0);
-        } else {
-            if (downloadLink.getDownloadURL().contains("/audio/listen/")) {
-                final String fid = new Regex(downloadLink.getDownloadURL(), "(\\d+)$").getMatch(0);
-                filename = br.getRegex("property=\"og:title\" content=\"([^<>\"]*?)\"").getMatch(0);
-                if (filename != null) {
-                    filename = Encoding.htmlDecode(filename).trim() + "_" + fid + ".mp3";
+            url_filename = new Regex(downloadLink.getDownloadURL(), "/view/(.+)").getMatch(0).replace("/", "_");
+            checkForFilesize = true;
+            dllink = br.getRegex("id=\"dim_the_lights\" href=\"(https?://[^<>\"]*?)\"").getMatch(0);
+            if (dllink == null) {
+                dllink = br.getRegex("\"<img src=\\\\\"(https?:[^<>\"]*?)\\\\\"").getMatch(0);
+                if (dllink != null) {
+                    dllink = dllink.replace("\\", "");
+                    final String id = new Regex(dllink, "images/\\d+/(\\d+)").getMatch(0);
+                    if (addID2Filename && filename != null && id != null) {
+                        filename = filename + "_" + id;
+                    }
                 }
-                dllink = "http://www.newgrounds.com/audio/download/" + fid;
+            }
+        } else {
+            /* Audio & Video download */
+            /*
+             * 2017-02-02: Do not check for filesize as only 1 download per minute is possible --> Accessing directurls makes no sense here.
+             */
+            checkForFilesize = false;
+            final String fid = new Regex(downloadLink.getDownloadURL(), "(\\d+)$").getMatch(0);
+            url_filename = fid;
+            // filename = br.getRegex("property=\"og:title\" content=\"([^<>\"]*?)\"").getMatch(0);
+            if (downloadLink.getDownloadURL().contains("/audio/listen/")) {
+                if (filename != null) {
+                    filename = Encoding.htmlDecode(filename).trim();
+                    if (addID2Filename) {
+                        filename = filename + "_" + fid;
+                    }
+                }
+                // var embed_controller = new
+                // embedController([{"url":"https:\/\/audio.ngfiles.com\/843000\/843897_Starbarians-3-Suite.mp3?f1548006356"
+                if (br.containsHTML("/audio/download/" + fid)) {
+                    dllink = "https://www." + this.getHost() + "/audio/download/" + fid;
+                } else {
+                    final String embedController = br.getRegex("embedController\\s*\\(\\s*\\[\\s*\\{\\s*\"url\"\\s*:\\s*\"(https?:.*?)\"").getMatch(0);
+                    if (embedController != null) {
+                        dllink = embedController.replaceAll("\\\\", "");
+                    } else {
+                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                    }
+                }
+                ext = ".mp3";
             } else {
                 if (br.containsHTML("requires a Newgrounds account to play\\.<")) {
                     accountneeded = true;
                     return AvailableStatus.TRUE;
                 }
-                dllink = br.getRegex("\"src\":[\t\n\r ]+\"(http:[^<>\"]*?)\"").getMatch(0);
-                // Maybe video or .swf
-                if (dllink == null) {
-                    dllink = br.getRegex("\"url\":\"(http:[^<>\"]*?)\"").getMatch(0);
+                final String videoPlayer = br.getRegex("iframe\\s*src\\s*=\\s*\\\\\"([^\"]*/videoplayer[^\"]*)\\\\\"").getMatch(0);
+                if (videoPlayer != null) {
+                    final Browser brc = br.cloneBrowser();
+                    brc.getPage(videoPlayer.replace("\\", ""));
+                    final String playerSrc = brc.getRegex("player\\.updateSrc\\((.*?)\\)").getMatch(0);
+                    if (playerSrc != null) {
+                        final List<Object> items = JSonStorage.restoreFromString(playerSrc, TypeRef.LIST);
+                        Map<String, Object> best = null;
+                        for (final Object item : items) {
+                            if (item instanceof Map) {
+                                final Map<String, Object> map = (Map<String, Object>) item;
+                                if (best == null || ((Number) map.get("res")).longValue() > ((Number) best.get("res")).longValue()) {
+                                    best = map;
+                                }
+                            }
+                        }
+                        if (best != null) {
+                            dllink = (String) best.get("src");
+                            if (filename != null) {
+                                filename += "_" + best.get("res") + "p";
+                            }
+                        }
+                    } else {
+                        dllink = brc.getRegex("src:\\s*\"([^\"]*)\"").getMatch(0);
+                    }
                 }
-                if (dllink != null) {
-                    dllink = dllink.replace("\\", "");
+                if (dllink == null) {
+                    dllink = br.getRegex("\"src\":[\t\n\r ]+\"(https?:[^<>\"]*?)\"").getMatch(0);
+                    // Maybe video or .swf
+                    if (dllink == null) {
+                        dllink = br.getRegex("\"url\":\"(https?:[^<>\"]*?)\"").getMatch(0);
+                    }
+                    if (dllink != null) {
+                        dllink = dllink.replace("\\", "");
+                        dllink = Encoding.htmlDecode(dllink);
+                    }
+                }
+                if (addID2Filename && filename != null && fid != null) {
+                    filename = filename + "_" + fid;
                 }
             }
+        }
+        if (filename == null) {
+            /* Fallback */
+            filename = url_filename;
         }
         if (dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        dllink = Encoding.htmlDecode(dllink);
-        final String ext = getFileNameExtensionFromString(dllink, ".mp4");
+        if (ext == null) {
+            ext = getFileNameExtensionFromString(dllink, ".mp4");
+        }
+        if (!filename.endsWith(ext)) {
+            filename += ext;
+        }
         downloadLink.setFinalFileName(filename);
-        final Browser br2 = br.cloneBrowser();
-        // In case the link redirects to the finallink
-        br2.setFollowRedirects(true);
-        URLConnectionAdapter con = null;
-        try {
+        if (dllink != null && checkForFilesize) {
+            URLConnectionAdapter con = null;
             try {
-                con = openConnection(br2, dllink);
+                con = br.openHeadConnection(dllink);
                 if (filename == null) {
                     filename = getFileNameFromHeader(con);
                 }
@@ -121,22 +208,20 @@ public class NewgroundsCom extends PluginForHost {
                     filename += ext;
                 }
                 downloadLink.setFinalFileName(filename);
-            } catch (final BrowserException e) {
-                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-            }
-            if (!con.getContentType().contains("html")) {
-                downloadLink.setDownloadSize(con.getLongContentLength());
-            } else {
-                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-            }
-            downloadLink.setProperty("directlink", dllink);
-            return AvailableStatus.TRUE;
-        } finally {
-            try {
-                con.disconnect();
-            } catch (final Throwable e) {
+                if (!con.getContentType().contains("html")) {
+                    downloadLink.setDownloadSize(con.getLongContentLength());
+                } else {
+                    server_issues = true;
+                }
+                downloadLink.setProperty("directlink", dllink);
+            } finally {
+                try {
+                    con.disconnect();
+                } catch (final Throwable e) {
+                }
             }
         }
+        return AvailableStatus.TRUE;
     }
 
     @Override
@@ -144,15 +229,28 @@ public class NewgroundsCom extends PluginForHost {
         requestFileInformation(downloadLink);
         if (accountneeded) {
             throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
+        } else if (dllink == null) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        } else if (server_issues) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown server error", 10 * 60 * 1000l);
         }
         dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, free_resume, free_maxchunks);
+        if (dl.getConnection().getResponseCode() == 429) {
+            /* 2017-11-16: E.g. happens for audio files */
+            throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "Server error 429 - wait before starting new downloads", 60 * 1000l);
+        }
         if (dl.getConnection().getContentType().contains("html")) {
+            try {
+                br.followConnection();
+            } catch (final Throwable ignore) {
+            }
             if (dl.getConnection().getResponseCode() == 403) {
                 throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 60 * 60 * 1000l);
             } else if (dl.getConnection().getResponseCode() == 404) {
                 throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 404", 60 * 60 * 1000l);
+            } else if (dl.getConnection().getResponseCode() == 503) {
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 503 - wait before starting new downloads", 3 * 60 * 1000l);
             }
-            br.followConnection();
             try {
                 dl.getConnection().disconnect();
             } catch (final Throwable e) {
@@ -162,47 +260,9 @@ public class NewgroundsCom extends PluginForHost {
         dl.startDownload();
     }
 
-    private String checkDirectLink(final DownloadLink downloadLink, final String property) {
-        String dllink = downloadLink.getStringProperty(property);
-        if (dllink != null) {
-            URLConnectionAdapter con = null;
-            try {
-                final Browser br2 = br.cloneBrowser();
-                con = openConnection(br2, dllink);
-                if (con.getContentType().contains("html") || con.getLongContentLength() == -1) {
-                    downloadLink.setProperty(property, Property.NULL);
-                    dllink = null;
-                }
-            } catch (final Exception e) {
-                downloadLink.setProperty(property, Property.NULL);
-                dllink = null;
-            } finally {
-                try {
-                    con.disconnect();
-                } catch (final Throwable e) {
-                }
-            }
-        }
-        return dllink;
-    }
-
     @Override
     public int getMaxSimultanFreeDownloadNum() {
         return free_maxdownloads;
-    }
-
-    private URLConnectionAdapter openConnection(final Browser br, final String directlink) throws IOException {
-        URLConnectionAdapter con;
-        if (isJDStable()) {
-            con = br.openGetConnection(directlink);
-        } else {
-            con = br.openHeadConnection(directlink);
-        }
-        return con;
-    }
-
-    private boolean isJDStable() {
-        return System.getProperty("jd.revision.jdownloaderrevision") == null;
     }
 
     @Override

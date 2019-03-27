@@ -10,15 +10,20 @@ import java.text.DecimalFormat;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Calendar;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 import java.util.TimeZone;
 import java.util.regex.Pattern;
 
@@ -48,6 +53,7 @@ import jd.http.Cookie;
 import jd.http.Cookies;
 import jd.http.Request;
 import jd.http.StaticProxySelector;
+import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
 import jd.parser.html.Form;
 import jd.plugins.Account;
@@ -61,7 +67,7 @@ import org.appwork.storage.TypeRef;
 import org.appwork.storage.config.JsonConfig;
 import org.appwork.txtresource.TranslationFactory;
 import org.appwork.utils.Application;
-import org.appwork.utils.Exceptions;
+import org.appwork.utils.CompareUtils;
 import org.appwork.utils.Hash;
 import org.appwork.utils.Regex;
 import org.appwork.utils.StringUtils;
@@ -72,6 +78,8 @@ import org.appwork.utils.logging2.extmanager.Log;
 import org.appwork.utils.net.httpconnection.HTTPProxy;
 import org.appwork.utils.net.httpconnection.HTTPProxyStorable;
 import org.appwork.utils.parser.UrlQuery;
+import org.jdownloader.controlling.ffmpeg.AbstractFFmpegBinary;
+import org.jdownloader.controlling.ffmpeg.FFmpeg;
 import org.jdownloader.controlling.ffmpeg.FFmpegProvider;
 import org.jdownloader.controlling.ffmpeg.FFmpegSetup;
 import org.jdownloader.controlling.ffmpeg.FFprobe;
@@ -97,9 +105,8 @@ import org.jdownloader.plugins.components.youtube.variants.VideoVariant;
 import org.jdownloader.plugins.components.youtube.variants.YoutubeSubtitleStorable;
 import org.jdownloader.plugins.components.youtube.variants.generics.GenericAudioInfo;
 import org.jdownloader.plugins.config.PluginJsonConfig;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
 import org.jdownloader.settings.staticreferences.CFG_YOUTUBE;
-import org.jdownloader.statistics.StatsManager;
-import org.jdownloader.statistics.StatsManager.CollectionName;
 import org.jdownloader.updatev2.FilterList;
 import org.jdownloader.updatev2.FilterList.Type;
 import org.jdownloader.updatev2.UpdateController;
@@ -138,7 +145,6 @@ public class YoutubeHelper {
             cfg.setProxy(null);
         }
     }
-
     private static final String REGEX_DASHMPD_FROM_JSPLAYER_SETUP       = "\"dashmpd\"\\s*:\\s*(\".*?\")";
     private static final String REGEX_ADAPTIVE_FMTS_FROM_JSPLAYER_SETUP = "\"adaptive_fmts\"\\s*:\\s*(\".*?\")";
     private static final String REGEX_FMT_MAP_FROM_JSPLAYER_SETUP       = "\"url_encoded_fmt_stream_map\"\\s*:\\s*(\".*?\")";
@@ -157,9 +163,9 @@ public class YoutubeHelper {
         this.br = br;
     }
 
-    private final YoutubeConfig         cfg;
-    private final LogInterface          logger;
-    private String                      base;
+    private final YoutubeConfig               cfg;
+    private final LogInterface                logger;
+    private String                            base;
     // private List<YoutubeBasicVariant> variants;
     // public List<YoutubeBasicVariant> getVariants() {
     // return variants;
@@ -168,9 +174,8 @@ public class YoutubeHelper {
     // public Map<String, YoutubeBasicVariant> getVariantsMap() {
     // return variantsMap;
     // }
-    public static LogSource             LOGGER                           = LogController.getInstance().getLogger(YoutubeHelper.class.getName());
-    public static List<YoutubeReplacer> REPLACER                         = new ArrayList<YoutubeReplacer>();
-
+    public static final LogSource             LOGGER                           = LogController.getInstance().getLogger(YoutubeHelper.class.getName());
+    public static final List<YoutubeReplacer> REPLACER                         = new ArrayList<YoutubeReplacer>();
     static {
         REPLACER.add(new YoutubeReplacer("GROUP") {
             @Override
@@ -474,14 +479,15 @@ public class YoutubeHelper {
         REPLACER.add(new YoutubeReplacer("DURATION") {
             @Override
             protected String getValue(DownloadLink link, YoutubeHelper helper, String mod) {
-                int ms = link.getIntegerProperty(YoutubeHelper.YT_DURATION, -1);
-                if (ms <= 0) {
+                final int secs = link.getIntegerProperty(YoutubeHelper.YT_DURATION, -1);
+                if (secs <= 0) {
                     return "";
-                }
-                if (StringUtils.isEmpty(mod)) {
-                    return TimeFormatter.formatMilliSeconds(ms, 0);
                 } else {
-                    return (ms / 1000) + "s";
+                    if (StringUtils.isEmpty(mod)) {
+                        return TimeFormatter.formatSeconds(secs, 0);
+                    } else {
+                        return secs + "s";
+                    }
                 }
             }
 
@@ -664,13 +670,27 @@ public class YoutubeHelper {
 
             @Override
             protected String getValue(DownloadLink link, YoutubeHelper helper, String mod) {
-                AbstractVariant variant = AbstractVariant.get(link);
+                final AbstractVariant variant = AbstractVariant.get(link);
                 if (variant != null) {
                     if (variant instanceof SubtitleVariant) {
-                        if ("display".equalsIgnoreCase(mod)) {
-                            return ((SubtitleVariant) variant).getGenericInfo()._getLocale().getDisplayLanguage();
+                        final SubtitleVariant subtitle = ((SubtitleVariant) variant);
+                        final String asr;
+                        if (subtitle.getGenericInfo()._isSpeechToText()) {
+                            asr = "_ASR";
                         } else {
-                            return ((SubtitleVariant) variant).getGenericInfo().getLanguage();
+                            asr = "";
+                        }
+                        if ("full".equalsIgnoreCase(mod)) {
+                            final int multi = subtitle.getGenericInfo().getMulti();
+                            if (multi > 0) {
+                                return subtitle.getGenericInfo()._getLocale().getDisplayName() + "(" + multi + ")" + asr;
+                            } else {
+                                return subtitle.getGenericInfo()._getLocale().getDisplayName() + asr;
+                            }
+                        } else if ("display".equalsIgnoreCase(mod)) {
+                            return subtitle.getGenericInfo()._getLocale().getDisplayLanguage() + asr;
+                        } else {
+                            return subtitle.getGenericInfo().getLanguage() + asr;
                         }
                     }
                 }
@@ -722,31 +742,30 @@ public class YoutubeHelper {
             }
         });
     }
-
-    public static final String          YT_TITLE                         = "YT_TITLE";
-    public static final String          YT_PLAYLIST_INT                  = "YT_PLAYLIST_INT";
-    public static final String          YT_ID                            = "YT_ID";
-    public static final String          YT_CHANNEL_TITLE                 = "YT_CHANNEL";
-    public static final String          YT_DATE                          = "YT_DATE";
-    public static final String          YT_VARIANTS                      = "YT_VARIANTS";
-    public static final String          YT_VARIANT                       = "YT_VARIANT";
+    public static final String                YT_TITLE                         = "YT_TITLE";
+    public static final String                YT_PLAYLIST_INT                  = "YT_PLAYLIST_INT";
+    public static final String                YT_ID                            = "YT_ID";
+    public static final String                YT_CHANNEL_TITLE                 = "YT_CHANNEL";
+    public static final String                YT_DATE                          = "YT_DATE";
+    public static final String                YT_VARIANTS                      = "YT_VARIANTS";
+    public static final String                YT_VARIANT                       = "YT_VARIANT";
     /**
      * @deprecated use {@link #YT_VARIANT_INFO}
      */
-    public static final String          YT_STREAMURL_VIDEO               = "YT_STREAMURL_VIDEO";
+    public static final String                YT_STREAMURL_VIDEO               = "YT_STREAMURL_VIDEO";
     /**
      * @deprecated use {@link #YT_VARIANT_INFO}
      */
-    public static final String          YT_STREAMURL_AUDIO               = "YT_STREAMURL_AUDIO";
+    public static final String                YT_STREAMURL_AUDIO               = "YT_STREAMURL_AUDIO";
     /**
      * @deprecated use {@link #YT_VARIANT_INFO}
      */
-    public static final String          YT_STREAMURL_VIDEO_SEGMENTS      = "YT_STREAMURL_VIDEO_SEGMENTS";
+    public static final String                YT_STREAMURL_VIDEO_SEGMENTS      = "YT_STREAMURL_VIDEO_SEGMENTS";
     /**
      * @deprecated use {@link #YT_VARIANT_INFO}
      */
-    public static final String          YT_STREAMURL_AUDIO_SEGMENTS      = "YT_STREAMURL_AUDIO_SEGMENTS";
-    private static final String         REGEX_HLSMPD_FROM_JSPLAYER_SETUP = "\"hlsvp\"\\s*:\\s*(\".*?\")";
+    public static final String                YT_STREAMURL_AUDIO_SEGMENTS      = "YT_STREAMURL_AUDIO_SEGMENTS";
+    private static final String               REGEX_HLSMPD_FROM_JSPLAYER_SETUP = "\"hlsvp\"\\s*:\\s*(\".*?\")";
 
     private static String handleRule(String s, final String line) throws PluginException {
         final String method = new Regex(line, "\\.([\\w\\d]+?)\\(\\s*\\)").getMatch(0);
@@ -827,13 +846,50 @@ public class YoutubeHelper {
     private HashSet<StreamMap>                       fmtMaps;
     private LinkedHashSet<StreamMap>                 mpdUrls;
     private HashMap<String, String>                  videoInfo;
-    private boolean                                  hlsEnabled          = true;
-    private boolean                                  dashMpdEnabled      = true;
-    private boolean                                  adaptiveFmtsEnabled = true;
-    private boolean                                  fmtMapEnabled       = true;
+    private boolean                                  loggedIn;
+    private final boolean                            hlsEnabled          = true;
+    private final boolean                            dashMpdEnabled      = true;
+    private final boolean                            adaptiveFmtsEnabled = true;
+    private final boolean                            fmtMapEnabled       = true;
     private String                                   html5PlayerJs;
     private YoutubeClipData                          vid;
     private String                                   html5PlayerSource;
+    private LinkedHashMap<String, Object>            ytInitialData;
+    private LinkedHashMap<String, Object>            ytInitialPlayerResponse;
+    private LinkedHashMap<String, Object>            ytPlayerConfig;
+    private LinkedHashMap<String, Object>            ytCfgSet;
+
+    /**
+     * @return the ytInitialData
+     */
+    public final LinkedHashMap<String, Object> getYtInitialData() {
+        return ytInitialData;
+    }
+
+    /**
+     * @return the ytInitialPlayerResponse
+     */
+    public final LinkedHashMap<String, Object> getYtInitialPlayerResponse() {
+        return ytInitialPlayerResponse;
+    }
+
+    /**
+     * @return the ytplayerConfig
+     */
+    public final LinkedHashMap<String, Object> getYtPlayerConfig() {
+        return ytPlayerConfig;
+    }
+
+    /**
+     * @return the ytcfgSet
+     */
+    public final LinkedHashMap<String, Object> getYtCfgSet() {
+        return ytCfgSet;
+    }
+
+    public final boolean getLoggedIn() {
+        return loggedIn;
+    }
 
     String descrambleSignature(final String sig) throws IOException, PluginException {
         if (sig == null) {
@@ -862,8 +918,16 @@ public class YoutubeHelper {
         }
         if (all == null || descrambler == null || des == null) {
             cache = new HashMap<String, String>();
+            //
             String html5PlayerSource = ensurePlayerSource();
-            descrambler = new Regex(html5PlayerSource, "set\\(\"signature\",([\\$\\w]+)\\([\\w]+\\)").getMatch(0);
+            descrambler = new Regex(html5PlayerSource, "\"signature\"\\s*,\\s*([\\$\\w]+)\\([\\$\\w\\.]+\\s*\\)\\s*\\)(\\s*\\)\\s*){0,};").getMatch(0);
+            if (descrambler == null) {
+                descrambler = new Regex(html5PlayerSource, "(\\w+)\\s*=\\s*function\\((\\w+)\\)\\{\\s*\\2=\\s*\\2\\.split\\(\"\"\\)").getMatch(0);
+                if (descrambler == null) {
+                    //
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                }
+            }
             final String func = Pattern.quote(descrambler) + "=function\\(([^)]+)\\)\\{(.+?return.*?)\\}";
             des = new Regex(html5PlayerSource, Pattern.compile(func, Pattern.DOTALL)).getMatch(1);
             all = new Regex(html5PlayerSource, Pattern.compile(Pattern.quote(descrambler) + "=function\\(([^)]+)\\)\\{(.+?return.*?)\\}.*?", Pattern.DOTALL)).getMatch(-1);
@@ -928,6 +992,9 @@ public class YoutubeHelper {
 
     private String ensurePlayerSource() throws IOException {
         if (html5PlayerSource == null) {
+            if (html5PlayerJs == null) {
+                throw new IOException("no html5 player js");
+            }
             html5PlayerSource = br.cloneBrowser().getPage(html5PlayerJs);
         }
         return html5PlayerSource;
@@ -1041,135 +1108,191 @@ public class YoutubeHelper {
     }
 
     protected void extractData() {
-        if (StringUtils.isEmpty(vid.title) && this.br.containsHTML("&title=")) {
-            final String match = this.br.getRegex("&title=([^&$]+)").getMatch(0);
-            if (StringUtils.isNotEmpty(match)) {
-                vid.title = Encoding.htmlDecode(match.replaceAll("\\+", " ").trim());
+        if (StringUtils.isEmpty(vid.title)) {
+            vid.title = getVidTitleFromMaps();
+            if (StringUtils.isEmpty(vid.title)) {
+                final String match = br.getRegex("document\\.title\\s*=\\s*\"(.*?) - YouTube\"").getMatch(0);
+                if (StringUtils.isNotEmpty(match)) {
+                    vid.title = Encoding.htmlDecode(match.replaceAll("\\+", " ").trim());
+                }
             }
         }
         if (StringUtils.isEmpty(vid.description)) {
-            String match = br.getRegex("<div id=\"watch-description-text\".*?><p id=\"eow-description\".*?>(.*?)</p\\s*>\\s*</div>\\s*<div id=\"watch-description-extras\"\\s*>").getMatch(0);
-            if (StringUtils.isNotEmpty(match)) {
-                // 04 Mai 2016
-                match = Encoding.htmlDecode(match.replaceAll("\\+", " ").trim().replaceAll("<br\\s*/>", "\r\n"));
-                // replace Timelinks
-                match = match.replaceAll("<a href=\"#\" onclick=\"[^\"]+\\((\\d+)\\*60 (\\d+)\\)[^\"]+\">(.*?)</a>", "\r\nJump to $3 https://youtu.be/" + vid.videoID + "?t=$1m$2s");
-                match = match.replaceAll("<a href=\"#\" onclick=\"[^\"]+\\((\\d+)\\*3600 (\\d+)\\*60 (\\d+)\\)[^\"]+\">(.*?)</a>", "\r\nJump to $4 https://youtu.be/" + vid.videoID + "?t=$1h$2m$3s");
-                match = match.replaceAll("<a.*?href=\"([^\"]*)\".*?>(.*?)</a\\s*>", "$1");
-                vid.description = match;
+            if (ytInitialPlayerResponse != null) {
+                vid.description = (String) JavaScriptEngineFactory.walkJson(ytInitialPlayerResponse, "videoDetails/shortDescription");
             }
             if (StringUtils.isEmpty(vid.description)) {
-                // 04 Mai 2016
-                match = br.getRegex("<meta name=\"description\" content=\"([^\"]*)").getMatch(0);
-                match = Encoding.htmlDecode(match.replaceAll("\\+", " ").trim().replaceAll("<br\\s*/>", "\r\n"));
-                match = match.replaceAll("<a href=\"#\" onclick=\"[^\"]+\\((\\d+)\\*60 (\\d+)\\)[^\"]+\">(.*?)</a>", "\r\nJump to $3 https://youtu.be/" + vid.videoID + "?t=$1m$2s");
-                match = match.replaceAll("<a.*?href=\"([^\"]*)\".*?>(.*?)</a\\s*>", "$1");
-                vid.description = match;
-            }
-            if (StringUtils.isEmpty(vid.description)) {
-                // video has no description
-                vid.description = "";
-            }
-        }
-        if (StringUtils.isEmpty(vid.title)) {
-            final String match = this.br.getRegex("<title>(.*?) - YouTube</title>").getMatch(0);
-            if (StringUtils.isNotEmpty(match)) {
-                vid.title = Encoding.htmlDecode(match.replaceAll("\\+", " ").trim());
-            }
-        }
-        if (vid.length <= 0) {
-            final String match = this.br.getRegex("\"length_seconds\"\\\\s*:\\s*(\\d+)").getMatch(0);
-            if (StringUtils.isNotEmpty(match)) {
-                vid.length = Integer.parseInt(match);
-            }
-        }
-        if (StringUtils.isEmpty(vid.title)) {
-            final String match = this.br.getRegex("<meta name=\"title\" content=\"(.*?)\">").getMatch(0);
-            if (StringUtils.isNotEmpty(match)) {
-                vid.title = Encoding.htmlDecode(match.trim());
+                if (ytInitialData != null) {
+                    // this one is super long and more complicated!
+                    final ArrayList<Object> tmp = (ArrayList<Object>) JavaScriptEngineFactory.walkJson(ytInitialData, "contents/twoColumnWatchNextResults/results/results/contents/{}/videoSecondaryInfoRenderer/description/runs");
+                    if (tmp != null) {
+                        // Construct the "text"
+                        final StringBuilder sb = new StringBuilder();
+                        for (final Object t : tmp) {
+                            final LinkedHashMap<String, Object> o = (LinkedHashMap<String, Object>) t;
+                            final String url = (String) JavaScriptEngineFactory.walkJson(o, "navigationEndpoint/urlEndpoint/url");
+                            final String text = (String) o.get("text");
+                            if (text != null) {
+                                if (sb.length() > 0) {
+                                    sb.append(" ");
+                                }
+                                if (url != null) {
+                                    sb.append(url);
+                                } else {
+                                    sb.append(text);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
-        if (vid.date <= 0) {
-            // dd MMM yyyy - old
-            final Locale locale = Locale.ENGLISH;
-            SimpleDateFormat formatter = new SimpleDateFormat("dd MMM yyyy", locale);
-            formatter.setTimeZone(TimeZone.getDefault());
-            String date = this.br.getRegex("class=\"watch-video-date\" >([ ]+)?(\\d{1,2} [A-Za-z]{3} \\d{4})</span>").getMatch(1);
-            if (date == null) {
-                date = this.br.getRegex("<strong[^>]*>Published on (\\d{1,2} [A-Za-z]{3} \\d{4})</strong>").getMatch(0);
-            }
-            // MMM dd, yyyy (20150508)
-            if (date == null) {
-                formatter = new SimpleDateFormat("MMM dd, yyyy", locale);
-                formatter.setTimeZone(TimeZone.getDefault());
-                date = this.br.getRegex("<strong[^>]*>Published on ([A-Za-z]{3} \\d{1,2}, \\d{4})</strong>").getMatch(0);
-                logger.info("Formatter " + "MMM dd, yyyy " + locale + " on " + date);
-            }
-            // yyyy-MM-dd (20150508)
-            if (date == null) {
-                formatter = new SimpleDateFormat("yyyy-MM-dd", locale);
-                formatter.setTimeZone(TimeZone.getDefault());
-                date = this.br.getRegex("<meta itemprop=\"datePublished\" content=\"(\\d{4}-\\d{2}-\\d{2})\">").getMatch(0);
-                logger.info("Formatter " + "yyyy-MM-dd " + locale + " on " + date);
-            }
-            if (date != null) {
-                try {
-                    vid.date = formatter.parse(date).getTime();
-                    logger.info("Date result " + vid.date + " " + new Date(vid.date));
-                } catch (final Exception e) {
-                    final LogSource log = LogController.getInstance().getPreviousThreadLogSource();
-                    log.log(e);
+        if (vid.date <= 0 && ytInitialData != null) {
+            final String string = (String) JavaScriptEngineFactory.walkJson(ytInitialData, "contents/twoColumnWatchNextResults/results/results/contents/{}/videoSecondaryInfoRenderer/dateText/simpleText");
+            if (string != null) {
+                // time. just parse for the date pattern(s).
+                String date = new Regex(string, "([A-Za-z]+ \\d+, \\d{4})").getMatch(0);
+                if (date != null) {
+                    // seen in MMM dd, yyyy
+                    final SimpleDateFormat formatter = new SimpleDateFormat("MMM dd, yyyy", Locale.ENGLISH);
+                    formatter.setTimeZone(TimeZone.getDefault());
+                    try {
+                        vid.date = formatter.parse(date).getTime();
+                        logger.info("Date result " + vid.date + " " + new Date(vid.date));
+                    } catch (final Exception e) {
+                        final LogSource log = LogController.getInstance().getPreviousThreadLogSource();
+                        log.log(e);
+                    }
+                } else if (new Regex(string, "\\d+\\s*(?:days?|hours?|minutes?|seconds?)").matches()) {
+                    // Streamed live 3 hours ago
+                    /*
+                     * streamed today.. x hours minutes etc. to keep it universal just show a day reference like above. parse, then
+                     * construct relative to users time. It should be equal to above as
+                     */
+                    final String tmpdays = new Regex(string, "(\\d+)\\s+days?").getMatch(0);
+                    final String tmphrs = new Regex(string, "(\\d+)\\s+hours?").getMatch(0);
+                    final String tmpmin = new Regex(string, "(\\d+)\\s+minutes?").getMatch(0);
+                    final String tmpsec = new Regex(string, "(\\d+)\\s+seconds?").getMatch(0);
+                    long days = 0, hours = 0, minutes = 0, seconds = 0;
+                    if (StringUtils.isNotEmpty(tmpdays)) {
+                        days = Integer.parseInt(tmpdays);
+                    }
+                    if (StringUtils.isNotEmpty(tmphrs)) {
+                        hours = Integer.parseInt(tmphrs);
+                    }
+                    if (StringUtils.isNotEmpty(tmpmin)) {
+                        minutes = Integer.parseInt(tmpmin);
+                    }
+                    if (StringUtils.isNotEmpty(tmpsec)) {
+                        seconds = Integer.parseInt(tmpsec);
+                    }
+                    final long time = System.currentTimeMillis() - ((days * 86400000) + (hours * 3600000) + (minutes * 60000) + (seconds * 1000));
+                    final Calendar c = Calendar.getInstance();
+                    c.setTimeInMillis(time);
+                    c.set(Calendar.HOUR_OF_DAY, 0);
+                    c.set(Calendar.MINUTE, 0);
+                    c.set(Calendar.SECOND, 0);
+                    vid.date = c.getTimeInMillis();
+                } else {
+                    System.out.println("error");
                 }
             }
         }
         if (StringUtils.isEmpty(vid.channelID)) {
-            String match = this.br.getRegex("\"channel_id\"\\: \"([^\"]+)\"").getMatch(0);
-            if (StringUtils.isEmpty(match)) {
-                match = this.br.getRegex("<meta itemprop=\"channelId\" content=\"([^\"]+)\">").getMatch(0);
-            }
-            if (StringUtils.isNotEmpty(match)) {
-                vid.channelID = Encoding.htmlDecode(match.trim());
-            }
+            vid.channelID = getChannelIdFromMaps();
         }
         if (vid.duration <= 0) {
-            final String[] match = this.br.getRegex("<meta itemprop=\"duration\" content=\"PT(\\d*)M(\\d*)S\">").getRow(0);
-            if (match != null) {
-                int dur = 0;
-                if (match[0].length() > 0) {
-                    dur += Integer.parseInt(match[0]) * 60 * 1000;
+            if (ytInitialPlayerResponse != null) {
+                final String tmp = (String) JavaScriptEngineFactory.walkJson(ytInitialPlayerResponse, "videoDetails/lengthSeconds");
+                if (tmp != null) {
+                    vid.duration = Integer.parseInt(tmp);
                 }
-                if (match[1].length() > 0) {
-                    dur += Integer.parseInt(match[1]) * 1000;
+            }
+            if (vid.duration <= 0) {
+                final String match = br.getRegex("\"length_seconds\"\\s*:\\s*(\\d+)").getMatch(0);
+                if (StringUtils.isNotEmpty(match)) {
+                    vid.duration = Integer.parseInt(match);
                 }
-                vid.duration = dur;
             }
         }
         if (StringUtils.isEmpty(vid.channelTitle)) {
-            String match = this.br.getRegex("<div class=\"yt-user-info\"><a [^>]*data-name[^>]*>(.*?)</a>").getMatch(0);
-            if (StringUtils.isEmpty(match) && StringUtils.isNotEmpty(vid.channelID)) {
-                // content warning regex.
-                match = this.br.getRegex("<div class=\"yt-user-info\">\\s*<a [^>]+ data-ytid=\"" + Pattern.quote(vid.channelID) + "\"[^>]*>(.*?)</a>").getMatch(0);
-            }
-            if (StringUtils.isEmpty(match)) {
-                // in the html5 json info
-                match = this.br.getRegex("\"author\":\\s*\"(.*?)\"").getMatch(0);
-            }
-            if (StringUtils.isNotEmpty(match)) {
-                vid.channelTitle = Encoding.htmlDecode(match.trim());
+            vid.channelTitle = getChannelTitleFromMaps();
+            if (StringUtils.isEmpty(vid.channelTitle)) {
+                String match = br.getRegex("<div class=\"yt-user-info\"><a [^>]*data-name[^>]*>(.*?)</a>").getMatch(0);
+                if (StringUtils.isEmpty(match) && StringUtils.isNotEmpty(vid.channelID)) {
+                    // content warning regex.
+                    match = br.getRegex("<div class=\"yt-user-info\">\\s*<a [^>]+ data-ytid=\"" + Pattern.quote(vid.channelID) + "\"[^>]*>(.*?)</a>").getMatch(0);
+                }
+                if (StringUtils.isNotEmpty(match)) {
+                    vid.channelTitle = Encoding.htmlDecode(match.trim());
+                }
             }
         }
         if (StringUtils.isEmpty(vid.user)) {
-            final String match = this.br.getRegex("temprop=\"url\" href=\"http://(www\\.)?youtube\\.com/user/([^<>\"]+)\"").getMatch(1);
-            // getVideoInfoWorkaroundUsed
-            final String vidWorkAround = this.br.getRegex("&author=(.*?)&").getMatch(0);
-            if (StringUtils.isNotEmpty(match)) {
-                vid.user = Encoding.htmlDecode(match.trim());
-            } else if (vid.channelTitle != null) {
-                vid.user = vid.channelTitle;
-            } else if (StringUtils.isNotEmpty(vidWorkAround)) {
-                vid.user = vidWorkAround;
+            vid.user = getUserFromMaps();
+            if (StringUtils.isEmpty(vid.user)) {
+                final String match = br.getRegex("temprop=\"url\" href=\"https?://(www\\.)?youtube\\.com/user/([^<>\"]+)\"").getMatch(1);
+                // getVideoInfoWorkaroundUsed
+                final String vidWorkAround = br.getRegex("&author=(.*?)&").getMatch(0);
+                if (StringUtils.isNotEmpty(match)) {
+                    vid.user = Encoding.htmlDecode(match.trim());
+                } else if (vid.channelTitle != null) {
+                    vid.user = vid.channelTitle;
+                } else if (StringUtils.isNotEmpty(vidWorkAround)) {
+                    vid.user = vidWorkAround;
+                }
             }
         }
+    }
+
+    public String getChannelTitleFromMaps() {
+        String result = null;
+        if (ytInitialPlayerResponse != null) {
+            result = (String) JavaScriptEngineFactory.walkJson(ytInitialPlayerResponse, "videoDetails/author");
+        }
+        if (StringUtils.isEmpty(result) && ytPlayerConfig != null) {
+            result = (String) JavaScriptEngineFactory.walkJson(ytPlayerConfig, "args/author");
+        }
+        return result;
+    }
+
+    public String getVidTitleFromMaps() {
+        String result = null;
+        if (ytInitialPlayerResponse != null) {
+            result = (String) JavaScriptEngineFactory.walkJson(ytInitialPlayerResponse, "videoDetails/title");
+        }
+        if (StringUtils.isEmpty(result) && ytInitialData != null) {
+            result = (String) JavaScriptEngineFactory.walkJson(ytInitialData, "contents/twoColumnWatchNextResults/results/results/contents/{}/videoPrimaryInfoRenderer/title/simpleText");
+        }
+        if (StringUtils.isEmpty(result) && ytPlayerConfig != null) {
+            result = (String) JavaScriptEngineFactory.walkJson(ytPlayerConfig, "args/title");
+        }
+        return result;
+    }
+
+    public String getUserFromMaps() {
+        String result = null;
+        if (ytInitialData != null) {
+            String string = (String) JavaScriptEngineFactory.walkJson(ytInitialData, "contents/twoColumnWatchNextResults/results/results/contents/{}/videoSecondaryInfoRenderer/owner/videoOwnerRenderer/navigationEndpoint/webNavigationEndpointData/url");
+            if (StringUtils.isEmpty(string)) {
+                string = (String) JavaScriptEngineFactory.walkJson(ytInitialData, "contents/twoColumnWatchNextResults/results/results/contents/{}/videoSecondaryInfoRenderer/owner/videoOwnerRenderer/navigationEndpoint/browseEndpoint/canonicalBaseUrl");
+            }
+            if (string != null) {
+                result = new Regex(string, "/user/(.+)").getMatch(0);
+            }
+        }
+        return result;
+    }
+
+    public String getChannelIdFromMaps() {
+        String result = null;
+        if (ytInitialPlayerResponse != null) {
+            result = (String) JavaScriptEngineFactory.walkJson(ytInitialPlayerResponse, "videoDetails/channelId");
+        }
+        if (StringUtils.isEmpty(result) && ytInitialPlayerResponse != null) {
+            result = (String) JavaScriptEngineFactory.walkJson(ytPlayerConfig, "args/ucid");
+        }
+        return result;
     }
 
     protected void handleContentWarning(final Browser ibr) throws Exception {
@@ -1238,15 +1361,19 @@ public class YoutubeHelper {
     }
 
     public void refreshVideo(final YoutubeClipData vid) throws Exception {
+        loggedIn = login(false, false);
         this.vid = vid;
         final Map<YoutubeITAG, StreamCollection> ret = new HashMap<YoutubeITAG, StreamCollection>();
         final YoutubeConfig cfg = PluginJsonConfig.get(YoutubeConfig.class);
         boolean loggedIn = br.getCookie("https://youtube.com", "LOGIN_INFO") != null;
-        this.br.setFollowRedirects(true);
+        br.setFollowRedirects(true);
         /* this cookie makes html5 available and skip controversy check */
-        this.br.setCookie("youtube.com", "PREF", "f1=50000000&hl=en");
-        this.br.getHeaders().put("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:10.0) Gecko/20150101 Firefox/44.0 (Chrome)");
+        br.setCookie("youtube.com", "PREF", "f1=50000000&hl=en");
+        // cookie for new Style(Polymer?)
+        // br.setCookie("youtube.com", "VISITOR_INFO1_LIVE", "Qa1hUZu3gtk");
+        br.getHeaders().put("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:10.0) Gecko/20150101 Firefox/44.0 (Chrome)");
         br.getPage(base + "/watch?v=" + vid.videoID + "&gl=US&hl=en&has_verified=1&bpctr=9999999999");
+        parserJson();
         vid.approxThreedLayout = br.getRegex("\"approx_threed_layout\"\\s*\\:\\s*\"([^\"]*)").getMatch(0);
         String[][] keyWordsGrid = br.getRegex("<meta\\s+property=\"([^\"]*)\"\\s+content=\"yt3d\\:([^\"]+)=([^\"]+)\">").getMatches();
         vid.keywords3D = new HashMap<String, String>();
@@ -1261,20 +1388,34 @@ public class YoutubeHelper {
             for (String s : keywords.split("[,]+")) {
                 vid.keywords.add(s);
             }
-        }
-        handleRentalVideos();
-        html5PlayerJs = this.br.getMatch("\"js\"\\s*:\\s*\"(.+?)\"");
-        if (html5PlayerJs != null) {
-            html5PlayerJs = html5PlayerJs.replace("\\/", "/");
-            html5PlayerJs = "http:" + html5PlayerJs;
-        }
-        if (html5PlayerJs == null) {
-            html5PlayerJs = br.getMatch("src=\"//([^\"<>]*?/base.js)\" name=\"player\\/base\"");
-            if (html5PlayerJs != null) {
-                html5PlayerJs = "https://" + html5PlayerJs;
+        } else {
+            final ArrayList<String> kws = (ArrayList<String>) JavaScriptEngineFactory.walkJson(ytInitialPlayerResponse, "videoDetails/keywords");
+            if (kws != null) {
+                for (String s : kws) {
+                    vid.keywords.add(s);
+                }
             }
         }
-        String unavailableReason = this.br.getRegex("<div id=\"player-unavailable\" class=\"[^\"]*\">.*?<h. id=\"unavailable-message\"[^>]*?>([^<]+)").getMatch(0);
+        handleRentalVideos();
+        html5PlayerJs = ytPlayerConfig != null ? (String) JavaScriptEngineFactory.walkJson(ytPlayerConfig, "assets/js") : null;
+        if (html5PlayerJs != null) {
+            html5PlayerJs = html5PlayerJs.replace("\\/", "/");
+            html5PlayerJs = br.getURL(html5PlayerJs).toString();
+        }
+        if (html5PlayerJs == null) {
+            html5PlayerJs = br.getMatch("src=\"((https?:)?//[^\"<>]*?/base.js)\"[^<>]*name=\"player\\\\?/base");
+            if (html5PlayerJs != null) {
+                html5PlayerJs = br.getURL(html5PlayerJs).toString();
+            }
+        }
+        if (html5PlayerJs == null) {
+            html5PlayerJs = br.getMatch("src=\"([^\"<>]*?/base.js)\"[^<>]*n");
+            if (html5PlayerJs != null) {
+                html5PlayerJs = br.getURL(html5PlayerJs).toString();
+            }
+        }
+        final String unavailableStatus = ytInitialPlayerResponse != null ? (String) JavaScriptEngineFactory.walkJson(ytInitialPlayerResponse, "playabilityStatus/status") : null;
+        final String unavailableReason = getUnavailableReason(unavailableStatus);
         fmtMaps = new HashSet<StreamMap>();
         subtitleUrls = new HashSet<String>();
         mpdUrls = new LinkedHashSet<StreamMap>();
@@ -1283,14 +1424,19 @@ public class YoutubeHelper {
         this.handleContentWarning(br);
         collectMapsFormHtmlSource(br.getRequest().getHtmlCode(), "base");
         Browser apiBrowser = null;
-        boolean apiRequired = br.getRegex(REGEX_FMT_MAP_FROM_JSPLAYER_SETUP).getMatch(0) == null;
-        apiBrowser = this.br.cloneBrowser();
-        apiBrowser.getPage(this.base + "/get_video_info?&video_id=" + vid.videoID + "&el=info&ps=default&eurl=&gl=US&hl=en");
-        collectMapsFromVideoInfo(apiBrowser.toString(), apiBrowser.getURL());
-        if (apiRequired) {
-            apiBrowser = this.br.cloneBrowser();
+        apiBrowser = br.cloneBrowser();
+        String sts = apiBrowser.getRegex("\"sts\"\\s*:\\s*(\\d+)").getMatch(0);
+        if (StringUtils.isEmpty(sts)) {
+            sts = "";
+        }
+        if (unavailableReason == null || !StringUtils.equals(unavailableReason, "Sign in to confirm your age")) {
+            apiBrowser.getPage(this.base + "/get_video_info?&video_id=" + vid.videoID + "&hl=en&sts=" + sts + "&disable_polymer=true&gl=US");
+            collectMapsFromVideoInfo(apiBrowser.toString(), apiBrowser.getURL());
+        }
+        if (fmtMaps.size() == 0) {
+            apiBrowser = br.cloneBrowser();
             apiBrowser.getPage(this.base + "/embed/" + vid.videoID);
-            apiBrowser.getPage(this.base + "/get_video_info?video_id=" + vid.videoID + "&eurl=" + Encoding.urlEncode("https://youtube.googleapis.com/v/" + vid.videoID) + "&sts=16511");
+            apiBrowser.getPage(this.base + "/get_video_info?ps=default&el=embedded&video_id=" + vid.videoID + "&hl=en&sts=" + sts + "&disable_polymer=true&gl=US&eurl=" + Encoding.urlEncode("https://youtube.googleapis.com/v/" + vid.videoID));
             if (!apiBrowser.containsHTML("url_encoded_fmt_stream_map")) {
                 // StatsManager.I().track("youtube/vInfo1");
                 apiBrowser.getPage(this.base + "/get_video_info?video_id=" + vid.videoID + "&hl=en&gl=US&el=detailpage&ps=default&eurl=&gl=US&hl=en");
@@ -1307,7 +1453,7 @@ public class YoutubeHelper {
                 throw new Exception("Paid Video");
             }
             final String errorcode = apiBrowser.getRegex("errorcode=(\\d+)").getMatch(0);
-            String reason = apiBrowser.getRegex("reason=([^\\&]+)").getMatch(0);
+            String reason = apiBrowser.getRegex("(?<!encoded_ad_safety_)reason=([^\\&]+)").getMatch(0);
             if ("150".equals(errorcode)) {
                 // http://www.youtube.com/watch?v=xxWHMmiOTVM
                 // reason=This video contains content from WMG. It is restricted from playback on certain sites.<br/><u><a
@@ -1322,99 +1468,80 @@ public class YoutubeHelper {
                 if (reason != null && reason.contains("Watch this video on YouTube") && !loggedIn) {
                     reason = "Account required. Add your Youtube Account to JDownloader";
                 }
-                vid.error = reason;
+                // do not save this message IF we have unavailableReason
+                if (unavailableReason == null) {
+                    vid.error = reason;
+                }
             }
         }
+        // videos have data available even though they are blocked.
+        extractData();
         if (unavailableReason != null) {
-            final String copyrightClaim = "This video is no longer available due to a copyright claim";
-            unavailableReason = Encoding.htmlDecode(unavailableReason.replaceAll("\\+", " ").trim());
             /*
              * If you consider using !unavailableReason.contains("this video is unavailable), you need to also ignore content warning
              */
-            if (br.containsHTML("This video is private")) {
-                // check if video is private
-                String subError = br.getRegex("<div id=\"unavailable-submessage\" class=\"[^\"]*\">(.*?)</div>").getMatch(0);
-                if (subError != null && !subError.matches("\\s*")) {
-                    subError = subError.trim();
-                    logger.warning("Private Video");
-                    logger.warning(unavailableReason + " :: " + subError);
-                    vid.error = "This Video is Private";
-                    return;
-                }
+            if (unavailableReason.contains("This video is private")) {
+                // id=TY1LpddyWvs, date=20170903, author=raztoki
+                // id=Vs4IJuhZ_1E, date=20170903, author=raztoki
+                logger.warning("Abort Error:" + unavailableReason);
+                vid.error = unavailableReason;
+                return;
             } else if (unavailableReason.startsWith("This video does not exist")) {
-                logger.warning(unavailableReason);
+                logger.warning("Abort Error:" + unavailableReason);
                 vid.error = unavailableReason;
                 return;
             } else if (unavailableReason.startsWith("This video has been removed")) {
                 // currently covering
                 // This video has been removed by the user. .:. ab4U0RwrOTI
                 // This video has been removed because its content violated YouTube&#39;s Terms of Service. .:. 7RA4A-4QqHU
-                logger.warning(unavailableReason);
+                logger.warning("Abort Error:" + unavailableReason);
                 vid.error = unavailableReason;
                 return;
             } else if (unavailableReason.contains("account associated with this video has been")) {
                 // currently covering
                 // This video is no longer available because the YouTube account associated with this video has been closed.
                 // id=wBVhciYW9Og, date=20141222, author=raztoki
-                logger.warning(unavailableReason);
+                logger.warning("Abort Error:" + unavailableReason);
                 vid.error = unavailableReason;
                 return;
             } else if ("This live event has ended.".equalsIgnoreCase(unavailableReason)) {
                 // currently covering
                 // This live event has ended.
                 // id=qEJwOuvDf7I, date=20150412, author=raztoki
-                logger.warning(unavailableReason);
+                logger.warning("Abort Error:" + unavailableReason);
                 vid.error = unavailableReason;
                 return;
-            } else if (unavailableReason.contains(copyrightClaim)) {
+            } else if (unavailableReason.contains("This video is no longer available due to a copyright claim")) {
                 // currently covering
                 // "One Monkey saves another Mo..."
                 // This video is no longer available due to a copyright claim by ANI Media Pvt Ltd.
                 // id=l8nBcj8ul7s, date=20141224, author=raztoki
+                // id=6cER1kK3Qwg, date=20170903, author=raztoki
                 // filename is shown in error.
-                vid.title = new Regex(unavailableReason, "\"(.*?(?:\\.\\.\\.)?)\"\n").getMatch(0);
-                logger.warning(copyrightClaim);
-                vid.error = copyrightClaim;
+                vid.title = new Regex(unavailableReason, "\"(.*?(?:\\.\\.\\.)?)\"\\n").getMatch(0);
+                logger.warning("Abort Error:" + unavailableReason);
+                vid.error = "This video is no longer available due to a copyright claim";
+                return;
+            } else if (unavailableReason.startsWith("This video contains content from ") && unavailableReason.contains("who has blocked it in your country on copyright grounds")) {
+                // not quite as the same as above.
+                // This video contains content from Beta Film GmbH, who has blocked it in your country on copyright grounds.
+                // id=cr8tgceA2qk, date=20170708, author=raztoki
+                final String error = "Geo Blocked due to copyright grounds";
+                logger.warning("Abort Error:" + unavailableReason);
+                vid.error = error;
                 return;
             } else if (unavailableReason.equals("This video is unavailable.") || unavailableReason.equals(/* 15.12.2014 */"This video is not available.")) {
-                // be aware that this is always present, only when there is a non whitespace suberror is it valid.
                 // currently covering
                 // Sorry about that. .:. 7BN5H7AVHUIE8 invalid uid.
-                String subError = br.getRegex("<div id=\"unavailable-submessage\" class=\"[^\"]*\">(.*?)</div>").getMatch(0);
-                if (subError != null && !subError.matches("\\s*")) {
-                    if (vid.error != null) {
-                        subError = vid.error;
-                        logger.warning(unavailableReason + " :: " + subError);
-                        return;
-                    }
-                    subError = subError.trim();
-                    logger.warning(unavailableReason + " :: " + subError);
-                    vid.error = unavailableReason;
-                    return;
-                }
+                logger.warning("Abort Error:" + unavailableReason);
+                vid.error = unavailableReason;
+                return;
+            } else {
+                logger.warning("Continue Error:" + unavailableReason);
             }
         }
-        this.extractData();
         doFeedScan();
         doUserAPIScan();
-        // String html5_fmt_map;
-        // String dashFmt;
-        // String dashmpd;
-        // if (apiRequired) {
-        // // age check bypass active
-        //
-        // html5_fmt_map = apiBrowser.getRegex("url_encoded_fmt_stream_map\\s*=\\s*(.*?)(&|$)").getMatch(0);
-        // html5_fmt_map = Encoding.htmlDecode(html5_fmt_map);
-        //
-        // dashFmt = apiBrowser.getRegex("adaptive_fmts\\s*=\\s*(.*?)(&|$)").getMatch(0);
-        // dashFmt = Encoding.htmlDecode(dashFmt);
-        //
-        // dashmpd = apiBrowser.getRegex("dashmpd\\s*=\\s*(.*?)(&|$)").getMatch(0);
-        // dashmpd = Encoding.htmlDecode(dashmpd);
-        //
-        // } else {
-        // regular url testlink: http://www.youtube.com/watch?v=4om1rQKPijI
-        // }
         fmtLoop: for (StreamMap fmt : fmtMaps) {
             boolean fmtChecked = false;
             for (final String line : fmt.mapData.split(",")) {
@@ -1459,18 +1586,18 @@ public class YoutubeHelper {
                     if (xml.trim().startsWith("#EXTM3U")) {
                         List<HlsContainer> containers = HlsContainer.getHlsQualities(clone);
                         for (HlsContainer c : containers) {
-                            String[][] params = new Regex(c.downloadurl, "/([^/]+)/([^/]+)").getMatches();
-                            final UrlQuery query = Request.parseQuery(c.downloadurl);
+                            String[][] params = new Regex(c.getDownloadurl(), "/([^/]+)/([^/]+)").getMatches();
+                            final UrlQuery query = Request.parseQuery(c.getDownloadurl());
                             if (params != null) {
                                 for (int i = 1; i < params.length; i++) {
                                     query.addAndReplace(params[i][0], Encoding.htmlDecode(params[i][1]));
                                 }
                             }
-                            query.addIfNoAvailable("codecs", c.codecs);
+                            query.addIfNoAvailable("codecs", c.getCodecs());
                             query.addIfNoAvailable("type", query.get("codecs") + "-" + query.get("mime"));
                             query.addIfNoAvailable("fps", query.get("frameRate"));
-                            query.addIfNoAvailable("width", c.width + "");
-                            query.addIfNoAvailable("height", c.height + "");
+                            query.addIfNoAvailable("width", c.getWidth() + "");
+                            query.addIfNoAvailable("height", c.getHeight() + "");
                             if (query.containsKey("width") && query.containsKey("height")) {
                                 query.addIfNoAvailable("size", query.get("width") + "x" + query.get("height"));
                             }
@@ -1482,14 +1609,14 @@ public class YoutubeHelper {
                             } catch (Throwable e) {
                                 logger.log(e);
                             }
-                            final YoutubeITAG itag = YoutubeITAG.get(Integer.parseInt(query.get("itag")), c.width, c.height, StringUtils.isEmpty(fps) ? -1 : Integer.parseInt(fps), query.getDecoded("type"), query, vid.date);
+                            final YoutubeITAG itag = YoutubeITAG.get(Integer.parseInt(query.get("itag")), c.getWidth(), c.getHeight(), StringUtils.isEmpty(fps) ? -1 : Integer.parseInt(fps), query.getDecoded("type"), query, vid.date);
                             if (itag == null) {
                                 this.logger.info("Unknown Line: " + query);
                                 this.logger.info(query + "");
                                 continue;
                             }
                             YoutubeStreamData vsd;
-                            vsd = new YoutubeStreamData(mpdUrl.src, vid, c.downloadurl, itag, query);
+                            vsd = new YoutubeStreamData(mpdUrl.src, vid, c.getDownloadurl(), itag, query);
                             try {
                                 vsd.setHeight(Integer.parseInt(query.get("height")));
                             } catch (Throwable e) {
@@ -1534,11 +1661,16 @@ public class YoutubeHelper {
                     logger.log(e);
                 } catch (Throwable e) {
                     logger.log(e);
-                    Map<String, String> infos = new HashMap<String, String>();
-                    infos.put("name", e.getMessage());
-                    infos.put("stacktrace", Exceptions.getStackTrace(e));
-                    StatsManager.I().track(0, null, "loadVideo/Exception", infos, CollectionName.PLUGINS);
                 }
+            }
+        }
+        if (unavailableReason != null) {
+            if (ret.size() == 0) {
+                logger.warning("Abort Error:" + unavailableReason);
+                vid.error = unavailableReason;
+                return;
+            } else {
+                logger.warning("Ignore Error:" + unavailableReason);
             }
         }
         for (YoutubeStreamData sd : loadThumbnails()) {
@@ -1551,8 +1683,40 @@ public class YoutubeHelper {
                 lst.add(sd);
             }
         }
+        for (Entry<YoutubeITAG, StreamCollection> es : ret.entrySet()) {
+            Collections.sort(es.getValue(), new Comparator<YoutubeStreamData>() {
+                @Override
+                public int compare(YoutubeStreamData o1, YoutubeStreamData o2) {
+                    int ret = CompareUtils.compare(o2.getUrl().contains("ei="), o1.getUrl().contains("ei="));
+                    return ret;
+                }
+            });
+        }
         vid.streams = ret;
         vid.subtitles = loadSubtitles();
+    }
+
+    /**
+     * ERROR <br />
+     * LOGIN_REQUIRED <br />
+     * UNPLAYABLE <br />
+     *
+     * @param unavailableStatus
+     * @return
+     * @author raztoki
+     */
+    private String getUnavailableReason(String unavailableStatus) {
+        String result = null;
+        if (StringUtils.isEmpty(unavailableStatus) || "OK".equals(unavailableStatus)) {
+            return null;
+        }
+        if ("LOGIN_REQUIRED".equals(unavailableStatus)) {
+            result = (String) JavaScriptEngineFactory.walkJson(ytInitialPlayerResponse, "playabilityStatus/errorScreen/playerErrorMessageRenderer/reason/simpleText");
+        } else {
+            // this covers "ERROR" and "UNPLAYABLE", probably covers others too. so make it future proof.
+            result = (String) JavaScriptEngineFactory.walkJson(ytInitialPlayerResponse, "playabilityStatus/reason");
+        }
+        return result;
     }
 
     private boolean isStreamDataAllowed(YoutubeStreamData match) {
@@ -1615,6 +1779,12 @@ public class YoutubeHelper {
     }
 
     private void collectMapsFormHtmlSource(String html, String src) {
+        final String captionTracks = new Regex(html, "captionTracks\\\\\"\\s*:(\\[.*?\\])\\s*,").getMatch(0);
+        if (captionTracks != null) {
+            String decoded = captionTracks.replaceAll("\\\\u", "\\u");
+            decoded = Encoding.unicodeDecode(decoded).replaceAll("\\\\", "");
+            subtitleUrls.add(decoded);
+        }
         collectSubtitleUrls(html, "['\"]TTS_URL['\"]\\s*:\\s*(['\"][^'\"]+['\"])");
         if (fmtMapEnabled) {
             collectFmtMap(html, REGEX_FMT_MAP_FROM_JSPLAYER_SETUP, "fmtMapJSPlayer." + src);
@@ -1646,9 +1816,13 @@ public class YoutubeHelper {
         for (Entry<String, String> es : map.toMap().entrySet()) {
             videoInfo.put(es.getKey(), Encoding.urlDecode(es.getValue(), false));
         }
-        String ttsurl = videoInfo.get("ttsurl");
+        final String ttsurl = videoInfo.get("ttsurl");
         if (StringUtils.isNotEmpty(ttsurl)) {
             subtitleUrls.add(ttsurl);
+        }
+        final String captionTracks = new Regex(videoInfo.get("player_response"), "captionTracks\"\\s*:(\\[.*?\\])\\s*,").getMatch(0);
+        if (StringUtils.isNotEmpty(captionTracks)) {
+            subtitleUrls.add(Encoding.unicodeDecode(captionTracks));
         }
         if (adaptiveFmtsEnabled) {
             String adaptive_fmts = videoInfo.get("adaptive_fmts");
@@ -1860,7 +2034,7 @@ public class YoutubeHelper {
             logger.warning("Download not possible: You have to pay to watch this video");
             throw new Exception(PAID_VIDEO + " Download not possible");
         }
-        if (br.containsHTML("watch-checkout-offers")) {
+        if (br.containsHTML("watch-checkout-offers") && !br.containsHTML("The Polymer Project Authors. All rights reserved")) {
             logger.warning("Download not possible: You have to pay to watch this video");
             throw new Exception(PAID_VIDEO + "Download not possible");
         }
@@ -1965,42 +2139,52 @@ public class YoutubeHelper {
     }
 
     private List<YoutubeStreamData> loadThumbnails() {
-        StreamCollection ret = new StreamCollection();
-        String best = br.getRegex("<meta property=\"og\\:image\" content=\".*?/(\\w+\\.jpg)\">").getMatch(0);
-        YoutubeStreamData match = new YoutubeStreamData(null, vid, "http://img.youtube.com/vi/" + vid.videoID + "/default.jpg", YoutubeITAG.IMAGE_LQ, null);
+        final StreamCollection ret = new StreamCollection();
+        final String best = br.getRegex("<meta property=\"og\\:image\" content=\".*?/(\\w+\\.jpg)\">").getMatch(0);
+        YoutubeStreamData match = (new YoutubeStreamData(null, vid, "https://i.ytimg.com/vi/" + vid.videoID + "/maxresdefault.jpg", YoutubeITAG.IMAGE_MAX, null));
+        if (isStreamDataAllowed(match)) {
+            final Browser check = br.cloneBrowser();
+            check.setFollowRedirects(true);
+            try {
+                check.openHeadConnection(match.getUrl()).disconnect();
+                final URLConnectionAdapter con = check.getHttpConnection();
+                if (con.isOK() && (con.isContentDisposition() || StringUtils.contains(con.getContentType(), "image"))) {
+                    ret.add(match);
+                }
+            } catch (final Exception e) {
+                logger.log(e);
+            }
+        }
+        match = new YoutubeStreamData(null, vid, "https://i.ytimg.com/vi/" + vid.videoID + "/default.jpg", YoutubeITAG.IMAGE_LQ, null);
         if (isStreamDataAllowed(match)) {
             ret.add(match);
             if (best != null && best.equals("default.jpg")) {
                 return ret;
             }
         }
-        match = (new YoutubeStreamData(null, vid, "http://img.youtube.com/vi/" + vid.videoID + "/mqdefault.jpg", YoutubeITAG.IMAGE_MQ, null));
+        match = (new YoutubeStreamData(null, vid, "https://i.ytimg.com/vi/" + vid.videoID + "/mqdefault.jpg", YoutubeITAG.IMAGE_MQ, null));
         if (isStreamDataAllowed(match)) {
             ret.add(match);
             if (best != null && best.equals("mqdefault.jpg")) {
                 return ret;
             }
         }
-        match = (new YoutubeStreamData(null, vid, "http://img.youtube.com/vi/" + vid.videoID + "/hqdefault.jpg", YoutubeITAG.IMAGE_HQ, null));
+        match = (new YoutubeStreamData(null, vid, "https://i.ytimg.com/vi/" + vid.videoID + "/hqdefault.jpg", YoutubeITAG.IMAGE_HQ, null));
         if (isStreamDataAllowed(match)) {
             ret.add(match);
             if (best != null && best.equals("hqdefault.jpg")) {
                 return ret;
             }
         }
-        match = (new YoutubeStreamData(null, vid, "http://img.youtube.com/vi/" + vid.videoID + "/maxresdefault.jpg", YoutubeITAG.IMAGE_MAX, null));
-        if (isStreamDataAllowed(match)) {
-            ret.add(match);
-        }
         return ret;
     }
 
     public void login(final Account account, final boolean refresh, final boolean showDialog) throws Exception {
         try {
-            this.br.setDebug(true);
-            this.br.setCookiesExclusive(true);
+            br.setDebug(true);
+            br.setCookiesExclusive(true);
             // delete all cookies
-            this.br.clearCookies(null);
+            br.clearCookies(null);
             Thread thread = Thread.currentThread();
             boolean forceUpdateAndBypassCache = thread instanceof AccountCheckerThread && ((AccountCheckerThread) thread).getJob().isForce();
             br.setCookie("http://youtube.com", "PREF", "hl=en-GB");
@@ -2013,21 +2197,21 @@ public class YoutubeHelper {
                         for (final Map.Entry<String, String> cookieEntry : cookies.entrySet()) {
                             final String key = cookieEntry.getKey();
                             final String value = cookieEntry.getValue();
-                            this.br.setCookie("youtube.com", key, value);
+                            br.setCookie("youtube.com", key, value);
                         }
                         if (!refresh) {
                             return;
                         } else {
-                            this.br.getPage("https://www.youtube.com");
+                            br.getPage("https://www.youtube.com");
                             br.followRedirect(true);
-                            if (this.br.containsHTML("<span.*?>\\s*Sign out\\s*</span>")) {
+                            if (br.containsHTML("<span.*?>\\s*Sign out\\s*</span>")) {
                                 return;
                             }
                         }
                     }
                 }
             }
-            this.br.setFollowRedirects(true);
+            br.setFollowRedirects(true);
             GoogleHelper helper = new GoogleHelper(br) {
                 @Override
                 protected boolean validateSuccess() {
@@ -2038,7 +2222,7 @@ public class YoutubeHelper {
                     String sidt = new Regex(url, "accounts\\/SetSID\\?ssdc\\=1\\&sidt=([^\\&]+)").getMatch(0);
                     if (sidt != null) {
                         String jsonUrl = br.getRegex("uri\\:\\s*\\'(.*?)\\'\\,").getMatch(0);
-                        jsonUrl = Encoding.unescape(jsonUrl);
+                        jsonUrl = Encoding.unicodeDecode(jsonUrl);
                         br.getPage(jsonUrl);
                         return null;
                     }
@@ -2052,7 +2236,7 @@ public class YoutubeHelper {
             helper.setCacheEnabled(false);
             if (helper.login(account)) {
                 final HashMap<String, String> cookies = new HashMap<String, String>();
-                final Cookies cYT = this.br.getCookies("youtube.com");
+                final Cookies cYT = br.getCookies("youtube.com");
                 for (final Cookie c : cYT.getCookies()) {
                     cookies.put(c.getKey(), c.getValue());
                 }
@@ -2093,7 +2277,7 @@ public class YoutubeHelper {
         }
     }
 
-    public void login(final boolean refresh, final boolean showDialog) {
+    public boolean login(final boolean refresh, final boolean showDialog) {
         ArrayList<Account> accounts = AccountController.getInstance().getAllAccounts("youtube.com");
         if (accounts != null && accounts.size() != 0) {
             final Iterator<Account> it = accounts.iterator();
@@ -2103,11 +2287,12 @@ public class YoutubeHelper {
                     try {
                         this.login(n, refresh, showDialog);
                         if (n.isValid()) {
-                            return;
+                            return true;
                         }
                     } catch (final Exception e) {
                         n.setValid(false);
-                        return;
+                        // should we not try other accounts??
+                        return false;
                     }
                 }
             }
@@ -2122,11 +2307,11 @@ public class YoutubeHelper {
                     try {
                         this.login(n, refresh, showDialog);
                         if (n.isValid()) {
-                            return;
+                            return true;
                         }
                     } catch (final Exception e) {
                         n.setValid(false);
-                        return;
+                        return false;
                     }
                 }
             }
@@ -2140,16 +2325,16 @@ public class YoutubeHelper {
                     try {
                         this.login(n, refresh, showDialog);
                         if (n.isValid()) {
-                            return;
+                            return true;
                         }
                     } catch (final Exception e) {
                         n.setValid(false);
-                        return;
+                        return false;
                     }
                 }
             }
         }
-        return;
+        return false;
     }
 
     public static final String YT_LENGTH_SECONDS     = "YT_LENGTH_SECONDS";
@@ -2199,7 +2384,6 @@ public class YoutubeHelper {
         } catch (Throwable e) {
             e.printStackTrace();
         }
-        // channelname
         for (YoutubeReplacer r : REPLACER) {
             formattedFilename = r.replace(formattedFilename, this, link);
         }
@@ -2209,6 +2393,44 @@ public class YoutubeHelper {
             e.printStackTrace();
         }
         return formattedFilename;
+    }
+
+    private static Set<AbstractFFmpegBinary.FLAG> FFMPEG_SUPPORTED_FLAGS = null;
+
+    private synchronized static Boolean isSupported(YoutubeITAG itag) {
+        if (itag != null) {
+            if (FFMPEG_SUPPORTED_FLAGS == null) {
+                final LogInterface logger = LogController.CL(true);
+                final FFmpeg ffmpeg = new FFmpeg(null) {
+                    @Override
+                    public LogInterface getLogger() {
+                        return logger;
+                    }
+                };
+                if (ffmpeg.isAvailable() && ffmpeg.isCompatible()) {
+                    FFMPEG_SUPPORTED_FLAGS = ffmpeg.getSupportedFlags();
+                }
+            }
+            if (FFMPEG_SUPPORTED_FLAGS != null) {
+                if (itag.getVideoCodec() != null) {
+                    switch (itag.getVideoCodec()) {
+                    case AV1:
+                        return FFMPEG_SUPPORTED_FLAGS.contains(AbstractFFmpegBinary.FLAG.AV1);
+                    }
+                }
+                if (itag.getAudioCodec() != null) {
+                    switch (itag.getAudioCodec()) {
+                    case OPUS:
+                    case OPUS_SPATIAL:
+                        return FFMPEG_SUPPORTED_FLAGS.contains(AbstractFFmpegBinary.FLAG.OPUS);
+                    case VORBIS:
+                    case VORBIS_SPATIAL:
+                        return FFMPEG_SUPPORTED_FLAGS.contains(AbstractFFmpegBinary.FLAG.VORBIS);
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     protected YoutubeStreamData parseLine(final UrlQuery query, StreamMap src) throws MalformedURLException, IOException, PluginException {
@@ -2224,6 +2446,10 @@ public class YoutubeHelper {
                 url = new Regex(fallback_host, "url=(.+)").getMatch(0);
             }
         }
+        if (!url.contains("ei=")) {
+            System.out.println("ei");
+        }
+        // if an ei=... parameter is missing, the url is invalid and will probably return a 403 response code
         if (StringUtils.isEmpty(url)) {
             throw new WTFException("No Url found " + query);
         }
@@ -2266,11 +2492,14 @@ public class YoutubeHelper {
         String itagString = query.get("itag");
         try {
             final YoutubeITAG itag = YoutubeITAG.get(Integer.parseInt(query.get("itag")), width, height, StringUtils.isEmpty(fps) ? -1 : Integer.parseInt(fps), type, query, vid.date);
+            if (itag != null && Boolean.FALSE.equals(isSupported(itag))) {
+                this.logger.info("FFmpeg support for Itag'" + itag + "' is missing");
+                return null;
+            }
             final String quality = Encoding.urlDecode(query.get("quality"), false);
             logger.info(Encoding.urlDecode(JSonStorage.toString(query.list()), false));
             if (url != null && itag != null) {
-                YoutubeStreamData vsd;
-                vsd = new YoutubeStreamData(src.src, vid, url, itag, query);
+                final YoutubeStreamData vsd = new YoutubeStreamData(src.src, vid, url, itag, query);
                 vsd.setHeight(height);
                 vsd.setWidth(width);
                 vsd.setFps(fps);
@@ -2322,110 +2551,182 @@ public class YoutubeHelper {
             if (proxy != null) {
                 HTTPProxy prxy = HTTPProxy.getHTTPProxy(proxy);
                 if (prxy != null) {
-                    this.br.setProxy(prxy);
+                    br.setProxy(prxy);
                 } else {
                 }
                 return;
             }
         }
-        this.br.setProxy(this.br.getThreadProxy());
+        br.setProxy(br.getThreadProxy());
     }
 
     private ArrayList<YoutubeSubtitleStorable> loadSubtitles() throws IOException, ParserConfigurationException, SAXException {
-        HashMap<String, YoutubeSubtitleStorable> urls = new HashMap<String, YoutubeSubtitleStorable>();
+        HashMap<String, List<YoutubeSubtitleStorable>> urls = new HashMap<String, List<YoutubeSubtitleStorable>>();
         for (String ttsUrl : subtitleUrls) {
-            String xml = br.getPage(replaceHttps(ttsUrl + "&asrs=1&fmts=1&tlangs=1&ts=" + System.currentTimeMillis() + "&type=list"));
-            String name = null;
-            DocumentBuilder docBuilder = createXMLParser();
-            InputSource is = new InputSource(new StringReader(xml));
-            Document doc = docBuilder.parse(is);
-            NodeList tracks = doc.getElementsByTagName("track");
-            YoutubeSubtitleStorable defaultLanguage = null;
-            for (int trackIndex = 0; trackIndex < tracks.getLength(); trackIndex++) {
-                Element track = (Element) tracks.item(trackIndex);
-                String trackID = track.getAttribute("id");
-                String lang = track.getAttribute("lang_code");
-                name = track.hasAttribute("name") ? track.getAttribute("name") : name;
-                String kind = track.getAttribute("kind");
-                String langOrg = track.getAttribute("lang_original");
-                String langTrans = track.getAttribute("lang_translated");
-                if (name == null) {
-                    name = "";
-                }
-                if (kind == null) {
-                    kind = "";
-                }
-                if (StringUtils.isNotEmpty(langTrans)) {
-                    langOrg = langTrans;
-                }
-                if (StringUtils.isEmpty(langOrg)) {
-                    langOrg = TranslationFactory.stringToLocale(lang).getDisplayLanguage(Locale.ENGLISH);
-                }
-                YoutubeSubtitleStorable old = urls.get(lang);
-                if (old != null) {
-                    // speech recognition
-                    if ("asr".equalsIgnoreCase(old.getKind())) {
-                        urls.put(lang, new YoutubeSubtitleStorable(ttsUrl, name, lang, null, kind));
+            if (ttsUrl.startsWith("[")) {
+                final List<Object> tts = JSonStorage.restoreFromString(ttsUrl, TypeRef.LIST);
+                if (tts != null) {
+                    for (final Object object : tts) {
+                        if (object instanceof Map) {
+                            final Map<String, Object> map = (Map<String, Object>) object;
+                            final Object isTranslatable = map.get("isTranslatable");
+                            if (!"true".equalsIgnoreCase(String.valueOf(isTranslatable))) {
+                                continue;
+                            }
+                            String url = (String) map.get("baseUrl");
+                            if (url == null) {
+                                continue;
+                            } else {
+                                url = br.getURL(url).toString();
+                            }
+                            String lang = (String) map.get("languageCode");
+                            String name = null;
+                            if (map.get("name") instanceof Map) {
+                                Map<String, Object> nameMap = (Map<String, Object>) map.get("name");
+                                name = (String) nameMap.get("simpleText");
+                            }
+                            String kind = (String) map.get("kind");
+                            if (name == null) {
+                                name = "";
+                            }
+                            if (kind == null) {
+                                kind = "";
+                            }
+                            final String lngID = lang + kind;
+                            List<YoutubeSubtitleStorable> list = urls.get(lngID);
+                            final YoutubeSubtitleStorable info = new YoutubeSubtitleStorable(null, name, lang, null, kind);
+                            info.setFullUrl(url);
+                            if (info._getLocale() == null) {
+                                // unknown language
+                                logger.info("Unknown Subtitle Language: " + JSonStorage.serializeToJson(info));
+                                continue;
+                            }
+                            if (list == null) {
+                                list = new ArrayList<YoutubeSubtitleStorable>();
+                                urls.put(lngID, list);
+                            }
+                            if (list.size() > 0) {
+                                info.setMulti(list.size());
+                            }
+                            list.add(info);
+                            // if ("true".equalsIgnoreCase(track.getAttribute("lang_default"))) {
+                            // defaultLanguage = info;
+                            // }
+                            // System.out.println(lang);
+                        }
                     }
-                    continue;
+                    final ArrayList<YoutubeSubtitleStorable> ret = new ArrayList<YoutubeSubtitleStorable>();
+                    for (List<YoutubeSubtitleStorable> list : urls.values()) {
+                        ret.addAll(list);
+                    }
+                    return ret;
                 }
-                YoutubeSubtitleStorable info;
-                info = new YoutubeSubtitleStorable(ttsUrl, name, lang, null, kind);
-                if (info._getLocale() == null) {
-                    // unknown language
-                    logger.info("Unknown Subtitle Language: " + JSonStorage.serializeToJson(info));
-                    continue;
-                }
-                urls.put(lang, info);
-                if ("true".equalsIgnoreCase(track.getAttribute("lang_default"))) {
-                    defaultLanguage = info;
-                }
-                // System.out.println(lang);
-            }
-            if (defaultLanguage != null) {
-                NodeList targets = doc.getElementsByTagName("target");
-                for (int targetIndex = 0; targetIndex < targets.getLength(); targetIndex++) {
-                    Element target = (Element) targets.item(targetIndex);
-                    String targetID = target.getAttribute("id");
-                    String lang = target.getAttribute("lang_code");
-                    String kind = target.getAttribute("kind");
-                    String langOrg = target.getAttribute("lang_original");
-                    String langTrans = target.getAttribute("lang_translated");
-                    String urlfrag = target.getAttribute("urlfrag");
+            } else {
+                String xml = br.getPage(replaceHttps(ttsUrl + "&asrs=1&fmts=1&tlangs=1&ts=" + System.currentTimeMillis() + "&type=list"));
+                String name = null;
+                DocumentBuilder docBuilder = createXMLParser();
+                InputSource is = new InputSource(new StringReader(xml));
+                Document doc = docBuilder.parse(is);
+                NodeList tracks = doc.getElementsByTagName("track");
+                YoutubeSubtitleStorable defaultLanguage = null;
+                for (int trackIndex = 0; trackIndex < tracks.getLength(); trackIndex++) {
+                    Element track = (Element) tracks.item(trackIndex);
+                    String trackID = track.getAttribute("id");
+                    final String cantran = track.getAttribute("cantran");
+                    if (!"true".equalsIgnoreCase(cantran)) {
+                        continue;
+                    }
+                    String lang = track.getAttribute("lang_code");
+                    name = track.hasAttribute("name") ? track.getAttribute("name") : name;
+                    String kind = track.getAttribute("kind");
+                    String langOrg = track.getAttribute("lang_original");
+                    String langTrans = track.getAttribute("lang_translated");
                     if (name == null) {
                         name = "";
                     }
                     if (kind == null) {
                         kind = "";
                     }
+                    final String lngID = lang + kind;
                     if (StringUtils.isNotEmpty(langTrans)) {
                         langOrg = langTrans;
                     }
                     if (StringUtils.isEmpty(langOrg)) {
                         langOrg = TranslationFactory.stringToLocale(lang).getDisplayLanguage(Locale.ENGLISH);
                     }
-                    YoutubeSubtitleStorable old = urls.get(lang);
-                    if (old != null) {
-                        // speech recognition
-                        // if ("asr".equalsIgnoreCase(old.getKind())) {
-                        // urls.put(lang, new YoutubeSubtitleInfo(ttsUrl, lang, name, kind, langOrg));
-                        //
-                        // }
-                        continue;
-                    }
-                    YoutubeSubtitleStorable info = new YoutubeSubtitleStorable(ttsUrl, name, lang, defaultLanguage.getLanguage(), defaultLanguage.getKind());
-                    // br.getPage(new GetRequest(info.createUrl()));
+                    List<YoutubeSubtitleStorable> list = urls.get(lngID);
+                    final YoutubeSubtitleStorable info = new YoutubeSubtitleStorable(ttsUrl, name, lang, null, kind);
                     if (info._getLocale() == null) {
                         // unknown language
                         logger.info("Unknown Subtitle Language: " + JSonStorage.serializeToJson(info));
                         continue;
                     }
-                    urls.put(lang, info);
-                    // System.out.println("->" + lang);
+                    if (list == null) {
+                        list = new ArrayList<YoutubeSubtitleStorable>();
+                        urls.put(lngID, list);
+                    }
+                    if (list.size() > 0) {
+                        info.setMulti(list.size());
+                    }
+                    list.add(info);
+                    if ("true".equalsIgnoreCase(track.getAttribute("lang_default"))) {
+                        defaultLanguage = info;
+                    }
+                    // System.out.println(lang);
+                }
+                if (defaultLanguage != null) {
+                    NodeList targets = doc.getElementsByTagName("target");
+                    for (int targetIndex = 0; targetIndex < targets.getLength(); targetIndex++) {
+                        Element target = (Element) targets.item(targetIndex);
+                        String targetID = target.getAttribute("id");
+                        String lang = target.getAttribute("lang_code");
+                        String kind = target.getAttribute("kind");
+                        String langOrg = target.getAttribute("lang_original");
+                        String langTrans = target.getAttribute("lang_translated");
+                        String urlfrag = target.getAttribute("urlfrag");
+                        if (name == null) {
+                            name = "";
+                        }
+                        if (kind == null) {
+                            kind = "";
+                        }
+                        final String lngID = lang + kind;
+                        if (StringUtils.isNotEmpty(langTrans)) {
+                            langOrg = langTrans;
+                        }
+                        if (StringUtils.isEmpty(langOrg)) {
+                            langOrg = TranslationFactory.stringToLocale(lang).getDisplayLanguage(Locale.ENGLISH);
+                        }
+                        List<YoutubeSubtitleStorable> list = urls.get(lngID);
+                        if (list != null) {
+                            continue;
+                        }
+                        final String cantran = target.getAttribute("cantran");
+                        if (!"true".equalsIgnoreCase(cantran)) {
+                            continue;
+                        }
+                        final YoutubeSubtitleStorable info = new YoutubeSubtitleStorable(ttsUrl, name, lang, defaultLanguage.getLanguage(), defaultLanguage.getKind());
+                        // br.getPage(new GetRequest(info.createUrl()));
+                        if (info._getLocale() == null) {
+                            // unknown language
+                            logger.info("Unknown Subtitle Language: " + JSonStorage.serializeToJson(info));
+                            continue;
+                        }
+                        if (list == null) {
+                            list = new ArrayList<YoutubeSubtitleStorable>();
+                            urls.put(lngID, list);
+                        }
+                        list.add(info);
+                        // System.out.println("->" + lang);
+                    }
                 }
             }
         }
-        return new ArrayList<YoutubeSubtitleStorable>(urls.values());
+        final ArrayList<YoutubeSubtitleStorable> ret = new ArrayList<YoutubeSubtitleStorable>();
+        for (List<YoutubeSubtitleStorable> list : urls.values()) {
+            ret.addAll(list);
+        }
+        return ret;
     }
 
     // public List<YoutubeBasicVariant> getVariantByIds(String... extra) {
@@ -2557,7 +2858,12 @@ public class YoutubeHelper {
                             if (proxies != null && proxies.size() > 0) {
                                 clone.setProxySelector(new StaticProxySelector(proxies.get(0)));
                             }
-                            FFprobe ffmpeg = new FFprobe(clone);
+                            FFprobe ffmpeg = new FFprobe(clone) {
+                                @Override
+                                public LogInterface getLogger() {
+                                    return YoutubeHelper.this.logger;
+                                }
+                            };
                             // probe.isAvailable()
                             checkFFProbe(ffmpeg, "Detect the actual Audio Bitrate");
                             StreamInfo streamInfo = ffmpeg.getStreamInfo(vStream.getUrl());
@@ -2587,6 +2893,34 @@ public class YoutubeHelper {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    public void parserJson() throws Exception {
+        {
+            final String ytInitialData = br.getRegex("window\\[\"ytInitialData\"\\]\\s*=\\s*(\\{.*?\\});[\r\n]").getMatch(0);
+            if (ytInitialData != null) {
+                this.ytInitialData = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaMap(ytInitialData);
+            }
+        }
+        {
+            final String ytInitialPlayerResponse = br.getRegex("window\\[\"ytInitialPlayerResponse\"\\]\\s*=\\s*\\(\\s*(\\{.*?\\})\\);[\r\n]").getMatch(0);
+            if (ytInitialPlayerResponse != null) {
+                this.ytInitialPlayerResponse = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaMap(ytInitialPlayerResponse);
+            }
+        }
+        {
+            final String ytplayerConfig = br.getRegex("ytplayer\\.config\\s*=\\s*\\s*(\\{.*?\\});ytplayer\\.load").getMatch(0);
+            if (ytplayerConfig != null) {
+                this.ytPlayerConfig = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaMap(ytplayerConfig);
+            }
+        }
+        {
+            // there are many of these on the page
+            final String ytcfgSet = br.getRegex("ytcfg\\.set\\((\\{.*?\\})\\);ytcfg\\.set").getMatch(0);
+            if (ytcfgSet != null) {
+                this.ytCfgSet = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaMap(ytcfgSet);
             }
         }
     }

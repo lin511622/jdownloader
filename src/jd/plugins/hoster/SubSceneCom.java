@@ -13,12 +13,10 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.IOException;
-
 import jd.PluginWrapper;
+import jd.controlling.downloadcontroller.SingleDownloadController;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.plugins.DownloadLink;
@@ -26,11 +24,11 @@ import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
-import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "subscene.com" }, urls = { "https?://(\\w+\\.)?subscene\\.com/(subtitles/[a-z0-9\\-_]+/[a-z0-9\\-_]+/\\d+|[a-z0-9]+/[a-z0-9\\-]+/subtitle\\-\\d+\\.aspx)" }) 
-public class SubSceneCom extends PluginForHost {
+import org.jdownloader.plugins.components.antiDDoSForHost;
 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "subscene.com" }, urls = { "https?://(\\w+\\.)?subscene\\.com/(subtitles/[a-z0-9\\-_]+/[a-z0-9\\-_]+/\\d+|[a-z0-9]+/[a-z0-9\\-]+/subtitle\\-\\d+\\.aspx)" })
+public class SubSceneCom extends antiDDoSForHost {
     public SubSceneCom(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -41,10 +39,18 @@ public class SubSceneCom extends PluginForHost {
     }
 
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
-        br.getPage(link.getDownloadURL());
+        try {
+            getPage(link.getDownloadURL());
+        } catch (PluginException e) {
+            logger.log(e);
+            if (Thread.currentThread() instanceof SingleDownloadController && e.getLinkStatus() == LinkStatus.ERROR_CAPTCHA) {
+                return AvailableStatus.UNCHECKABLE;
+            }
+            throw e;
+        }
         if (br.containsHTML("(>An error occurred while processing your request|>Server Error|>Page Not Found<)")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
@@ -89,13 +95,16 @@ public class SubSceneCom extends PluginForHost {
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception, PluginException {
         requestFileInformation(downloadLink);
-        final String dllink = br.getRegex("\"(/subtitle/download\\?mac=[^<>\"]*?)\"").getMatch(0);
+        String dllink = br.getRegex("\"(/subtitle/download\\?mac=[^<>\"]*?)\"").getMatch(0);
+        if (dllink == null) {
+            dllink = br.getRegex("class=\"download\">\\s*<a href=\"(/subtitles?/[^<>\"]*?)\"").getMatch(0);
+        }
         if (dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         // Resume and chunks disabled, not needed for such small files & can't
         // test
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, "http://subscene.com" + dllink, false, 1);
+        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, false, 1);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -116,5 +125,4 @@ public class SubSceneCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

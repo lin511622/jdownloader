@@ -1,6 +1,7 @@
 package jd.plugins.hoster;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -22,7 +23,7 @@ import org.appwork.utils.formatter.TimeFormatter;
 import org.jdownloader.plugins.components.usenet.UsenetAccountConfigInterface;
 import org.jdownloader.plugins.components.usenet.UsenetServer;
 
-@HostPlugin(revision = "$Revision: 31032 $", interfaceVersion = 3, names = { "usenet.nl" }, urls = { "" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "usenet.nl" }, urls = { "" })
 public class UseNetNL extends UseNet {
     public UseNetNL(PluginWrapper wrapper) {
         super(wrapper);
@@ -46,7 +47,7 @@ public class UseNetNL extends UseNet {
         try {
             if (cookies != null) {
                 br.setCookies(getHost(), cookies);
-                br.getPage("https://en.usenet.nl/unf/memberarea/obj/user/usShowUpgrade.cfm?sLangToken=ENG");
+                br.getPage("https://en.usenet.nl/unf/memberarea/obj/user/usShowUpgrade.cfm");
                 final Form login = br.getFormbyProperty("id", "login-modal-form");
                 if (br.getCookie(getHost(), "SNUUID") == null || login != null) {
                     br.getCookies(getHost()).clear();
@@ -85,25 +86,31 @@ public class UseNetNL extends UseNet {
                 } else if (br.getCookie(getHost(), "SNUUID") == null) {
                     throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
                 }
-                br.getPage("https://en.usenet.nl/unf/memberarea/obj/user/usShowUpgrade.cfm?sLangToken=ENG");
+                br.getPage("https://en.usenet.nl/unf/memberarea/obj/user/usShowUpgrade.cfm");
             }
+            br.getPage("?sLangToken=ENG");
             account.saveCookies(br.getCookies(getHost()), "");
             final String currentDownloadVolume = br.getRegex("Current download volume\\s*<br />\\s*([0-9\\. GBMT]+)").getMatch(0);
             final String currentPlan = br.getRegex("My usenet.nl plan:</td>\\s*<td>\\s*(.*?)\\s*</td>").getMatch(0);
             final String validUntil = br.getRegex("Contract valid until:</td>\\s*<td>\\s*(\\d+\\s*/\\s*\\d+\\s*/\\s*\\d+)\\s*</td>").getMatch(0);
             final String accountStatus = br.getRegex("Account status:\\s*</strong>\\s*\\<br />\\s*<span.*?>\\s*(.*?)\\s*</span>").getMatch(0);
-            if ("OK".equals(accountStatus) && validUntil != null) {
-                ai.setStatus("Your usenet.nl plan: " + currentPlan);
+            if (validUntil != null) {
                 final long date = TimeFormatter.getMilliSeconds(validUntil.replace(" ", ""), "MM'/'dd'/'yyyy", null);
                 if (date > 0) {
                     ai.setValidUntil(date + (24 * 60 * 60 * 1000l));
+                    if (!ai.isExpired()) {
+                        if (currentDownloadVolume != null) {
+                            ai.setTrafficLeft(currentDownloadVolume);
+                        }
+                        account.setMaxSimultanDownloads(16);
+                        if (currentPlan != null) {
+                            ai.setStatus("Plan:" + currentPlan);
+                        }
+                        ai.setProperty("multiHostSupport", Arrays.asList(new String[] { "usenet" }));
+                        account.setProperty(Account.PROPERTY_REFRESH_TIMEOUT, 2 * 60 * 60 * 1000l);
+                        return ai;
+                    }
                 }
-                if (currentDownloadVolume != null) {
-                    ai.setTrafficLeft(currentDownloadVolume);
-                }
-                account.setMaxSimultanDownloads(16);
-                account.setProperty(Account.PROPERTY_REFRESH_TIMEOUT, 2 * 60 * 60 * 1000l);
-                return ai;
             }
             if (accountStatus != null) {
                 throw new PluginException(LinkStatus.ERROR_PREMIUM, "Accountstatus: " + accountStatus, PluginException.VALUE_ID_PREMIUM_DISABLE);

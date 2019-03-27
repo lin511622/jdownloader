@@ -5,11 +5,9 @@ import java.net.URISyntaxException;
 import java.net.URL;
 
 import org.appwork.utils.Files;
-import org.appwork.utils.Files.Handler;
 import org.appwork.utils.os.CrossSystem;
 
 public class IconKey {
-
     public static void main(String[] args) throws URISyntaxException {
         URL url = IconKey.class.getResource(IconKey.class.getSimpleName() + ".class");
         File file = new File(url.toURI());
@@ -22,7 +20,7 @@ public class IconKey {
         } else {
             images = new File(file.getParentFile(), "themes/themes/standard/org/jdownloader/images");
         }
-        Files.walkThroughStructure(new Handler<RuntimeException>() {
+        Files.walkThroughStructure(new org.appwork.utils.Files.AbstractHandler<RuntimeException>() {
             protected File root = null;
 
             @Override
@@ -35,17 +33,10 @@ public class IconKey {
                 if (f.getName().endsWith(".png")) {
                     String rel = Files.getRelativePath(root, f);
                     rel = rel.substring(0, rel.length() - 4);
-
                     String name = rel.toUpperCase().replaceAll("\\W", "_");
                     System.out.println("public static final String ICON_" + name + " = \"" + rel + "\";");
-
                 }
             }
-
-            @Override
-            public void outro(File f) throws RuntimeException {
-            }
-
         }, images);
         System.out.println(url);
     }
@@ -81,6 +72,12 @@ public class IconKey {
     public static final String ICON_BROWSE                      = "browse";
     public static final String ICON_POPDOWNLARGE                = "popDownLarge";
     public static final String ICON_HEART                       = "heart";
+    public static final String ICON_XMAS_GIFT                   = "xmas-gift";
+    public static final String ICON_EASTER_EGG                  = "easter-egg";
+    public static final String ICON_VALENTINE                   = "valentine";
+    public static final String ICON_HALLOWEEN                   = "halloween";
+    public static final String ICON_BLACK_FRIDAY                = "black-friday";
+    public static final String ICON_CHAMPAGNE                   = "champagne";
     public static final String ICON_OCR                         = "ocr";
     public static final String ICON_SORT                        = "sort";
     public static final String ICON_REMOVE_OK                   = "remove_ok";
@@ -98,14 +95,12 @@ public class IconKey {
     public static final String ICON_QUESTION                    = "question";
     public static final String ICON_REMOVE_DISABLED             = "remove_disabled";
     public static final String ICON_THUMBS_UP                   = "thumbs-up";
-
     public static final String ICON_REGEXSTAR                   = "regexStar";
     public static final String ICON_TOPBAR                      = "topbar";
     public static final String ICON_CONTRIBUTER                 = "contributer";
     public static final String ICON_MEDIAPLAYER                 = "mediaplayer";
     public static final String ICON_MINIMIZE                    = "minimize";
     public static final String ICON_UPDATE                      = "update";
-
     public static final String ICON_CHANGELOG                   = "changelog";
     public static final String ICON_MONEY                       = "money";
     public static final String ICON_NETWORK_ERROR               = "network-error";
@@ -122,7 +117,6 @@ public class IconKey {
     public static final String ICON_FLAGS_DE                    = "flags/de";
     public static final String ICON_FLAGS_EN                    = "flags/en";
     public static final String ICON_FILEICON                    = "fileIcon";
-
     public static final String ICON_FAV_LARGE_NETLOAD_IN        = "fav/large.netload.in";
     public static final String ICON_FAV_BIG_NETLOAD_IN          = "fav/big.netload.in";
     public static final String ICON_FAV_LARGE_UPLOADED_TO       = "fav/large.uploaded.to";
@@ -134,7 +128,6 @@ public class IconKey {
     public static final String ICON_TEST                        = "test";
     public static final String ICON_FALSE_ORANGE                = "false-orange";
     public static final String ICON_LIST                        = "list";
-
     public static final String ICON_RIGHT                       = "right";
     public static final String ICON_LOAD                        = "load";
     public static final String ICON_BITCOIN                     = "bitcoin";
@@ -153,14 +146,11 @@ public class IconKey {
     public static final String ICON_BAD                         = "bad";
     public static final String ICON_REMOVE_DUPES                = "remove_dupes";
     public static final String ICON_DOWNLOADPASSWORD            = "downloadpassword";
-
     public static final String ICON_PLAY                        = "play";
     public static final String ICON_HOME                        = "home";
-
     public static final String ICON_RESTART                     = "restart";
     public static final String ICON_URL                         = "url";
     public static final String ICON_BUBBLE                      = "bubble";
-
     public static final String ICON_CLEAR                       = "clear";
     public static final String ICON_WRENCH                      = "wrench";
     public static final String ICON_ABOUT                       = "about";
@@ -178,7 +168,6 @@ public class IconKey {
     public static final String ICON_PRIO__3                     = "prio_-3";
     public static final String ICON_FILE                        = "file";
     public static final String ICON_PACKAGIZER                  = "packagizer";
-
     public static final String ICON_MODEM                       = "modem";
     public static final String ICON_RECONNECT                   = "reconnect";
     public static final String ICON_HASHSUM                     = "hashsum";
@@ -287,10 +276,6 @@ public class IconKey {
     public static final String ICON_LINK                        = "link";
     public static final String ICON_DOWNLOAD                    = "download";
     public static final String ICON_WARNING_GREEN               = "warning_green";
-    public static final String ICON_UPLOADED_SIGN_UP_NOW_EN     = "uploaded/sign_up_now_en";
-    public static final String ICON_UPLOADED_GET_PREMIUM_DE     = "uploaded/get_premium_de";
-    public static final String ICON_UPLOADED_PREMIUM_EN         = "uploaded/premium_en";
-    public static final String ICON_UPLOADED_GET_PREMIUM_EN     = "uploaded/get_premium_en";
     public static final String ICON_AUTO_RECONNECT              = "auto-reconnect";
     public static final String ICON_REMOVE_FAILED               = "remove_failed";
     public static final String ICON_PUZZLE                      = "puzzle";
@@ -318,5 +303,6 @@ public class IconKey {
     public static final String ICON_EXTRACT_OK                  = "extract_ok";
     public static final String ICON_EXTRACT_RUN                 = "extract_run";
     public static final String ICON_PLAY_BREAKUP_FORCED_ONLY    = "play_breakup_forced_only";
-
+    public static final String ICON_LOGO_2CAPTCHA               = "logo/2captcha";
+    public static final String ICON_LOGO_ANTICAPTCHA            = "logo/anticaptchaCom";
 }

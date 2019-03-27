@@ -10,10 +10,10 @@ import jd.plugins.DownloadLink;
 import jd.plugins.LinkInfo;
 
 import org.appwork.utils.StringUtils;
+import org.jdownloader.controlling.filter.RegexFilter.MatchType;
 import org.jdownloader.myjdownloader.client.json.AvailableLinkState;
 
 public class RuleWrapper<T extends FilterRule> {
-
     private final CompiledRegexFilter        fileNameRule;
     private final CompiledPluginStatusFilter pluginStatusFilter;
     private final BooleanFilter              alwaysFilter;
@@ -34,62 +34,52 @@ public class RuleWrapper<T extends FilterRule> {
         } else {
             pluginStatusFilter = null;
         }
-
         if (rule.getOnlineStatusFilter().isEnabled()) {
             onlineStatusFilter = new CompiledOnlineStatusFiler(rule.getOnlineStatusFilter());
         } else {
             onlineStatusFilter = null;
         }
-
         if (rule.getFilenameFilter().isEnabled()) {
             fileNameRule = new CompiledRegexFilter(rule.getFilenameFilter());
         } else {
             fileNameRule = null;
         }
-
         if (rule.getPackagenameFilter().isEnabled()) {
             packageNameRule = new CompiledRegexFilter(rule.getPackagenameFilter());
         } else {
             packageNameRule = null;
         }
-
         if (rule.getFilesizeFilter().isEnabled()) {
             filesizeRule = new CompiledFilesizeFilter(rule.getFilesizeFilter());
         } else {
             filesizeRule = null;
         }
-
         if (rule.getFiletypeFilter().isEnabled()) {
             filetypeFilter = new CompiledFiletypeFilter(rule.getFiletypeFilter());
         } else {
             filetypeFilter = null;
         }
-
         if (rule.getHosterURLFilter().isEnabled()) {
             hosterRule = new CompiledRegexFilter(rule.getHosterURLFilter());
             requiresHoster = true;
         } else {
             hosterRule = null;
         }
-
         if (rule.getSourceURLFilter().isEnabled()) {
             sourceRule = new CompiledRegexFilter(rule.getSourceURLFilter());
         } else {
             sourceRule = null;
         }
-
         if (rule.getOriginFilter().isEnabled()) {
             originFilter = new CompiledOriginFilter(rule.getOriginFilter());
         } else {
             originFilter = null;
         }
-
         if (rule.getConditionFilter().isEnabled()) {
             conditionFilter = new CompiledConditionFilter(rule.getConditionFilter());
         } else {
             conditionFilter = null;
         }
-
         if (rule.getMatchAlwaysFilter().isEnabled()) {
             alwaysFilter = rule.getMatchAlwaysFilter();
             // overwrites all others
@@ -189,8 +179,24 @@ public class RuleWrapper<T extends FilterRule> {
     public boolean checkFileType(final CrawledLink link) {
         final CompiledFiletypeFilter filetypeFilter = getFiletypeFilter();
         if (filetypeFilter != null) {
-            final LinkInfo linkInfo = link.getLinkInfo();
-            return filetypeFilter.matches(linkInfo.getExtension().name(), linkInfo);
+            final DownloadLink downloadLink = link.getDownloadLink();
+            if (downloadLink != null) {
+                final LinkInfo linkInfo = link.getLinkInfo();
+                if (downloadLink.getFinalFileName() != null || downloadLink.getForcedFileName() != null) {
+                    // filename available
+                    return filetypeFilter.matches(linkInfo.getExtension().name(), linkInfo);
+                } else if (link.getLinkState() == AvailableLinkState.ONLINE) {
+                    // file is online
+                    return filetypeFilter.matches(linkInfo.getExtension().name(), linkInfo);
+                } else if (checkOnlineStatus(link)) {
+                    // onlinestatus matches so we trust the available filename
+                    return filetypeFilter.matches(linkInfo.getExtension().name(), linkInfo);
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
         }
         return true;
     }
@@ -295,7 +301,7 @@ public class RuleWrapper<T extends FilterRule> {
             int i = 1;
             final String pattern = sourceRule.getPattern().pattern();
             final boolean indexed = pattern.matches("^\\-?\\d+\\\\\\. .+");
-            final boolean inverted = pattern.startsWith("-");
+            final boolean inverted = indexed && pattern.startsWith("-");
             if (sources == null || sources.length == 0) {
                 /* the first link never has sourceURLs */
                 sources = new String[2];
@@ -305,30 +311,51 @@ public class RuleWrapper<T extends FilterRule> {
                     sources[1] = LinkCrawler.cleanURL(job.getCustomSourceUrl());
                 }
             }
+            final MatchType matchType = sourceRule.getMatchType();
+            Boolean matches = null;
             for (int j = inverted ? 0 : sources.length - 1; (inverted ? (j < sources.length) : (j >= 0)); j = (inverted ? (j + 1) : (j - 1))) {
                 final String url = sources[j];
-                if (url == null) {
-                    continue;
-                }
-                final String toMatch = indexed ? (inverted ? "-" : "") + (i++) + ". " + url : url;
-                if (sourceRule.matches(toMatch)) {
-                    return true;
-                } else if (indexed) {
-                    // for equals matchtypes, we need to ignore the index
-                    switch (sourceRule.getMatchType()) {
-                    case EQUALS:
-                    case EQUALS_NOT:
-                        if (sourceRule.matches(url)) {
-                            return true;
+                if (url != null) {
+                    final String toMatch = indexed ? (inverted ? "-" : "") + (i++) + ". " + url : url;
+                    if (indexed) {
+                        switch (sourceRule.getMatchType()) {
+                        case EQUALS:
+                        case EQUALS_NOT:
+                            if (sourceRule.matches(url)) {
+                                return true;
+                            }
+                            break;
+                        default:
+                            // nothing
+                            break;
                         }
-                        break;
-                    default:
-                        // nothing
-                        break;
+                    } else {
+                        final boolean match = sourceRule.matches(toMatch);
+                        switch (matchType) {
+                        case CONTAINS:
+                            if (match) {
+                                return true;
+                            }
+                            break;
+                        case EQUALS:
+                            return match;
+                        case CONTAINS_NOT:
+                        case EQUALS_NOT:
+                            if (matches == null) {
+                                matches = match;
+                            } else {
+                                matches = matches.booleanValue() && match;
+                            }
+                            break;
+                        }
                     }
                 }
             }
-            return false;
+            if (matches != null) {
+                return matches.booleanValue();
+            } else {
+                return false;
+            }
         }
         return true;
     }
@@ -390,5 +417,4 @@ public class RuleWrapper<T extends FilterRule> {
     public boolean isEnabled() {
         return rule.isEnabled();
     }
-
 }

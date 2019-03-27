@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 /*
  Copyright Paul James Mutton, 2001-2004, http://www.jibble.org/
 
@@ -62,6 +61,7 @@ import org.appwork.utils.StringUtils;
 import org.appwork.utils.logging2.LogInterface;
 import org.appwork.utils.logging2.LogSource;
 import org.appwork.utils.logging2.extmanager.LoggerFactory;
+import org.appwork.utils.net.URLHelper;
 import org.appwork.utils.net.httpconnection.HTTPProxy;
 import org.jdownloader.auth.AuthenticationController;
 import org.jdownloader.auth.Login;
@@ -75,10 +75,14 @@ import org.seamless.util.io.IO;
  * Based on Work of Paul Mutton http://www.jibble.org/
  */
 public abstract class SimpleFTP {
+    private enum TYPE {
+        FILE,
+        DIR,
+        LINK;
+    }
 
     public static enum ENCODING {
         ASCII7BIT {
-
             @Override
             public String fromBytes(byte[] bytes) throws IOException {
                 final StringBuilder sb = new StringBuilder();
@@ -118,10 +122,8 @@ public abstract class SimpleFTP {
                 }
                 return bos.toByteArray();
             }
-
         },
         UTF8 {
-
             @Override
             public String fromBytes(byte[] bytes) throws IOException {
                 return URLEncoder.encode(new String(bytes, "UTF-8"), "UTF-8");
@@ -131,13 +133,10 @@ public abstract class SimpleFTP {
             public byte[] toBytes(String string) throws IOException {
                 return URLDecoder.decode(string, "UTF-8").getBytes("UTF-8");
             }
-
         };
-
         public abstract String fromBytes(final byte[] bytes) throws IOException;
 
         public abstract byte[] toBytes(final String string) throws IOException;
-
     }
 
     public static enum FEATURE {
@@ -145,7 +144,6 @@ public abstract class SimpleFTP {
         SIZE,
         CLNT,
         UTF8;
-
         public static FEATURE get(final String input) {
             if (input != null && input.startsWith(" ")) {
                 for (FEATURE feature : values()) {
@@ -160,6 +158,9 @@ public abstract class SimpleFTP {
 
     // very simple and dumb guessing for the correct encoding, checks for 'Replacement Character'
     public static String BestEncodingGuessingURLDecode(String urlCoded) throws IOException {
+        if (StringUtils.isEmpty(urlCoded)) {
+            return urlCoded;
+        }
         final LinkedHashMap<String, String> results = new LinkedHashMap<String, String>();
         for (final String encoding : new String[] { "UTF-8", "cp1251", "ISO-8859-5", "KOI8-R" }) {
             try {
@@ -205,7 +206,6 @@ public abstract class SimpleFTP {
             public final int compare(String o1, String o2) {
                 return compare(o1.length(), o2.length());
             }
-
         });
         if (bestMatches.size() > 0) {
             return bestMatches.get(0);
@@ -214,7 +214,6 @@ public abstract class SimpleFTP {
         }
     }
 
-    private static final int   TIMEOUT            = 20 * 1000;
     private boolean            binarymode         = false;
     private Socket             socket             = null;
     private String             dir                = "/";
@@ -222,11 +221,22 @@ public abstract class SimpleFTP {
     private final LogInterface logger;
     private String             latestResponseLine = null;
     private String             user               = null;
-
     private final byte[]       CRLF               = "\r\n".getBytes();
 
     public String getUser() {
         return user;
+    }
+
+    public int getReadTimeout(STATE state) {
+        switch (state) {
+        case CLOSING:
+            return 10 * 1000;
+        case CONNECTING:
+        case CONNECTED:
+        case DOWNLOADING:
+        default:
+            return 30 * 1000;
+        }
     }
 
     public String getPass() {
@@ -240,6 +250,11 @@ public abstract class SimpleFTP {
     }
 
     private final HTTPProxy proxy;
+    private int             port = -1;
+
+    public int getPort() {
+        return port;
+    }
 
     public HTTPProxy getProxy() {
         return proxy;
@@ -332,12 +347,23 @@ public abstract class SimpleFTP {
     public Socket createSocket(SocketAddress address) throws IOException {
         final Socket socket = createSocket();
         try {
-            socket.connect(address);
+            socket.connect(address, getConnectTimeout());
         } catch (IOException e) {
             socket.close();
             throw e;
         }
         return socket;
+    }
+
+    public int getConnectTimeout() {
+        return 60 * 1000;
+    }
+
+    public static enum STATE {
+        CONNECTING,
+        CONNECTED,
+        DOWNLOADING,
+        CLOSING
     }
 
     /**
@@ -352,8 +378,10 @@ public abstract class SimpleFTP {
         this.pass = pass;
         socket = createSocket(new InetSocketAddress(host, port));
         this.host = host;
-        socket.setSoTimeout(TIMEOUT);
+        this.port = port;
+        socket.setSoTimeout(getReadTimeout(STATE.CONNECTING));
         String response = readLines(new int[] { 220 }, "SimpleFTP received an unknown response when connecting to the FTP server: ");
+        socket.setSoTimeout(getReadTimeout(STATE.CONNECTED));
         sendLine("USER " + user);
         response = readLines(new int[] { 230, 331 }, "SimpleFTP received an unknown response after sending the user: ");
         String[] lines = getLines(response);
@@ -363,13 +391,11 @@ public abstract class SimpleFTP {
         }
         sendLine("PWD");
         while ((response = readLine()).startsWith("230") || response.charAt(0) >= '9' || response.charAt(0) <= '0') {
-
         }
         //
         if (!response.startsWith("257 ")) {
             throw new IOException("PWD COmmand not understood " + response);
         }
-
         // Response: 257 "/" is the current directory
         dir = new Regex(response, "\"(.*)\"").getMatch(0);
         // dir = dir;
@@ -382,7 +408,6 @@ public abstract class SimpleFTP {
         } else {
             return ENCODING.ASCII7BIT;
         }
-
     }
 
     /**
@@ -502,7 +527,6 @@ public abstract class SimpleFTP {
             }
         }
         return length;
-
     }
 
     public boolean wasLatestOperationNotPermitted() {
@@ -640,8 +664,11 @@ public abstract class SimpleFTP {
             try {
                 logger.info(host + " > " + line);
                 final OutputStream os = socket.getOutputStream();
-                os.write(encoding.toBytes(line));
-                os.write(CRLF);
+                // some server are buggy when CRLF is send in extra TCP packet.(maybe firewall?)
+                final ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                bos.write(encoding.toBytes(line));
+                bos.write(CRLF);
+                bos.writeTo(os);
                 os.flush();
             } catch (IOException e) {
                 LogSource.exception(logger, e);
@@ -706,9 +733,8 @@ public abstract class SimpleFTP {
         Socket dataSocket = null;
         try {
             final long resumeAmount = resumePosition;
-            dataSocket = new Socket();
-            dataSocket.setSoTimeout(30 * 1000);
-            dataSocket.connect(new InetSocketAddress(pasv.getHostName(), pasv.getPort()), 30 * 1000);
+            dataSocket = createSocket(new InetSocketAddress(pasv.getHostName(), pasv.getPort()));
+            dataSocket.setSoTimeout(getReadTimeout(STATE.DOWNLOADING));
             sendLine("RETR " + filename);
             input = dataSocket.getInputStream();
             fos = new RandomAccessFile(file, "rw");
@@ -723,7 +749,7 @@ public abstract class SimpleFTP {
             while ((bytesRead = input.read(buffer)) != -1) {
                 if (Thread.currentThread().isInterrupted()) {
                     /* max 10 seks wait for buggy servers */
-                    socket.setSoTimeout(TIMEOUT);
+                    socket.setSoTimeout(getReadTimeout(STATE.CLOSING));
                     shutDownSocket(dataSocket);
                     input.close();
                     try {
@@ -742,7 +768,7 @@ public abstract class SimpleFTP {
                 }
             }
             /* max 10 seks wait for buggy servers */
-            socket.setSoTimeout(TIMEOUT);
+            socket.setSoTimeout(getReadTimeout(STATE.CLOSING));
             shutDownSocket(dataSocket);
             input.close();
             try {
@@ -793,6 +819,22 @@ public abstract class SimpleFTP {
         download(filename, file, false);
     }
 
+    protected String getURL(final String path) {
+        final String auth;
+        if (!StringUtils.equals("anonymous", getUser()) || !StringUtils.equals("anonymous", getUser())) {
+            auth = getUser() + ":" + getPass() + "@";
+        } else {
+            auth = "";
+        }
+        if (StringUtils.isEmpty(path)) {
+            return "ftp://" + auth + host + ":" + port;
+        } else if (path.startsWith("/")) {
+            return "ftp://" + auth + host + ":" + port + path;
+        } else {
+            return "ftp://" + auth + host + ":" + port + "/" + path;
+        }
+    }
+
     public void shutDownSocket(Socket dataSocket) {
         try {
             dataSocket.shutdownOutput();
@@ -808,31 +850,71 @@ public abstract class SimpleFTP {
         }
     }
 
-    public static class SimpleFTPListEntry {
-
-        private final boolean isFile;
-
+    public class SimpleFTPListEntry {
         public final boolean isFile() {
-            return isFile;
+            return TYPE.FILE.equals(getType());
+        }
+
+        public final boolean isDir() {
+            return TYPE.DIR.equals(getType());
+        }
+
+        public final boolean isLink() {
+            return TYPE.LINK.equals(getType());
+        }
+
+        private final TYPE getType() {
+            return type;
         }
 
         public final String getName() {
             return name;
         }
 
+        public final String getDest() {
+            if (isLink()) {
+                return getCwd() + dest;
+            } else {
+                return null;
+            }
+        }
+
         public final long getSize() {
-            return size;
+            switch (getType()) {
+            case FILE:
+                return size;
+            case DIR:
+                return 0;
+            default:
+            case LINK:
+                return -1;
+            }
         }
 
         private final String name;
+        private final String dest;
         private final long   size;
+        private final TYPE   type;
         private final String cwd;
 
         private SimpleFTPListEntry(boolean isFile, String name, String cwd, long size) {
-            this.isFile = isFile;
+            this.type = isFile ? TYPE.FILE : TYPE.DIR;
             this.name = name;
             this.size = size;
             this.cwd = cwd;
+            this.dest = null;
+        }
+
+        private SimpleFTPListEntry(String name, String dest, String cwd) {
+            this.type = TYPE.LINK;
+            this.name = name;
+            this.dest = dest;
+            this.size = -1;
+            this.cwd = cwd;
+        }
+
+        public final URL getURL() throws IOException {
+            return URLHelper.fixPathTraversal(new URL(SimpleFTP.this.getURL(getFullPath())));
         }
 
         public final String getCwd() {
@@ -850,18 +932,34 @@ public abstract class SimpleFTP {
         @Override
         public String toString() {
             final StringBuilder sb = new StringBuilder();
-            if (isFile) {
+            switch (getType()) {
+            case FILE:
                 sb.append("File:");
-            } else {
-                sb.append("Directory:");
+                break;
+            case DIR:
+                sb.append("Dir:");
+                break;
+            case LINK:
+                sb.append("Link:");
+                break;
             }
             sb.append(getFullPath());
-            if (isFile) {
+            if (isLink()) {
+                sb.append(" -> ");
+                sb.append(getDest());
+            }
+            if (isFile()) {
                 sb.append("|Size:").append(getSize());
+            }
+            if (true) {
+                try {
+                    sb.append("|URL:" + getURL().toString());
+                } catch (final IOException e) {
+                    e.printStackTrace();
+                }
             }
             return sb.toString();
         }
-
     }
 
     public SimpleFTPListEntry[] listEntries() throws IOException {
@@ -877,14 +975,23 @@ public abstract class SimpleFTP {
                     final long size = isFile ? Long.parseLong(entry[2]) : -1;
                     ret.add(new SimpleFTPListEntry(isFile, name.replaceAll(" ", "%20"), cwd, size));
                 } else if (entry.length == 7) {
-                    final boolean isFile = entry[0].startsWith("-");
-                    String name = entry[6];
+                    final boolean isFolder = entry[0].startsWith("d");
+                    final String name = entry[6];
+                    final boolean isLink;
                     if (name.contains(" -> ")) {
                         // symlink
-                        name = new Regex(name, "->\\s*(.+)").getMatch(0);
+                        isLink = true;
+                    } else {
+                        isLink = entry[0].startsWith("l");
                     }
+                    final boolean isFile = !isFolder || entry[0].startsWith("-");
                     final long size = isFile ? Long.parseLong(entry[4]) : -1;
-                    ret.add(new SimpleFTPListEntry(isFile, name.replaceAll(" ", "%20"), cwd, size));
+                    if (isLink) {
+                        final String link[] = new Regex(name, "^(.*?)\\s*->\\s*(.+)$").getRow(0);
+                        ret.add(new SimpleFTPListEntry(link[0].replaceAll(" ", "%20"), link[1].replaceAll(" ", "%20"), cwd));
+                    } else {
+                        ret.add(new SimpleFTPListEntry(isFile, name.replaceAll(" ", "%20"), cwd, size));
+                    }
                 }
             }
             return ret.toArray(new SimpleFTPListEntry[0]);
@@ -966,7 +1073,7 @@ public abstract class SimpleFTP {
                     connect(host, port, auth[0], auth[1]);
                 }
             } else {
-                final Login ret = AuthenticationController.getInstance().getBestLogin("ftp://" + url.getHost());
+                final Login ret = AuthenticationController.getInstance().getBestLogin(url, null);
                 if (ret != null) {
                     autoTry = true;
                     connect(host, port, ret.getUsername(), ret.getPassword());
@@ -981,7 +1088,7 @@ public abstract class SimpleFTP {
                 if (autoTry) {
                     connect(host, port);
                 } else {
-                    final Login ret = AuthenticationController.getInstance().getBestLogin("ftp://" + url.getHost());
+                    final Login ret = AuthenticationController.getInstance().getBestLogin(url, null);
                     if (ret != null) {
                         connect(host, port, ret.getUsername(), ret.getPassword());
                         return;
@@ -995,5 +1102,4 @@ public abstract class SimpleFTP {
     public static byte[] toRawBytes(String nameString) throws IOException {
         return ENCODING.ASCII7BIT.toBytes(nameString);
     }
-
 }

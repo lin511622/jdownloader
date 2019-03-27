@@ -13,6 +13,15 @@ import javax.swing.JLabel;
 import javax.swing.JList;
 import javax.swing.ListCellRenderer;
 
+import jd.controlling.downloadcontroller.DownloadController;
+import jd.controlling.linkcollector.LinkCollector;
+import jd.controlling.linkcollector.LinkCollector.MoveLinksMode;
+import jd.controlling.linkcollector.LinkCollector.MoveLinksSettings;
+import jd.controlling.linkcrawler.CrawledLink;
+import jd.controlling.linkcrawler.CrawledPackage;
+import jd.gui.swing.jdgui.JDGui;
+import jd.gui.swing.jdgui.interfaces.View;
+
 import org.appwork.storage.config.JsonConfig;
 import org.appwork.storage.config.annotations.LabelInterface;
 import org.appwork.swing.MigPanel;
@@ -58,129 +67,102 @@ import org.jdownloader.settings.staticreferences.CFG_GUI;
 import org.jdownloader.settings.staticreferences.CFG_LINKGRABBER;
 import org.jdownloader.translate._JDT;
 
-import jd.controlling.downloadcontroller.DownloadController;
-import jd.controlling.linkcollector.LinkCollector;
-import jd.controlling.linkcollector.LinkCollector.MoveLinksMode;
-import jd.controlling.linkcollector.LinkCollector.MoveLinksSettings;
-import jd.controlling.linkcrawler.CrawledLink;
-import jd.controlling.linkcrawler.CrawledPackage;
-import jd.gui.swing.jdgui.JDGui;
-import jd.gui.swing.jdgui.interfaces.View;
-
 public class ConfirmLinksContextAction extends CustomizableTableContextAppAction<CrawledPackage, CrawledLink> implements GUIListener, ActionContext {
-
     public static final String SELECTION_ONLY = "selectionOnly";
 
     public static enum OnOfflineLinksAction implements LabelInterface {
-
         INCLUDE_OFFLINE {
             @Override
             public String getLabel() {
                 return _JDT.T.ConfirmLinksContextAction_HandleOfflineLinksOptions_INCLUDE_OFFLINE();
             }
         },
-
         EXCLUDE_OFFLINE {
             @Override
             public String getLabel() {
                 return _JDT.T.ConfirmLinksContextAction_HandleOfflineLinksOptions_EXCLUDE_OFFLINE();
-
             }
         },
-
         EXCLUDE_OFFLINE_AND_REMOVE {
             @Override
             public String getLabel() {
                 return _JDT.T.ConfirmLinksContextAction_HandleOfflineLinksOptions_EXCLUDE_OFFLINE_AND_REMOVE();
-
             }
         },
-
         ASK {
             @Override
             public String getLabel() {
                 return _JDT.T.ConfirmLinksContextAction_HandleOfflineLinksOptions_ASK();
-
             }
         },
         GLOBAL {
             @Override
             public String getLabel() {
-                return _JDT.T.ConfirmLinksContextAction_HandleOfflineLinksOptions_GLOBAL(CFG_LINKGRABBER.CFG.getDefaultOnAddedOfflineLinksAction().getLabel());
-
+                OnOfflineLinksAction dflt = CFG_LINKGRABBER.CFG.getDefaultOnAddedOfflineLinksAction();
+                if (dflt == this || dflt == null) {
+                    dflt = OnOfflineLinksAction.ASK;
+                }
+                return _JDT.T.ConfirmLinksContextAction_HandleOfflineLinksOptions_GLOBAL(dflt.getLabel());
             }
         };
-
     }
 
     public static enum OnDupesLinksAction implements LabelInterface {
-
         INCLUDE {
             @Override
             public String getLabel() {
                 return _JDT.T.ConfirmLinksContextAction_HandleDupesLinksOptions_INCLUDE();
             }
         },
-
         EXCLUDE {
             @Override
             public String getLabel() {
                 return _JDT.T.ConfirmLinksContextAction_HandleDupesLinksOptions_EXCLUDE();
-
             }
         },
-
         EXCLUDE_AND_REMOVE {
             @Override
             public String getLabel() {
                 return _JDT.T.ConfirmLinksContextAction_HandleDupesLinksOptions_EXCLUDE_AND_REMOVE();
-
             }
         },
-
         ASK {
             @Override
             public String getLabel() {
                 return _JDT.T.ConfirmLinksContextAction_HandleDupesLinksOptions_ASK();
-
             }
         },
         GLOBAL {
             @Override
             public String getLabel() {
-                return _JDT.T.ConfirmLinksContextAction_HandleDupesLinksOptions_GLOBAL(CFG_LINKGRABBER.CFG.getDefaultOnAddedDupesLinksAction().getLabel());
-
+                OnDupesLinksAction dflt = CFG_LINKGRABBER.CFG.getDefaultOnAddedDupesLinksAction();
+                if (dflt == this || dflt == null) {
+                    dflt = OnDupesLinksAction.ASK;
+                }
+                return _JDT.T.ConfirmLinksContextAction_HandleDupesLinksOptions_GLOBAL(dflt.getLabel());
             }
         };
-
     }
 
     public static enum AutoStartOptions implements LabelInterface {
-
         AUTO {
             @Override
             public String getLabel() {
                 return _JDT.T.AutoStartOptions_AUTO();
-
             }
         },
-
         DISABLED {
             @Override
             public String getLabel() {
                 return _JDT.T.AutoStartOptions_DISABLED();
-
             }
         },
-
         ENABLED {
             @Override
             public String getLabel() {
                 return _JDT.T.AutoStartOptions_ENABLED();
-
             }
         };
-
     }
 
     private boolean ctrlToggle = true;
@@ -231,7 +213,7 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
     private Priority piority = Priority.DEFAULT;
 
     public static String getTranslationForPiority() {
-        return _JDT.T.ConfirmLinksContextAction_getTranslationForPiority();
+        return _JDT.T.ConfirmLinksContextAction_getTranslationForPriority();
     }
 
     @Customizer(link = "#getTranslationForPiority")
@@ -244,24 +226,19 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
     }
 
     public static final String FORCE_START      = "forceDownloads";
-
     public static final String AUTO_START       = "autoStart";
-
     /**
      *
      */
     private static final long  serialVersionUID = -3937346180905569896L;
 
     public static void confirmSelection(final MoveLinksMode moveLinksMode, final SelectionInfo<CrawledPackage, CrawledLink> selection, final boolean autoStart, final boolean clearLinkgrabber, final boolean doTabSwitch, final Priority newPriority, final BooleanStatus forcedStart, final OnOfflineLinksAction handleOfflineLinks, final OnDupesLinksAction handleDupes) {
-
-        Thread thread = new Thread() {
-
+        final Thread thread = new Thread() {
             public void run() {
                 OnOfflineLinksAction handleOfflineLoc = handleOfflineLinks;
                 if (handleOfflineLoc == OnOfflineLinksAction.GLOBAL) {
                     handleOfflineLoc = OnOfflineLinksAction.ASK;
                 }
-
                 OnDupesLinksAction handleDupesLoc = handleDupes;
                 if (handleDupesLoc == OnDupesLinksAction.GLOBAL) {
                     handleDupesLoc = OnDupesLinksAction.ASK;
@@ -280,9 +257,7 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
                             if (da.isComplete()) {
                                 continue;
                             }
-
                             if (doAction == ConfirmIncompleteArchiveAction.ASK) {
-
                                 ConfirmIncompleteArchiveAction[] options = new ConfirmIncompleteArchiveAction[] { ConfirmIncompleteArchiveAction.DELETE, ConfirmIncompleteArchiveAction.KEEP_IN_LINKGRABBER, ConfirmIncompleteArchiveAction.MOVE_TO_DOWNLOADLIST };
                                 int def = 0;
                                 ConfirmIncompleteArchiveAction s = CFG_LINKGRABBER.CFG.getHandleIncompleteArchiveOnConfirmLatestSelection();
@@ -293,10 +268,8 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
                                     }
                                 }
                                 ComboBoxDialog guiDialog = new ComboBoxDialog(Dialog.STYLE_SHOW_DO_NOT_DISPLAY_AGAIN, _GUI.T.ConfirmAction_run_incomplete_archive_title_(a.getName()), _GUI.T.ConfirmAction_run_incomplete_archive_msg(), options, def, new AbstractIcon(IconKey.ICON_STOP, 32), _GUI.T.lit_continue(), null, null) {
-
                                     public String getDontShowAgainKey() {
                                         return null;
-
                                     };
 
                                     protected MigPanel createBottomPanel() {
@@ -306,7 +279,6 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
 
                                     @Override
                                     protected DefaultButtonPanel createBottomButtonPanel() {
-
                                         DefaultButtonPanel ret = new DefaultButtonPanel("ins 0", "[][][]", "0[]0");
                                         ret.add(new JButton(new AppAction() {
                                             {
@@ -323,7 +295,6 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
                                                     e1.printStackTrace();
                                                 }
                                             }
-
                                         }), "");
                                         return ret;
                                     }
@@ -336,14 +307,12 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
                                     protected ListCellRenderer getRenderer(final ListCellRenderer orgRenderer) {
                                         // TODO Auto-generated method stub
                                         return new ListCellRenderer() {
-
                                             @Override
                                             public Component getListCellRendererComponent(JList list, Object value, int index, boolean isSelected, boolean cellHasFocus) {
                                                 if (value == null) {
                                                     return orgRenderer.getListCellRendererComponent(list, _GUI.T.AddActionAction_getListCellRendererComponent_no_action_(), index, isSelected, cellHasFocus);
                                                 }
                                                 switch (((ConfirmIncompleteArchiveAction) value)) {
-
                                                 // case EXCLUDE_OFFLINE:
                                                 // return orgRenderer.getListCellRendererComponent(list,
                                                 // _GUI.T.ConfirmLinksContextAction_getListCellRendererComponent_EXCLUDE_OFFLINE(),
@@ -358,51 +327,40 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
                                                 // return orgRenderer.getListCellRendererComponent(list,
                                                 // _GUI.T.ConfirmLinksContextAction_getListCellRendererComponent_INCLUDE_OFFLINE(),
                                                 // index, isSelected, cellHasFocus);
-
                                                 }
                                                 JLabel ret = (JLabel) orgRenderer.getListCellRendererComponent(list, ((ConfirmIncompleteArchiveAction) value).getLabel(), index, isSelected, cellHasFocus);
                                                 return ret;
                                             }
                                         };
                                     }
-
                                 };
                                 ComboBoxDialogInterface response = UIOManager.I().show(ComboBoxDialogInterface.class, guiDialog);
                                 response.throwCloseExceptions();
-
                                 doActionForTheCurrentArchive = options[response.getSelectedIndex()];
-
                                 CFG_LINKGRABBER.CFG.setHandleIncompleteArchiveOnConfirmLatestSelection(doActionForTheCurrentArchive);
                                 if (response.isDontShowAgainSelected()) {
                                     doAction = doActionForTheCurrentArchive;
                                 }
                             }
-
                             switch (doActionForTheCurrentArchive) {
-
                             case DELETE:
-
                                 for (ArchiveFile af : a.getArchiveFiles()) {
                                     if (af instanceof CrawledLinkArchiveFile) {
                                         toDelete.addAll(((CrawledLinkArchiveFile) af).getLinks());
                                     }
                                 }
-
                                 break;
                             case KEEP_IN_LINKGRABBER:
-
                                 for (ArchiveFile af : a.getArchiveFiles()) {
                                     if (af instanceof CrawledLinkArchiveFile) {
                                         toKeepInLinkgrabber.addAll(((CrawledLinkArchiveFile) af).getLinks());
                                     }
                                 }
-
                                 break;
                             case MOVE_TO_DOWNLOADLIST:
                                 // do nothing
                                 break;
                             }
-
                         }
                     }
                 } catch (DialogNoAnswerException e) {
@@ -411,9 +369,7 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
                     org.appwork.utils.logging2.extmanager.LoggerFactory.getDefaultLogger().log(e);
                 }
                 ArrayList<CrawledLink> offline = new ArrayList<CrawledLink>();
-
                 if (handleOfflineLoc != OnOfflineLinksAction.INCLUDE_OFFLINE) {
-
                     for (CrawledLink cl : selection.getChildren()) {
                         if (toKeepInLinkgrabber.contains(cl)) {
                             continue;
@@ -433,36 +389,29 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
                                             ret.setSelectedItem(s);
                                         }
                                         return ret;
-
                                     };
 
                                     protected ListCellRenderer getRenderer(final ListCellRenderer orgRenderer) {
                                         // TODO Auto-generated method stub
                                         return new ListCellRenderer() {
-
                                             @Override
                                             public Component getListCellRendererComponent(JList list, Object value, int index, boolean isSelected, boolean cellHasFocus) {
                                                 if (value == null) {
                                                     return orgRenderer.getListCellRendererComponent(list, _GUI.T.AddActionAction_getListCellRendererComponent_no_action_(), index, isSelected, cellHasFocus);
                                                 }
                                                 switch (((OnOfflineLinksAction) value)) {
-
                                                 case EXCLUDE_OFFLINE:
                                                     return orgRenderer.getListCellRendererComponent(list, _GUI.T.ConfirmLinksContextAction_getListCellRendererComponent_EXCLUDE_OFFLINE(), index, isSelected, cellHasFocus);
-
                                                 case EXCLUDE_OFFLINE_AND_REMOVE:
                                                     return orgRenderer.getListCellRendererComponent(list, _GUI.T.ConfirmLinksContextAction_getListCellRendererComponent_EXCLUDE_OFFLINE_AND_REMOVE(), index, isSelected, cellHasFocus);
-
                                                 case INCLUDE_OFFLINE:
                                                     return orgRenderer.getListCellRendererComponent(list, _GUI.T.ConfirmLinksContextAction_getListCellRendererComponent_INCLUDE_OFFLINE(), index, isSelected, cellHasFocus);
-
                                                 }
                                                 JLabel ret = (JLabel) orgRenderer.getListCellRendererComponent(list, ((OnOfflineLinksAction) value).getLabel(), index, isSelected, cellHasFocus);
                                                 return ret;
                                             }
                                         };
                                     }
-
                                 };
                                 final ComboBoxDialogInterface result = UIOManager.I().show(ComboBoxDialogInterface.class, combo);
                                 try {
@@ -474,7 +423,6 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
                                 CFG_LINKGRABBER.CFG.setHandleOfflineOnConfirmLatestSelection(handleOfflineLoc);
                             }
                             switch (handleOfflineLoc) {
-
                             case EXCLUDE_OFFLINE:
                                 toKeepInLinkgrabber.add(cl);
                                 break;
@@ -482,17 +430,12 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
                                 toDelete.add(cl);
                                 break;
                             }
-
                         }
                     }
-
                 }
                 //
-
                 ArrayList<CrawledLink> dupes = new ArrayList<CrawledLink>();
-
                 if (handleDupesLoc != OnDupesLinksAction.INCLUDE) {
-
                     for (CrawledLink cl : selection.getChildren()) {
                         if (toKeepInLinkgrabber.contains(cl)) {
                             continue;
@@ -513,36 +456,29 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
                                             ret.setSelectedItem(s);
                                         }
                                         return ret;
-
                                     };
 
                                     protected ListCellRenderer getRenderer(final ListCellRenderer orgRenderer) {
                                         // TODO Auto-generated method stub
                                         return new ListCellRenderer() {
-
                                             @Override
                                             public Component getListCellRendererComponent(JList list, Object value, int index, boolean isSelected, boolean cellHasFocus) {
                                                 if (value == null) {
                                                     return orgRenderer.getListCellRendererComponent(list, _GUI.T.AddActionAction_getListCellRendererComponent_no_action_(), index, isSelected, cellHasFocus);
                                                 }
                                                 switch (((OnDupesLinksAction) value)) {
-
                                                 case EXCLUDE:
                                                     return orgRenderer.getListCellRendererComponent(list, _GUI.T.ConfirmLinksContextAction_getListCellRendererComponent_EXCLUDE_DUPES(), index, isSelected, cellHasFocus);
-
                                                 case EXCLUDE_AND_REMOVE:
                                                     return orgRenderer.getListCellRendererComponent(list, _GUI.T.ConfirmLinksContextAction_getListCellRendererComponent_EXCLUDE_DUPES_AND_REMOVE(), index, isSelected, cellHasFocus);
-
                                                 case INCLUDE:
                                                     return orgRenderer.getListCellRendererComponent(list, _GUI.T.ConfirmLinksContextAction_getListCellRendererComponent_INCLUDE_DUPES(), index, isSelected, cellHasFocus);
-
                                                 }
                                                 JLabel ret = (JLabel) orgRenderer.getListCellRendererComponent(list, ((OnDupesLinksAction) value).getLabel(), index, isSelected, cellHasFocus);
                                                 return ret;
                                             }
                                         };
                                     }
-
                                 };
                                 final ComboBoxDialogInterface result = UIOManager.I().show(ComboBoxDialogInterface.class, combo);
                                 try {
@@ -554,7 +490,6 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
                                 CFG_LINKGRABBER.CFG.setHandleDupesOnConfirmLatestSelection(handleDupesLoc);
                             }
                             switch (handleDupesLoc) {
-
                             case EXCLUDE:
                                 toKeepInLinkgrabber.add(cl);
                                 break;
@@ -562,10 +497,8 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
                                 toDelete.add(cl);
                                 break;
                             }
-
                         }
                     }
-
                 }
                 ArrayList<CrawledLink> toMove = new ArrayList<CrawledLink>();
                 boolean createNewSelectionInfo = false;
@@ -591,31 +524,28 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
                 } else {
                     LinkCollector.getInstance().moveLinksToDownloadList(new MoveLinksSettings(moveLinksMode, autoStart, BooleanStatus.convert(forcedStart), newPriority), selection);
                 }
-
                 if (doTabSwitch) {
                     switchToDownloadTab();
                 }
-
                 if (clearLinkgrabber) {
                     LinkCollector.getInstance().getQueue().add(new QueueAction<Void, RuntimeException>() {
-
                         @Override
                         protected Void run() throws RuntimeException {
-                            new EDTRunner() {
-
-                                @Override
-                                protected void runInEDT() {
-                                    LinkgrabberSearchField.getInstance().setText("");
-                                    LinkgrabberSearchField.getInstance().onChanged();
-                                }
-                            };
+                            if (!Application.isHeadless()) {
+                                new EDTRunner() {
+                                    @Override
+                                    protected void runInEDT() {
+                                        LinkgrabberSearchField.getInstance().setText("");
+                                        LinkgrabberSearchField.getInstance().onChanged();
+                                    }
+                                };
+                            }
                             LinkCollector.getInstance().clear();
                             return null;
                         }
                     });
                 }
             }
-
         };
         thread.setDaemon(true);
         thread.setPriority(Thread.MIN_PRIORITY);
@@ -626,7 +556,6 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
     protected static void switchToDownloadTab() {
         if (!Application.isHeadless()) {
             new EDTRunner() {
-
                 @Override
                 protected void runInEDT() {
                     JDGui.getInstance().requestPanel(JDGui.Panels.DOWNLOADLIST);
@@ -651,12 +580,10 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
             handleOffline = OnOfflineLinksAction.GLOBAL;
         }
         this.handleOffline = handleOffline;
-
         return this;
     }
 
     //
-
     private OnDupesLinksAction handleDupes = OnDupesLinksAction.GLOBAL;
 
     public static String getTranslationForHandleDupes() {
@@ -673,16 +600,12 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
             handleDupes = OnDupesLinksAction.GLOBAL;
         }
         this.handleDupes = handleDupes;
-
         return this;
     }
 
     //
-
     private AutoStartOptions autoStart             = AutoStartOptions.AUTO;
-
     private boolean          clearListAfterConfirm = false;
-
     private boolean          metaCtrl              = false;
 
     public ConfirmLinksContextAction() {
@@ -747,7 +670,6 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
         } else {
             metaCtrl = false;
         }
-
         updateLabelAndIcon();
     }
 
@@ -794,7 +716,6 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
     @Customizer(link = "#getTranslationForSelectionOnly")
     public boolean isSelectionOnly() {
         return selectionOnly;
-
     }
 
     public void setSelectionOnly(boolean selectionOnly) {
@@ -809,7 +730,6 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
             } else {
                 setName(getTextForForcedAll());
             }
-
             Image add = NewTheme.I().getImage("media-playback-start", 20);
             Image play = NewTheme.I().getImage("prio_3", 14);
             setSmallIcon(new ImageIcon(ImageProvider.merge(add, play, -4, 0, 6, 10)));
@@ -820,7 +740,6 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
             } else {
                 setName(getTextForAutoStartAll());
             }
-
             Image add = NewTheme.I().getImage("media-playback-start", 16);
             Image play = NewTheme.I().getImage("add", 14);
             setSmallIcon(new ImageIcon(ImageProvider.merge(add, play, 0, 0, 6, 6)));
@@ -832,10 +751,8 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
             } else {
                 setName(getTextForNoAutoStartAll());
             }
-
             setSmallIcon(NewTheme.I().getIcon(IconKey.ICON_GO_NEXT, 20));
         }
-
     }
 
     /**
@@ -879,5 +796,4 @@ public class ConfirmLinksContextAction extends CustomizableTableContextAppAction
     protected String getTextForAutoStartSelectionOnly() {
         return _GUI.T.ConfirmAction_ConfirmAction_context_add_and_start();
     }
-
 }

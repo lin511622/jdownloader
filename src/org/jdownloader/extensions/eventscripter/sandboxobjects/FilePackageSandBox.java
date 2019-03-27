@@ -2,7 +2,7 @@ package org.jdownloader.extensions.eventscripter.sandboxobjects;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.Map;
 
 import jd.controlling.downloadcontroller.DownloadWatchDog;
 import jd.controlling.packagecontroller.PackageController;
@@ -10,16 +10,18 @@ import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
 import jd.plugins.FilePackageView;
 
+import org.appwork.exceptions.WTFException;
+import org.appwork.storage.JsonKeyValueStorage;
+import org.appwork.storage.Storable;
 import org.appwork.utils.Application;
+import org.appwork.utils.reflection.Clazz;
 import org.jdownloader.controlling.Priority;
 import org.jdownloader.extensions.eventscripter.ScriptAPI;
 import org.jdownloader.extensions.extraction.Archive;
 import org.jdownloader.extensions.extraction.contextmenu.downloadlist.ArchiveValidator;
-import org.jdownloader.plugins.FinalLinkState;
 
 @ScriptAPI(description = "The context download list package")
 public class FilePackageSandBox {
-
     private final FilePackage filePackage;
 
     public FilePackageSandBox(FilePackage parentNode) {
@@ -64,13 +66,11 @@ public class FilePackageSandBox {
         } else {
             final ArrayList<DownloadLinkSandBox> ret = new ArrayList<DownloadLinkSandBox>();
             filePackage.getModifyLock().runReadLock(new Runnable() {
-
                 @Override
                 public void run() {
                     for (DownloadLink link : filePackage.getChildren()) {
                         ret.add(new DownloadLinkSandBox(link));
                     }
-
                 }
             });
             return ret.toArray(new DownloadLinkSandBox[] {});
@@ -105,26 +105,29 @@ public class FilePackageSandBox {
         }
     }
 
+    @Override
+    public int hashCode() {
+        if (filePackage != null) {
+            return filePackage.hashCode();
+        } else {
+            return super.hashCode();
+        }
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (obj instanceof FilePackageSandBox) {
+            return ((FilePackageSandBox) obj).filePackage == filePackage;
+        } else {
+            return super.equals(obj);
+        }
+    }
+
     public boolean isFinished() {
         if (filePackage == null) {
             return false;
         } else {
-            final AtomicBoolean finished = new AtomicBoolean(true);
-            filePackage.getModifyLock().runReadLock(new Runnable() {
-
-                @Override
-                public void run() {
-                    for (DownloadLink link : filePackage.getChildren()) {
-                        // only enabled links count. this is the same in the jd gui, so let's use the same logic here
-                        if (link.isEnabled() && !FinalLinkState.CheckFinished(link.getFinalLinkState())) {
-                            finished.set(false);
-                            break;
-                        }
-                    }
-
-                }
-            });
-            return finished.get();
+            return new FilePackageView(filePackage).aggregate().isFinished();
         }
     }
 
@@ -134,30 +137,36 @@ public class FilePackageSandBox {
             if (controller != null) {
                 controller.removePackage(filePackage);
                 return true;
+            } else {
+                return false;
             }
+        } else {
+            return false;
         }
-        return false;
     }
 
     public String getUUID() {
         if (filePackage != null) {
             return filePackage.getUniqueID().toString();
+        } else {
+            return null;
         }
-        return null;
     }
 
     public long getAddedDate() {
         if (filePackage != null) {
             return filePackage.getCreated();
+        } else {
+            return -1;
         }
-        return -1;
     }
 
     public long getFinishedDate() {
         if (filePackage != null) {
-            return filePackage.getFinishedDate();
+            return new FilePackageView(filePackage).aggregate().getFinishedDate();
+        } else {
+            return -1;
         }
-        return -1;
     }
 
     public String getDownloadFolder() {
@@ -187,6 +196,36 @@ public class FilePackageSandBox {
         }
     }
 
+    public void setProperty(String key, Object value) {
+        if (filePackage != null) {
+            if (value != null) {
+                if (!canStore(value)) {
+                    throw new WTFException("Type " + value.getClass().getSimpleName() + " is not supported");
+                }
+            }
+            filePackage.setProperty(key, value);
+        }
+    }
+
+    public Object getProperty(String key) {
+        if (filePackage != null) {
+            return filePackage.getProperty(key);
+        }
+        return null;
+    }
+
+    public Map<String, Object> getProperties() {
+        if (filePackage != null) {
+            return filePackage.getProperties();
+        } else {
+            return null;
+        }
+    }
+
+    private boolean canStore(final Object value) {
+        return value == null || Clazz.isPrimitive(value.getClass()) || JsonKeyValueStorage.isWrapperType(value.getClass()) || value instanceof Storable;
+    }
+
     public void setPriority(final String priority) {
         if (filePackage != null) {
             try {
@@ -204,5 +243,4 @@ public class FilePackageSandBox {
             return filePackage.getName();
         }
     }
-
 }

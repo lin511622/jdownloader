@@ -13,20 +13,17 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Locale;
-import java.util.Map;
 
 import jd.PluginWrapper;
 import jd.config.Property;
 import jd.controlling.AccountController;
 import jd.http.Browser;
-import jd.http.Cookie;
 import jd.http.Cookies;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
@@ -44,28 +41,26 @@ import jd.plugins.PluginForHost;
 import org.appwork.utils.formatter.TimeFormatter;
 import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "sharedir.com" }, urls = { "http://dl\\.sharedir\\.com/\\d+/" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "sharedir.com" }, urls = { "https?://dl\\.sharedir\\.com/\\d+/" })
 public class ShareDirCom extends PluginForHost {
-
     private static HashMap<Account, HashMap<String, Long>> hostUnavailableMap                   = new HashMap<Account, HashMap<String, Long>>();
     private static final String                            NOCHUNKS                             = "NOCHUNKS";
-
+    private static final String                            API_BASE                             = "https://sharedir.com/sdapi.php";
     private static final String                            NICE_HOST                            = "sharedir.com";
     private static final String                            NICE_HOSTproperty                    = NICE_HOST.replaceAll("(\\.|\\-)", "");
-
     /** TODO: Get these 2 constants via API. */
     /* 500 MB, checked/set 28.12.14 */
     private static final long                              default_free_account_traffic_max     = 524288000L;
-    /* Max. downloadable filesize for freeusers in MB, checked/set 28.12.14 */
+    /* Max. downloadable filesize for freeusers in MB, checked/set 2014-12-28 */
     private static final long                              default_free_account_filesize_max_mb = 150;
-
+    public static final long                               trust_cookie_age                     = 300000l;
     private Account                                        currAcc                              = null;
     private DownloadLink                                   currDownloadLink                     = null;
     private int                                            STATUSCODE                           = 0;
 
     public ShareDirCom(PluginWrapper wrapper) {
         super(wrapper);
-        this.enablePremium("http://sharedir.com/");
+        this.enablePremium("https://sharedir.com/");
     }
 
     @Override
@@ -75,17 +70,19 @@ public class ShareDirCom extends PluginForHost {
 
     @Override
     public String getAGBLink() {
-        return "http://sharedir.com/terms.html";
+        return "https://sharedir.com/terms.html";
     }
 
     private Browser prepBr(final Browser br) {
         br.setCookiesExclusive(true);
+        br.setFollowRedirects(true);
         // define custom browser headers and language settings.
         br.getHeaders().put("Accept", "application/json");
         br.getHeaders().put("User-Agent", "JDownloader");
         br.setCustomCharset("utf-8");
         br.setConnectTimeout(60 * 1000);
         br.setReadTimeout(60 * 1000);
+        br.setAllowedResponseCodes(new int[] { 500 });
         return br;
     }
 
@@ -104,9 +101,9 @@ public class ShareDirCom extends PluginForHost {
     @SuppressWarnings("deprecation")
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
+        prepBr(this.br);
         downloadLink.setName(new Regex(downloadLink.getDownloadURL(), "(\\d+)/$").getMatch(0));
         this.setBrowserExclusive();
-        br.setFollowRedirects(true);
         // Login required to check/download
         final Account aa = AccountController.getInstance().getValidAccount(this);
         // This shouldn't happen
@@ -115,7 +112,6 @@ public class ShareDirCom extends PluginForHost {
             return AvailableStatus.UNCHECKABLE;
         }
         this.login(aa, false);
-        br.setFollowRedirects(true);
         URLConnectionAdapter con = null;
         try {
             con = br.openGetConnection(downloadLink.getDownloadURL());
@@ -140,34 +136,34 @@ public class ShareDirCom extends PluginForHost {
         prepBr(this.br);
         final AccountInfo ac = new AccountInfo();
         this.login(account, false);
-        safeAPIRequest("http://sharedir.com/sdapi.php?get_acc_type", account, null);
-        String acctype = null;
-        if (br.containsHTML("0")) {
+        if (br.getURL() == null || !this.br.getURL().contains("get_acc_type")) {
+            safeAPIRequest(API_BASE + "?get_acc_type", account, null);
+        }
+        final String acctype;
+        if ("0".equals(this.br.toString().trim())) {
             ac.setTrafficMax(default_free_account_traffic_max);
             account.setType(AccountType.FREE);
-            acctype = "Registered (free) account";
+            acctype = "Free Account";
         } else {
             account.setType(AccountType.PREMIUM);
-            acctype = "Premium account";
+            acctype = "Premium Account";
         }
-        safeAPIRequest("http://sharedir.com/sdapi.php?get_traffic_left", account, null);
+        safeAPIRequest(API_BASE + "?get_traffic_left", account, null);
         ac.setTrafficLeft(Long.parseLong(br.toString().trim()) * 1024);
-        safeAPIRequest("http://sharedir.com/sdapi.php?get_expire_date", account, null);
+        safeAPIRequest(API_BASE + "?get_expire_date", account, null);
         if (!br.toString().trim().equals("0")) {
             ac.setValidUntil(TimeFormatter.getMilliSeconds(br.toString(), "yyyy-MM-dd hh:mm:ss", Locale.ENGLISH));
         }
-
         ac.setProperty("multiHostSupport", Property.NULL);
-        safeAPIRequest("http://sharedir.com/sdapi.php?get_dl_limit", account, null);
+        safeAPIRequest(API_BASE + "?get_dl_limit", account, null);
         int maxSim = Integer.parseInt(br.toString().trim());
         if (maxSim < 0) {
             maxSim = 1;
         }
         account.setMaxSimultanDownloads(maxSim);
         account.setConcurrentUsePossible(true);
-
         // this should done at the point of link generating (which this host doesn't do). As not every hoster would have the same value...
-        safeAPIRequest("http://sharedir.com/sdapi.php?get_max_file_conn", account, null);
+        safeAPIRequest(API_BASE + "?get_max_file_conn", account, null);
         int maxcon = Integer.parseInt(br.toString().trim());
         if (maxcon >= 20) {
             maxcon = 0;
@@ -178,7 +174,7 @@ public class ShareDirCom extends PluginForHost {
         }
         account.setProperty("maxcon", maxcon);
         // now let's get a list of all supported hosts:
-        safeAPIRequest("http://sharedir.com/sdapi.php?get_dl_hosts", account, null);
+        safeAPIRequest(API_BASE + "?get_dl_hosts", account, null);
         String[] hosts = br.toString().split(",");
         final ArrayList<String> supportedHosts = new ArrayList<String>();
         for (String host : hosts) {
@@ -212,19 +208,12 @@ public class ShareDirCom extends PluginForHost {
 
     @Override
     public int getMaxSimultanFreeDownloadNum() {
-        return 0;
+        return -1;
     }
 
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception, PluginException {
-        try {
-            throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
-        } catch (final Throwable e) {
-            if (e instanceof PluginException) {
-                throw (PluginException) e;
-            }
-        }
-        throw new PluginException(LinkStatus.ERROR_FATAL, "This file can only be downloaded by registered users");
+        throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
     }
 
     /** no override to keep plugin compatible to old stable */
@@ -246,9 +235,8 @@ public class ShareDirCom extends PluginForHost {
                 }
             }
         }
-
         login(account, false);
-        final String dllink = "http://dl.sharedir.com/?i=" + Encoding.urlEncode(link.getDownloadURL());
+        final String dllink = "http://dl." + account.getHoster() + "/?i=" + Encoding.urlEncode(link.getDownloadURL());
         handleDl(link, account, dllink, false);
     }
 
@@ -310,54 +298,46 @@ public class ShareDirCom extends PluginForHost {
         }
     }
 
-    private static Object       LOCK        = new Object();
-    private static final String COOKIE_HOST = "http://sharedir.com";
+    private static Object LOCK = new Object();
 
-    @SuppressWarnings("unchecked")
     private void login(final Account account, final boolean force) throws Exception {
         synchronized (LOCK) {
             try {
-                /** Load cookies */
                 br.setCookiesExclusive(true);
                 prepBr(this.br);
-                final Object ret = account.getProperty("cookies", null);
-                boolean acmatch = Encoding.urlEncode(account.getUser()).equals(account.getStringProperty("name", Encoding.urlEncode(account.getUser())));
-                if (acmatch) {
-                    acmatch = Encoding.urlEncode(account.getPass()).equals(account.getStringProperty("pass", Encoding.urlEncode(account.getPass())));
+                final Cookies cookies = account.loadCookies("");
+                if (cookies != null && !force && System.currentTimeMillis() - account.getCookiesTimeStamp("") <= trust_cookie_age) {
+                    /* We trust these cookies --> Do not check them */
+                    this.br.setCookies(this.getHost(), cookies);
+                    return;
                 }
-                if (acmatch && ret != null && ret instanceof HashMap<?, ?> && !force) {
-                    final HashMap<String, String> cookies = (HashMap<String, String>) ret;
-                    if (account.isValid()) {
-                        for (final Map.Entry<String, String> cookieEntry : cookies.entrySet()) {
-                            final String key = cookieEntry.getKey();
-                            final String value = cookieEntry.getValue();
-                            this.br.setCookie(COOKIE_HOST, key, value);
-                        }
+                if (cookies != null) {
+                    /* Check whether existing cookies are still valid or not. */
+                    this.br.setCookies(this.getHost(), cookies);
+                    br.getPage(API_BASE + "?get_acc_type");
+                    this.updatestatuscode();
+                    if (this.STATUSCODE != 500) {
+                        /* Check for other errors, just in case ... */
+                        this.handleAPIErrors(this.br);
+                        /* Save cookies again to set new timestamp. */
+                        account.saveCookies(this.br.getCookies(this.getHost()), "");
                         return;
                     }
+                    /* Perform full login ... */
                 }
-                br.setFollowRedirects(true);
                 final String lang = System.getProperty("user.language");
-                br.postPage("http://sharedir.com/login.html", "rem=1&login_submit=1&api=1&username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
-                if (br.containsHTML("100: Invalid username/password combination")) {
+                br.postPage("https://" + account.getHoster() + "/login.html", "rem=1&login_submit=1&api=1&username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
+                if (br.containsHTML("100\\s*?:\\s*?Invalid username/password combination")) {
                     if ("de".equalsIgnoreCase(lang)) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     } else {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!\r\nQuick help:\r\nYou're sure that the username and password you entered are correct?\r\nIf your password contains special characters, change it (remove them) and try again!", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     }
                 }
-                /** Save cookies */
-                final HashMap<String, String> cookies = new HashMap<String, String>();
-                final Cookies add = this.br.getCookies(COOKIE_HOST);
-                for (final Cookie c : add.getCookies()) {
-                    cookies.put(c.getKey(), c.getValue());
-                }
-                account.setProperty("name", Encoding.urlEncode(account.getUser()));
-                account.setProperty("pass", Encoding.urlEncode(account.getPass()));
-                account.setProperty("cookies", cookies);
+                account.saveCookies(this.br.getCookies(this.getHost()), "");
             } catch (final PluginException e) {
                 account.setType(AccountType.UNKNOWN);
-                account.setProperty("cookies", Property.NULL);
+                account.clearCookies("");
                 throw e;
             }
         }
@@ -422,7 +402,6 @@ public class ShareDirCom extends PluginForHost {
                 /* Unknown errorcode -> disable account */
                 statusMessage = "Unknown errorcode";
                 throw new PluginException(LinkStatus.ERROR_PREMIUM, statusMessage, PluginException.VALUE_ID_PREMIUM_DISABLE);
-
             }
         } catch (final PluginException e) {
             logger.info(NICE_HOST + ": Exception: statusCode: " + STATUSCODE + " statusMessage: " + statusMessage);
@@ -499,5 +478,4 @@ public class ShareDirCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

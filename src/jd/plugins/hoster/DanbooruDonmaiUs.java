@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -32,9 +31,10 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.SiteType.SiteTemplate;
 
+import org.appwork.utils.formatter.SizeFormatter;
+
 @HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "danbooru.donmai.us" }, urls = { "https?://(?:www\\.)?danbooru\\.donmai\\.us/posts/\\d+" })
 public class DanbooruDonmaiUs extends PluginForHost {
-
     public DanbooruDonmaiUs(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -43,17 +43,21 @@ public class DanbooruDonmaiUs extends PluginForHost {
     // Tags:
     // protocol: no https
     // other:
-
     /* Connection stuff */
     private static final boolean free_resume       = false;
     private static final int     free_maxchunks    = 1;
     private static final int     free_maxdownloads = -1;
-
     private String               dllink            = null;
 
     @Override
     public String getAGBLink() {
         return "http://danbooru.donmai.us/static/terms_of_service";
+    }
+
+    @SuppressWarnings({ "deprecation" })
+    @Override
+    public void correctDownloadLink(final DownloadLink link) {
+        link.setUrlDownload(link.getDownloadURL().replace("https://", "http://"));
     }
 
     @SuppressWarnings("deprecation")
@@ -73,14 +77,22 @@ public class DanbooruDonmaiUs extends PluginForHost {
         } else {
             filename = url_filename;
         }
-        dllink = br.getRegex("property=\"og:image\" content=\"(http[^<>\"]+)\"").getMatch(0);
-        if (dllink == null) {
-            dllink = br.getRegex("\"(https?://danbooru\\.donmai\\.us/data/[^<>\"]+)\"").getMatch(0);
+        dllink = br.getRegex("href=\"([^<>\"]+)\">\\s*view original").getMatch(0); // Not always available
+        if (dllink != null && dllink.contains("?original=1")) { // https://board.jdownloader.org/showthread.php?t=77260&post#3
+            br.getPage(dllink);
+            dllink = br.getRegex("<a href=\"([^<>\"]+)\">\\s*Save as").getMatch(0);
         }
+        if (dllink == null) {
+            dllink = br.getRegex("Size: <a href=\"([^<>\"]+)\"").getMatch(0); // Picture or video
+            if (dllink == null) {
+                dllink = br.getRegex("property=\"og:image\" content=\"(http[^<>\"]+)\"").getMatch(0); // Always picture
+            }
+        }
+        final String size = br.getRegex("Size:\\s*<a href=\"(?:(?:https?://danbooru\\.donmai\\.us)?/data/[^<>\"]+)\">(.*?)<").getMatch(0);
+        final long orgSize = size != null ? SizeFormatter.getSize(size) : -1l;
         if (filename == null || dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        dllink = Encoding.htmlDecode(dllink);
         filename = Encoding.htmlDecode(filename);
         filename = filename.trim();
         filename = encodeUnicode(filename);
@@ -89,6 +101,10 @@ public class DanbooruDonmaiUs extends PluginForHost {
             filename += ext;
         }
         link.setFinalFileName(filename);
+        if (orgSize > 0) {
+            link.setDownloadSize(orgSize);
+            return AvailableStatus.TRUE;
+        }
         final Browser br2 = br.cloneBrowser();
         // In case the link redirects to the finallink
         br2.setFollowRedirects(true);

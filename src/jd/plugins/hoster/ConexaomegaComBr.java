@@ -13,13 +13,14 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.concurrent.atomic.AtomicReference;
+
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
+import org.jdownloader.plugins.components.antiDDoSForHost;
+import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
 
 import jd.PluginWrapper;
 import jd.config.Property;
@@ -36,28 +37,20 @@ import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
-import jd.plugins.PluginForHost;
 
-import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "conexaomega.com.br" }, urls = { "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsfs2133" })
-public class ConexaomegaComBr extends PluginForHost {
-
-    /* Tags: conexaomega.com.br, megarapido.net */
-
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "conexaomega.com.br" }, urls = { "" })
+public class ConexaomegaComBr extends antiDDoSForHost {
+    /* Tags: conexaomega.com.br, megarapido.net, superdown.com.br */
     private static final String                            DOMAIN                       = "http://conexaomega.com.br/";
     private static final String                            NICE_HOST                    = "conexaomega.com.br";
     private static final String                            NICE_HOSTproperty            = NICE_HOST.replaceAll("(\\.|\\-)", "");
     private static final String                            NORESUME                     = NICE_HOSTproperty + "NORESUME";
-
     /* Connection limits */
     private static final boolean                           ACCOUNT_PREMIUM_RESUME       = true;
     private static final int                               ACCOUNT_PREMIUM_MAXCHUNKS    = 1;
     private static final int                               ACCOUNT_PREMIUM_MAXDOWNLOADS = 20;
     private final String                                   default_UA                   = "JDownloader";
     private final String                                   html_loggedin                = "href=\"[^<>\"]*?logout[^<>\"]*?\"";
-
-    private static AtomicReference<String>                 agent                        = new AtomicReference<String>(null);
     private static Object                                  LOCK                         = new Object();
     private int                                            statuscode                   = 0;
     private static HashMap<Account, HashMap<String, Long>> hostUnavailableMap           = new HashMap<Account, HashMap<String, Long>>();
@@ -66,7 +59,7 @@ public class ConexaomegaComBr extends PluginForHost {
 
     public ConexaomegaComBr(PluginWrapper wrapper) {
         super(wrapper);
-        this.enablePremium("http://conexaomega.com.br/");
+        this.enablePremium("https://conexaomega.com.br/");
     }
 
     @Override
@@ -74,12 +67,15 @@ public class ConexaomegaComBr extends PluginForHost {
         return "http://conexaomega.com.br/";
     }
 
-    private Browser newBrowser() {
-        br = new Browser();
-        br.setCookiesExclusive(true);
-        br.getHeaders().put("User-Agent", default_UA);
-        br.setFollowRedirects(true);
-        return br;
+    @Override
+    protected Browser prepBrowser(final Browser prepBr, final String host) {
+        if (!(this.browserPrepped.containsKey(prepBr) && this.browserPrepped.get(prepBr) == Boolean.TRUE)) {
+            super.prepBrowser(prepBr, host);
+            /* define custom browser headers and language settings */
+            prepBr.getHeaders().put("User-Agent", default_UA);
+            prepBr.setFollowRedirects(true);
+        }
+        return prepBr;
     }
 
     @Override
@@ -120,9 +116,8 @@ public class ConexaomegaComBr extends PluginForHost {
     @SuppressWarnings("deprecation")
     @Override
     public void handleMultiHost(final DownloadLink link, final Account account) throws Exception {
-        this.br = newBrowser();
+        this.br = new Browser();
         setConstants(account, link);
-
         synchronized (hostUnavailableMap) {
             HashMap<String, Long> unavailableMap = hostUnavailableMap.get(account);
             if (unavailableMap != null) {
@@ -138,7 +133,6 @@ public class ConexaomegaComBr extends PluginForHost {
                 }
             }
         }
-
         login(account, false);
         String dllink = checkDirectLink(link, NICE_HOSTproperty + "directlink");
         if (dllink == null) {
@@ -177,8 +171,9 @@ public class ConexaomegaComBr extends PluginForHost {
                 handleErrorRetries("unknowndlerror", 5, 2 * 60 * 1000l);
             }
             this.dl.startDownload();
-        } catch (final Throwable e) {
+        } catch (final Exception e) {
             link.setProperty(NICE_HOSTproperty + "directlink", Property.NULL);
+            throw e;
         }
     }
 
@@ -210,8 +205,6 @@ public class ConexaomegaComBr extends PluginForHost {
     @SuppressWarnings("deprecation")
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
-        setConstants(account, null);
-        this.br = newBrowser();
         if (!account.getUser().matches(".+@.+\\..+")) {
             if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                 throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nBitte gib deine E-Mail Adresse ins Benutzername Feld ein!", PluginException.VALUE_ID_PREMIUM_DISABLE);
@@ -219,10 +212,12 @@ public class ConexaomegaComBr extends PluginForHost {
                 throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nPlease enter your e-mail adress in the username field!", PluginException.VALUE_ID_PREMIUM_DISABLE);
             }
         }
+        setConstants(account, null);
+        this.br = new Browser();
         final AccountInfo ai = new AccountInfo();
         login(account, true);
         if (!this.br.getURL().contains("/minha_conta.php")) {
-            this.br.getPage("/minha_conta.php");
+            super.getPage(br, "/minha_conta.php");
         }
         final String premium_days_left = this.br.getRegex("<span>(\\d+) dias?</span>.+<small[^>]*?>[^<>]*?de conta premium").getMatch(0);
         if (premium_days_left == null || premium_days_left.equals("0")) {
@@ -236,18 +231,17 @@ public class ConexaomegaComBr extends PluginForHost {
             ai.setUnlimitedTraffic();
             ai.setValidUntil(System.currentTimeMillis() + 24 * Long.parseLong(premium_days_left) * 60 * 60 * 1000l);
         }
-        account.setValid(true);
         this.getAPISafe("/planos");
         final String supportedhosttable = this.br.getRegex("<div class=\"lista\\-geradores\">(.*?<br/>)<br/>[\t\n\r ]*?</div>").getMatch(0);
         if (supportedhosttable != null) {
             final ArrayList<String> supportedHosts = new ArrayList<String>();
             final String hosts_crippled[] = new Regex(supportedhosttable, "([A-Za-z0-9\\.\\-]+)[\t\n\r ]*?<br").getColumn(0);
             for (String host_crippled : hosts_crippled) {
-                supportedHosts.add(host_crippled.trim());
+                host_crippled = host_crippled.toLowerCase().trim();
+                supportedHosts.add(host_crippled);
             }
             ai.setMultiHostSupport(this, supportedHosts);
         }
-
         return ai;
     }
 
@@ -256,25 +250,48 @@ public class ConexaomegaComBr extends PluginForHost {
             try {
                 /* Load cookies */
                 br.setCookiesExclusive(true);
-                this.br = newBrowser();
+                br = new Browser();
                 final Cookies cookies = account.loadCookies("");
                 if (cookies != null) {
-                    this.br.setCookies(this.getHost(), cookies);
-                    br.getPage("https://www." + this.getHost() + "/planos");
-                    if (br.containsHTML(html_loggedin)) {
-                        account.saveCookies(this.br.getCookies(this.getHost()), "");
-                        return;
+                    /* Re-use cookies whenever possible to avoid login captcha prompts. */
+                    br.setCookies(getHost(), cookies);
+                    for (int i = 0; i < 3; i++) { // Sometimes we get connect timed out
+                        try {
+                            super.getPage(br, "https://www." + getHost() + "/planos");
+                        } catch (Exception e) {
+                            Thread.sleep(10 * 1000);
+                        }
+                        if (br.containsHTML(html_loggedin)) {
+                            account.saveCookies(br.getCookies(getHost()), "");
+                            return;
+                        }
                     }
-                    /* Clear cookies to prevent unknown errors as we'll perform a full login below now. */
-                    if (br.getCookies(DOMAIN) != null) {
-                        br.clearCookies(DOMAIN);
-                    }
+                    /* Clear cookies/headers to prevent unknown errors as we'll perform a full login below now. */
+                    br = new Browser();
                 }
+                super.getPage(br, "https://www." + getHost() + "/login");
                 String postData = "lembrar=on&email=" + Encoding.urlEncode(currAcc.getUser()) + "&senha=" + Encoding.urlEncode(currAcc.getPass());
-                this.postAPISafe("https://www." + this.getHost() + "/login", postData);
-                final String userLanguage = System.getProperty("user.language");
+                if (this.br.containsHTML("g\\-recaptcha")) {
+                    /* Handle login captcha */
+                    final DownloadLink dlinkbefore = this.getDownloadLink();
+                    if (dlinkbefore == null) {
+                        this.setDownloadLink(new DownloadLink(this, "Account", this.getHost(), "https://" + account.getHoster(), true));
+                    }
+                    final String siteKey = this.br.getRegex("var key\\s*?=\\s*?\"([^<>\"]+)\";").getMatch(0);
+                    final String recaptchaV2Response;
+                    if (siteKey != null) {
+                        recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br, siteKey).getToken();
+                    } else {
+                        recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
+                    }
+                    if (dlinkbefore != null) {
+                        this.setDownloadLink(dlinkbefore);
+                    }
+                    postData += "&g-recaptcha-response=" + Encoding.urlEncode(recaptchaV2Response);
+                }
+                this.postAPISafe("/login", postData);
                 if (!this.br.containsHTML(html_loggedin)) {
-                    if ("de".equalsIgnoreCase(userLanguage)) {
+                    if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername/Passwort!\r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen? Versuche folgendes:\r\n1. Falls dein Passwort Sonderzeichen enthält, ändere es (entferne diese) und versuche es erneut!\r\n2. Gib deine Zugangsdaten per Hand (ohne kopieren/einfügen) ein.", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     } else {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!\r\nYou're sure that the username and password you entered are correct? Some hints:\r\n1. If your password contains special characters, change it (remove them) and try again!\r\n2. Type in your username/password by hand without copy & paste.", PluginException.VALUE_ID_PREMIUM_DISABLE);
@@ -303,14 +320,14 @@ public class ConexaomegaComBr extends PluginForHost {
         throw new PluginException(LinkStatus.ERROR_RETRY);
     }
 
-    private void getAPISafe(final String accesslink) throws IOException, PluginException {
-        br.getPage(accesslink);
+    private void getAPISafe(final String accesslink) throws Exception {
+        super.getPage(br, accesslink);
         updatestatuscode();
         handleAPIErrors(this.br);
     }
 
-    private void postAPISafe(final String accesslink, final String postdata) throws IOException, PluginException {
-        br.postPage(accesslink, postdata);
+    private void postAPISafe(final String accesslink, final String postdata) throws Exception {
+        super.postPage(br, accesslink, postdata);
         updatestatuscode();
         handleAPIErrors(this.br);
     }
@@ -371,5 +388,4 @@ public class ConexaomegaComBr extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

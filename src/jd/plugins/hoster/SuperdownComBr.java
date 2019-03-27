@@ -13,45 +13,45 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.Map;
+
+import org.appwork.utils.StringUtils;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
+import org.jdownloader.plugins.components.antiDDoSForHost;
+import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
 
 import jd.PluginWrapper;
 import jd.config.Property;
 import jd.http.Browser;
+import jd.http.Cookies;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.plugins.Account;
+import jd.plugins.Account.AccountType;
 import jd.plugins.AccountInfo;
+import jd.plugins.AccountUnavailableException;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 
-import org.appwork.utils.StringUtils;
-import org.jdownloader.plugins.components.antiDDoSForHost;
-import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "superdown.com.br" }, urls = { "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsfs2133" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "superdown.com.br" }, urls = { "https?://[\\w]+\\.superdown\\.com\\.br/(?:superdown/)?\\w+/[a-zA-Z0-9]+/\\d+/\\S+" })
 public class SuperdownComBr extends antiDDoSForHost {
-
+    /* Tags: conexaomega.com.br, megarapido.net, superdown.com.br */
     private static HashMap<Account, HashMap<String, Long>> hostUnavailableMap = new HashMap<Account, HashMap<String, Long>>();
     private static final String                            NOCHUNKS           = "NOCHUNKS";
-
     private static final String                            DOMAIN             = "https://superdown.com.br/";
     private static final String                            NICE_HOST          = "superdown.com.br";
     private static final String                            NICE_HOSTproperty  = NICE_HOST.replaceAll("(\\.|\\-)", "");
-
+    private final String                                   html_loggedin      = "href=\"[^<>\"]*?logout[^<>\"]*?\"";
     private static Object                                  LOCK               = new Object();
-    private static final String[][]                        HOSTS              = { { "mega", "mega.co.nz" }, { "oboom", "oboom.com" }, { "4shared", "4shared.com" }, { "Bitshare", "bitshare.com" }, { "datafile", "datafile.com" }, { "ddlstorage", "ddlstorage.com" }, { "Depfile", "depfile.com" }, { "depositfiles", "depositfiles.com" }, { "easybytez", "easybytez.com" }, { "extmatrix", "extmatrix.com" }, { "fayloobmennik", "fayloobmennik.net" }, { "filecloud", "filecloud.io" }, { "Filefactory", "filefactory.com" }, { "filesflash", "filesflash.com" }, { "filesmonster", "filesmonster.com" }, { "Freakshare", "freakshare.com" }, { "hugefiles", "hugefiles.net" }, { "Keep2share", "keep2share.cc" }, { "Letitbit", "letitbit.net" }, { "lumfile", "lumfile.com" }, { "Mediafire", "mediafire.com" }, { "Megashares", "megashares.com" }, { "mightyupload", "mightyupload.com" }, { "novafile", "novafile.com" },
-            { "Rapidgator", "rapidgator.net" }, { "Sendspace", "sendspace.com" }, { "Shareflare", "shareflare.net" }, { "Turbobit", "turbobit.net" }, { "ultramegabit", "ultramegabit.com" }, { "uploadable", "uploadable.ch" }, { "uploaded.to", "uploaded.net" }, { "uppit", "uppit.com" }, { "Zippyshare", "zippyshare.com" }, { "1Fichier", "1fichier.com" }, { "2shared", "2shared.com" }, { "Crocko", "crocko.com" }, { "Gigasize", "gigasize.com" }, { "Mega", "mega.co.nz" }, { "Minhateca", "minhateca.com.br" }, { "Uploading", "uploading.com" }, { "Uptobox", "uptobox.com" }, { "Vip-file", "vip-file.com" } };
 
     public SuperdownComBr(PluginWrapper wrapper) {
         super(wrapper);
@@ -64,20 +64,42 @@ public class SuperdownComBr extends antiDDoSForHost {
     }
 
     @Override
-    protected Browser prepBrowser(Browser prepBr, String host) {
+    protected Browser prepBrowser(final Browser prepBr, final String host) {
         if (!(browserPrepped.containsKey(prepBr) && browserPrepped.get(prepBr) == Boolean.TRUE)) {
             super.prepBrowser(prepBr, host);
             /* define custom browser headers and language settings */
             prepBr.setCustomCharset("utf-8");
             prepBr.setCookie(DOMAIN, "locale", "en");
+            prepBr.setFollowRedirects(true);
         }
         return prepBr;
-
     }
 
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink link) throws PluginException {
-        return AvailableStatus.UNCHECKABLE;
+    public AvailableStatus requestFileInformation(DownloadLink link) throws PluginException {
+        final boolean checked = checkLinks(new DownloadLink[] { link });
+        // we can't throw exception in checklinks! This is needed to prevent multiple captcha events!
+        if (!checked && hasAntiddosCaptchaRequirement()) {
+            throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+        } else if (!checked || !link.isAvailabilityStatusChecked()) {
+            link.setAvailableStatus(AvailableStatus.UNCHECKABLE);
+        } else if (!link.isAvailable()) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        }
+        return getAvailableStatus(link);
+    }
+
+    private AvailableStatus getAvailableStatus(DownloadLink link) {
+        try {
+            final Field field = link.getClass().getDeclaredField("availableStatus");
+            field.setAccessible(true);
+            Object ret = field.get(link);
+            if (ret != null && ret instanceof AvailableStatus) {
+                return (AvailableStatus) ret;
+            }
+        } catch (final Throwable e) {
+        }
+        return AvailableStatus.UNCHECKED;
     }
 
     @Override
@@ -86,6 +108,10 @@ public class SuperdownComBr extends antiDDoSForHost {
             if (!StringUtils.equals((String) downloadLink.getProperty("usedPlugin", getHost()), getHost())) {
                 return false;
             }
+        }
+        // direct link... shouldn't need account
+        if (downloadLink.getPluginPatternMatcher().matches(this.getSupportedLinks().pattern())) {
+            return true;
         }
         if (account == null) {
             /* without account its not possible to download the link */
@@ -96,7 +122,7 @@ public class SuperdownComBr extends antiDDoSForHost {
 
     @Override
     public void handleFree(DownloadLink downloadLink) throws Exception, PluginException {
-        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        handleDL(null, downloadLink, downloadLink.getDownloadURL());
     }
 
     @Override
@@ -107,7 +133,40 @@ public class SuperdownComBr extends antiDDoSForHost {
     @Override
     public void handlePremium(DownloadLink link, Account account) throws Exception {
         /* handle premium should never be called */
-        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        handleDL(account, link, link.getPluginPatternMatcher());
+    }
+
+    public boolean checkLinks(DownloadLink[] urls) {
+        if (urls == null || urls.length == 0) {
+            return false;
+        }
+        try {
+            final Browser checkbr = br.cloneBrowser();
+            checkbr.setFollowRedirects(true);
+            checkbr.setAllowedResponseCodes(new int[] { 500 });
+            for (DownloadLink dl : urls) {
+                URLConnectionAdapter con = null;
+                try {
+                    con = openAntiDDoSRequestConnection(checkbr, checkbr.createGetRequest(dl.getDownloadURL()));
+                    if (con.isContentDisposition()) {
+                        dl.setFinalFileName(getFileNameFromHeader(con));
+                        dl.setDownloadSize(con.getLongContentLength());
+                        dl.setAvailable(true);
+                    } else {
+                        dl.setAvailable(false);
+                    }
+                } finally {
+                    try {
+                        /* make sure we close connection */
+                        con.disconnect();
+                    } catch (final Throwable e) {
+                    }
+                }
+            }
+        } catch (Exception e) {
+            return false;
+        }
+        return true;
     }
 
     private void handleDL(final Account account, final DownloadLink link, final String dllink) throws Exception {
@@ -118,7 +177,7 @@ public class SuperdownComBr extends antiDDoSForHost {
             maxChunks = 1;
         }
         link.setProperty(NICE_HOSTproperty + "directlink", dllink);
-        dl = jd.plugins.BrowserAdapter.openDownload(br, link, dllink, true, maxChunks);
+        dl = jd.plugins.BrowserAdapter.openDownload(br, link, dllink, true, maxChunks, true);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             logger.info(NICE_HOST + ": Unknown download error");
@@ -136,7 +195,7 @@ public class SuperdownComBr extends antiDDoSForHost {
         }
         try {
             link.setProperty("usedPlugin", getHost());
-            if (!this.dl.startDownload()) {
+            if (!dl.startDownload()) {
                 try {
                     if (dl.externalDownloadStop()) {
                         return;
@@ -153,12 +212,10 @@ public class SuperdownComBr extends antiDDoSForHost {
             /* This may happen if the downloads stops at 99,99% - a few retries usually help in this case */
             if (e.getLinkStatus() == LinkStatus.ERROR_DOWNLOAD_INCOMPLETE) {
                 logger.info(NICE_HOST + ": DOWNLOAD_INCOMPLETE");
-
                 logger.info("DOWNLOAD_INCOMPLETE -> Maybe re-trying with only 1 chunk");
                 /* unknown error, we disable multiple chunks */
                 disableChunkload(link);
                 logger.info("DOWNLOAD_INCOMPLETE -> Retry with 1 chunk did not solve the problem");
-
                 int timesFailed = link.getIntegerProperty(NICE_HOSTproperty + "timesfailed_dl_incomplete", 0);
                 link.getLinkStatus().setRetryCount(0);
                 if (timesFailed <= 5) {
@@ -219,24 +276,12 @@ public class SuperdownComBr extends antiDDoSForHost {
             }
             getPage("http://www.superdown.com.br/_gerar?link=" + Encoding.urlEncode(link.getDefaultPlugin().buildExternalDownloadURL(link, this)) + "&rnd=0." + System.currentTimeMillis() + passwordParam);
             dllink = br.getRegex("(https?://[^<>\"]*?)\\|").getMatch(0);
-            if (br.containsHTML("Sua sess[^ ]+ expirou por inatividade\\. Efetue o login novamente\\.")) {
-                account.setProperty("cookies", Property.NULL);
-                throw new PluginException(LinkStatus.ERROR_RETRY);
-            }
-            if (br.containsHTML("Password Request")) {
-                throw new PluginException(LinkStatus.ERROR_FATAL, "Password Request");
-            }
-            if (dllink == null && br.containsHTML("não é um servidor suportado pelo")) {
-                // host has been picked up due to generic supported host adding (matches)
-                final ArrayList supportedHosts = (ArrayList) Arrays.asList(account.getProperty("multiHostSupport", new String[] {}));
-                supportedHosts.remove(link.getHost());
-                account.getAccountInfo().setMultiHostSupport(this, supportedHosts);
-                throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "Not supported at this provider", 6 * 60 * 60 * 1000l);
+            if (dllink == null) {
+                handleSpecificErrors(link, account);
             }
             if (dllink == null || (dllink != null && dllink.length() > 500)) {
                 logger.info(NICE_HOST + ": Unknown error");
                 int timesFailed = link.getIntegerProperty("NICE_HOSTproperty + timesfailed_dllinknull", 0);
-                link.getLinkStatus().setRetryCount(0);
                 if (timesFailed <= 2) {
                     timesFailed++;
                     link.setProperty(NICE_HOSTproperty + "timesfailed_dllinknull", timesFailed);
@@ -251,6 +296,30 @@ public class SuperdownComBr extends antiDDoSForHost {
         }
         showMessage(link, "Task 2: Download begins!");
         handleDL(account, link, dllink);
+    }
+
+    private void handleSpecificErrors(final DownloadLink link, final Account account) throws PluginException {
+        if (br.containsHTML("Sua sess[^ ]+ expirou por inatividade\\. Efetue o login novamente\\.")) {
+            account.setProperty("cookies", Property.NULL);
+            throw new PluginException(LinkStatus.ERROR_RETRY);
+        }
+        if (br.containsHTML("Password Request")) {
+            throw new PluginException(LinkStatus.ERROR_FATAL, "Password Request");
+        }
+        if (br.containsHTML("não é um servidor suportado pelo")) {
+            // host has been picked up due to generic supported host adding (matches)
+            final ArrayList supportedHosts = (ArrayList) Arrays.asList(account.getProperty("multiHostSupport", new String[] {}));
+            supportedHosts.remove(link.getHost());
+            account.getAccountInfo().setMultiHostSupport(this, supportedHosts);
+            throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "Not supported at this provider", 6 * 60 * 60 * 1000l);
+        }
+        if (br.containsHTML("Seu gerador premium está zerado, por favor, compre um de nossos planos")) {
+            // Your premium generator is zeroed, please purchase one of our plans
+            synchronized (LOCK) {
+                account.getAccountInfo().setTrafficLeft(0);
+            }
+            throw new AccountUnavailableException("Download limit reached", 1 * 60 * 60 * 1000l);
+        }
     }
 
     private String checkDirectLink(final DownloadLink downloadLink, final String property) {
@@ -285,10 +354,8 @@ public class SuperdownComBr extends antiDDoSForHost {
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         final AccountInfo ai = new AccountInfo();
         login(account, true);
-
         getPage("/en/");
-
-        final String expire_text = br.getRegex("class=\"clearfix pull\\-right contador\">(.*?)<li class=\"dias\"").getMatch(0);
+        final String expire_text = br.getRegex("class=\"clearfix pull-right contador\">(.*?)<li class=\"dias\"").getMatch(0);
         if (expire_text == null) {
             final String lang = System.getProperty("user.language");
             if ("de".equalsIgnoreCase(lang)) {
@@ -299,25 +366,49 @@ public class SuperdownComBr extends antiDDoSForHost {
         }
         final String[] days_digits = new Regex(expire_text, "<li>(\\d+)</li>").getColumn(0);
         String days_string = "";
-        for (final String digit : days_digits) {
-            days_string += digit;
+        long expire_timestamp = 0;
+        if (days_digits.length > 0) {
+            for (final String digit : days_digits) {
+                days_string += digit;
+            }
+            expire_timestamp = System.currentTimeMillis() + Long.parseLong(days_string) * 24 * 60 * 60 * 1000l;
         }
-        ai.setValidUntil(System.currentTimeMillis() + Long.parseLong(days_string) * 24 * 60 * 60 * 1000l);
-        ai.setUnlimitedTraffic();
-        account.setValid(true);
+        if (expire_timestamp > System.currentTimeMillis()) {
+            ai.setValidUntil(expire_timestamp);
+            ai.setUnlimitedTraffic();
+            ai.setStatus("Premium Account");
+            account.setType(AccountType.PREMIUM);
+        } else {
+            ai.setTrafficLeft(0);
+            ai.setStatus("Free Account");
+            account.setType(AccountType.FREE);
+        }
         account.setMaxSimultanDownloads(-1);
         account.setConcurrentUsePossible(true);
         final ArrayList<String> supportedHosts = new ArrayList<String>();
-        /* Apply supported hosts depending on account type */
-        for (final String[] filehost : HOSTS) {
-            final String crippledHost = filehost[0];
-            final String realHost = filehost[1];
-            if (br.containsHTML("<b>.*?" + crippledHost + ".*?:</b>[\t\n\r ]+(Available|Testing)")) {
-                supportedHosts.add(realHost);
+        boolean extendedCheckSuccessful = false;
+        final String supportedHostsTableHTML = br.getRegex("<div[^>]*?class=\"servidores\"[^>]*?>\\s*?<ul>(.*?)</ul>").getMatch(0);
+        if (supportedHostsTableHTML != null) {
+            final String[] hostInfoHtmls = new Regex(supportedHostsTableHTML, "<li.*?</li>").getColumn(-1);
+            for (final String hostInfoHtml : hostInfoHtmls) {
+                String crippledHost = new Regex(hostInfoHtml, "<b>[^<]*?([A-Za-z0-9\\-\\.]+)[^<]*?</b>").getMatch(0);
+                final boolean isOnline = new Regex(hostInfoHtml, "class=\"(soso|on)\"").matches() || new Regex(hostInfoHtml, "Novo|Disponível").matches();
+                if (!StringUtils.isEmpty(crippledHost) && isOnline) {
+                    crippledHost = crippledHost.toLowerCase();
+                    extendedCheckSuccessful = true;
+                    supportedHosts.add(crippledHost);
+                }
+            }
+        }
+        if (!extendedCheckSuccessful) {
+            /* Fallback - wider RegEx without check for host-status */
+            final String[] crippledHosts = br.getRegex("<b>[^<]*?([A-Za-z0-9\\-\\.]+)[^<]*?</b>").getColumn(0);
+            for (String crippledHost : crippledHosts) {
+                crippledHost = crippledHost.toLowerCase();
+                supportedHosts.add(crippledHost);
             }
         }
         ai.setMultiHostSupport(this, supportedHosts);
-        ai.setStatus("Premium Account");
         return ai;
     }
 
@@ -341,51 +432,54 @@ public class SuperdownComBr extends antiDDoSForHost {
         throw new PluginException(LinkStatus.ERROR_RETRY);
     }
 
-    @SuppressWarnings("unchecked")
     private void login(final Account account, final boolean force) throws Exception {
         synchronized (LOCK) {
             try {
                 /* Load cookies */
-                br = new Browser();
-                final Object ret = account.getProperty("cookies", null);
-                boolean acmatch = Encoding.urlEncode(account.getUser()).equals(account.getStringProperty("name", Encoding.urlEncode(account.getUser())));
-                if (acmatch) {
-                    acmatch = Encoding.urlEncode(account.getPass()).equals(account.getStringProperty("pass", Encoding.urlEncode(account.getPass())));
-                }
-                if (acmatch && ret != null && ret instanceof HashMap<?, ?> && !force) {
-                    final HashMap<String, String> cookies = (HashMap<String, String>) ret;
-                    if (account.isValid()) {
-                        for (final Map.Entry<String, String> cookieEntry : cookies.entrySet()) {
-                            final String key = cookieEntry.getKey();
-                            final String value = cookieEntry.getValue();
-                            this.br.setCookie(DOMAIN, key, value);
-                        }
+                br.setCookiesExclusive(true);
+                final Cookies cookies = account.loadCookies("");
+                if (cookies != null) {
+                    /* Re-use cookies whenever possible to avoid login captcha prompts. */
+                    br.setCookies(this.getHost(), cookies);
+                    getPage("https://www." + this.getHost());
+                    if (br.containsHTML(html_loggedin)) {
+                        account.saveCookies(br.getCookies(this.getHost()), "");
                         return;
                     }
+                    /* Clear cookies/headers to prevent unknown errors as we'll perform a full login below now. */
+                    br = new Browser();
                 }
-                br.setFollowRedirects(true);
-                postPage("https://www.superdown.com.br/login", "lembrar=on&email=" + Encoding.urlEncode(account.getUser()) + "&senha=" + Encoding.urlEncode(account.getPass()));
-                final String lang = System.getProperty("user.language");
-                /* Check if we have a free account (free accounts cannot download anything anyways) */
-                if (br.containsHTML("style=\"font-size:15px\">Buy a Plan</a>")) {
-                    if ("de".equalsIgnoreCase(lang)) {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nNicht unterstützter Accounttyp!\r\nFalls du denkst diese Meldung sei falsch die Unterstützung dieses Account-Typs sich\r\ndeiner Meinung nach aus irgendeinem Grund lohnt,\r\nkontaktiere uns über das support Forum.", PluginException.VALUE_ID_PREMIUM_DISABLE);
-                    } else {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUnsupported account type!\r\nIf you think this message is incorrect or it makes sense to add support for this account type\r\ncontact us via our support forum.", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                getPage("https://www." + this.getHost() + "/login");
+                String postData = "lembrar=on&email=" + Encoding.urlEncode(account.getUser()) + "&senha=" + Encoding.urlEncode(account.getPass());
+                if (new Regex(br.toString().replaceAll("<!--.*?-->", ""), "class=\"g-recaptcha\"").matches()) {
+                    /* Handle login captcha */
+                    final DownloadLink dlinkbefore = this.getDownloadLink();
+                    if (dlinkbefore == null) {
+                        this.setDownloadLink(new DownloadLink(this, "Account", this.getHost(), "https://" + account.getHoster(), true));
                     }
+                    final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br) {
+                        @Override
+                        protected String getSiteKey(String source) {
+                            final String siteKey = new Regex(source, "var key\\s*=\\s*\"([\\w-]+)\";").getMatch(0);
+                            return StringUtils.isEmpty(siteKey) ? super.getSiteKey(source) : siteKey;
+                        };
+                    }.getToken();
+                    if (dlinkbefore != null) {
+                        this.setDownloadLink(dlinkbefore);
+                    }
+                    postData += "&g-recaptcha-response=" + Encoding.urlEncode(recaptchaV2Response);
                 }
-                if (br.getCookie(DOMAIN, "key") == null || !br.containsHTML("class=\"pull\\-left expira\"")) {
-                    if ("de".equalsIgnoreCase(lang)) {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen? Versuche folgendes:\r\n1. Falls dein Passwort Sonderzeichen enthält, ändere es (entferne diese) und versuche es erneut!\r\n2. Gib deine Zugangsdaten per Hand (ohne kopieren/einfügen) ein.", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                postPage("/login", postData);
+                if (!br.containsHTML(html_loggedin)) {
+                    if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
+                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername/Passwort!\r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen? Versuche folgendes:\r\n1. Falls dein Passwort Sonderzeichen enthält, ändere es (entferne diese) und versuche es erneut!\r\n2. Gib deine Zugangsdaten per Hand (ohne kopieren/einfügen) ein.", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     } else {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!\r\nYou're sure that the username and password you entered are correct? Some hints:\r\n1. If your password contains special characters, change it (remove them) and try again!\r\n2. Type in your username/password by hand without copy & paste.", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     }
                 }
-                account.setProperty("name", Encoding.urlEncode(account.getUser()));
-                account.setProperty("pass", Encoding.urlEncode(account.getPass()));
-                account.setProperty("cookies", fetchCookies(DOMAIN));
+                account.saveCookies(br.getCookies(this.getHost()), "");
             } catch (final PluginException e) {
-                account.setProperty("cookies", Property.NULL);
+                account.clearCookies("");
                 throw e;
             }
         }

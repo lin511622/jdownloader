@@ -13,9 +13,9 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
+import java.io.IOException;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
@@ -27,6 +27,7 @@ import jd.http.Browser;
 import jd.http.Cookies;
 import jd.http.URLConnectionAdapter;
 import jd.http.requests.HeadRequest;
+import jd.nutils.encoding.Encoding;
 import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
@@ -34,11 +35,11 @@ import jd.plugins.PluginForDecrypt;
 
 import org.appwork.utils.Regex;
 import org.appwork.utils.StringUtils;
+import org.appwork.utils.formatter.HexFormatter;
+import org.jdownloader.plugins.controller.crawler.LazyCrawlerPlugin.FEATURE;
 
-//Decrypts embedded videos from dailymotion
-@DecrypterPlugin(revision = "$Revision: 26321 $", interfaceVersion = 3, names = { "m3u8" }, urls = { "https?://.+\\.m3u8[^\\s<>\"']*" })
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "m3u8" }, urls = { "https?://.+\\.m3u8($|\\?[^\\s<>\"']*|#.*)" })
 public class GenericM3u8Decrypter extends PluginForDecrypt {
-
     @Override
     public Boolean siteTesterDisabled() {
         return Boolean.TRUE;
@@ -46,6 +47,11 @@ public class GenericM3u8Decrypter extends PluginForDecrypt {
 
     public GenericM3u8Decrypter(PluginWrapper wrapper) {
         super(wrapper);
+    }
+
+    @Override
+    public FEATURE[] getFeatures() {
+        return new FEATURE[] { FEATURE.GENERIC };
     }
 
     @Override
@@ -73,11 +79,39 @@ public class GenericM3u8Decrypter extends PluginForDecrypt {
                 source = source.getSourceLink();
             }
         }
+        String forced_referer = new Regex(param.getCryptedUrl(), "((\\&|\\?|#)forced_referer=.+)").getMatch(0);
+        if (forced_referer != null) {
+            forced_referer = new Regex(forced_referer, "forced_referer=([A-Za-z0-9=]+)").getMatch(0);
+            if (forced_referer != null) {
+                String ref = null;
+                if (forced_referer.matches("^[a-fA-F0-9]+$") && forced_referer.length() % 2 == 0) {
+                    final byte[] bytes = HexFormatter.hexToByteArray(forced_referer);
+                    ref = bytes != null ? new String(bytes) : null;
+                }
+                if (ref == null) {
+                    ref = Encoding.Base64Decode(forced_referer);
+                }
+                if (ref != null) {
+                    try {
+                        br.getPage(ref);
+                        referer = ref;
+                    } catch (final IOException e) {
+                        logger.log(e);
+                    }
+                }
+            }
+        }
         br.getPage(param.getCryptedUrl());
+        br.followRedirect();
         if (br.getHttpConnection() == null || br.getHttpConnection().getResponseCode() == 403 || br.getHttpConnection().getResponseCode() == 404) {
             // invalid link
             return ret;
         }
+        return parseM3U8(this, param.getCryptedUrl(), br, referer, cookiesString, null, null);
+    }
+
+    public static ArrayList<DownloadLink> parseM3U8(final PluginForDecrypt plugin, final String m3u8URL, final Browser br, final String referer, final String cookiesString, final String finalName, final String preSetName) throws IOException {
+        final ArrayList<DownloadLink> ret = new ArrayList<DownloadLink>();
         if (br.containsHTML("#EXT-X-STREAM-INF")) {
             final ArrayList<String> infos = new ArrayList<String>();
             for (final String line : Regex.getLines(br.toString())) {
@@ -85,49 +119,47 @@ public class GenericM3u8Decrypter extends PluginForDecrypt {
                     continue;
                 } else if (!line.startsWith("#")) {
                     final URL url = br.getURL(line);
-                    final DownloadLink link = createDownloadlink(url.toString());
-                    if (referer != null) {
-                        link.setProperty("Referer", referer);
+                    final DownloadLink link = new DownloadLink(null, null, plugin.getHost(), url.toString(), true);
+                    if (finalName != null) {
+                        link.setFinalFileName(finalName);
                     }
-                    if (cookiesString != null) {
-                        link.setProperty("cookies", cookiesString);
-                    }
-                    addToResults(ret, br, url, link);
+                    link.setProperty("preSetName", preSetName);
+                    link.setProperty("Referer", referer);
+                    link.setProperty("cookies", cookiesString);
+                    addToResults(plugin, ret, br, url, link);
                     infos.clear();
                 } else {
                     infos.add(line);
                 }
             }
         } else {
-            final DownloadLink link = createDownloadlink("m3u8" + param.getCryptedUrl().substring(4));
-            if (referer != null) {
-                link.setProperty("Referer", referer);
+            final DownloadLink link = new DownloadLink(null, null, plugin.getHost(), "m3u8" + m3u8URL.substring(4), true);
+            if (finalName != null) {
+                link.setFinalFileName(finalName);
             }
-            if (cookiesString != null) {
-                link.setProperty("cookies", cookiesString);
-            }
-            if (br.containsHTML("EXT-X-KEY")) {
-                link.setProperty("ENCRYPTED", true);
-            }
+            link.setProperty("preSetName", preSetName);
+            link.setProperty("Referer", referer);
+            link.setProperty("cookies", cookiesString);
             ret.add(link);
         }
         return ret;
     }
 
-    private void addToResults(final List<DownloadLink> results, final Browser br, final URL url, final DownloadLink link) {
+    private static void addToResults(final PluginForDecrypt plugin, final List<DownloadLink> results, final Browser br, final URL url, final DownloadLink link) {
         if (StringUtils.endsWithCaseInsensitive(url.getPath(), ".m3u8")) {
             results.add(link);
         } else {
             final Browser brc = br.cloneBrowser();
+            brc.setFollowRedirects(true);
             URLConnectionAdapter con = null;
             try {
                 con = brc.openRequestConnection(new HeadRequest(url));
-                if (con.isOK() && StringUtils.equalsIgnoreCase(con.getContentType(), "application/vnd.apple.mpegurl")) {
+                if (con.isOK() && (StringUtils.equalsIgnoreCase(con.getContentType(), "application/vnd.apple.mpegurl") || StringUtils.endsWithCaseInsensitive(url.getPath(), ".m3u8"))) {
                     link.setPluginPatternMatcher("m3u8" + url.toString().substring(4));
                     results.add(link);
                 }
             } catch (final Throwable e) {
-                logger.log(e);
+                plugin.getLogger().log(e);
             } finally {
                 if (con != null) {
                     con.disconnect();
@@ -135,5 +167,4 @@ public class GenericM3u8Decrypter extends PluginForDecrypt {
             }
         }
     }
-
 }

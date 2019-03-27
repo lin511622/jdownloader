@@ -113,15 +113,22 @@
 		</copy>
 		<copy todir="${dist}/libs">
 			<fileset dir="${dep.awu}/libs" includes="**/*.jar">
-				<!-- -->
-
 				<exclude name="miglayout.jar" />
+				<exclude name="**/*.info" />
+			</fileset>
+		</copy>
+		<copy todir="${dist}/libs">
+			<fileset dir="${dep.browser}/libs" includes="**/*.jar">
 				<exclude name="**/*.info" />
 			</fileset>
 		</copy>
 
 		<copy todir="${dist}">
-			<fileset dir="themes" includes="**/*" />
+			<fileset dir="themes" includes="**/*">
+				<exclude name="**/*.psd" />
+				<exclude name="**/*.pnd" />
+			</fileset>
+
 		</copy>
 
 		<copy todir="${dist}/licenses">
@@ -129,6 +136,7 @@
 			<fileset dir="${res}/libs/" includes="**/*.info" />
 			<fileset dir="${dep.awu}/libs/" includes="**/*.info" />
 			<fileset dir="${dep.jdc}/libs/" includes="**/*.info" />
+			<fileset dir="${dep.browser}/libs/" includes="**/*.info" />
 		</copy>
 
 		<copy todir="${dist}/tools">
@@ -156,7 +164,6 @@
 			<fileset dir="${dep.updateclient}/src" includes="**/*.lng" />
 			<fileset dir="${dep.browser}/src" includes="**/*.lng" />
 			<fileset dir="src" includes="**/*.lng" />
-			<fileset dir="${dep.browser}/src" includes="**/*.lng" />
 		</copy>
 		<copy todir="${dist}">
 
@@ -172,41 +179,41 @@
 		<manifest file="${dist}/Manifest.MF">
 			<attribute name="Created-By" value="JD-Team and AppWork GmbH" />
 		</manifest>
-		<jar file="${dist}/libs/JDHttp.jar" manifest="${dist}/Manifest.MF">
+		<jar duplicate="fail" file="${dist}/libs/JDHttp.jar" manifest="${dist}/Manifest.MF">
 
 
 			<fileset dir="${cls}">
 				<include name="jd/http/**/*" />
 			</fileset>
 		</jar>
-		<jar file="${dist}/libs/JDGUI.jar" manifest="${dist}/Manifest.MF">
+		<jar duplicate="fail" file="${dist}/libs/JDGUI.jar" manifest="${dist}/Manifest.MF">
 
 			<fileset dir="${cls}">
 				<include name="jd/gui/**" />
 			</fileset>
 		</jar>
-		<jar file="${dist}/libs/JAntiCaptcha.jar" manifest="${dist}/Manifest.MF">
+		<jar duplicate="fail" file="${dist}/libs/JAntiCaptcha.jar" manifest="${dist}/Manifest.MF">
 
 			<fileset dir="${cls}">
 				<include name="jd/captcha/**" />
 				<exclude name="jd/captcha/methods/**" />
 			</fileset>
 		</jar>
-		<jar file="${dist}/libs/JDUtils.jar" manifest="${dist}/Manifest.MF">
+		<jar duplicate="fail" file="${dist}/libs/JDUtils.jar" manifest="${dist}/Manifest.MF">
 
 			<fileset dir="${cls}">
 				<include name="jd/nutils/**" />
 			</fileset>
 		</jar>
 
-		<jar file="${dist}/libs/Dynamics.jar" manifest="${dist}/Manifest.MF">
+		<jar duplicate="fail" file="${dist}/libs/Dynamics.jar" manifest="${dist}/Manifest.MF">
 
 			<fileset dir="${cls}">
 				<include name="org/jdownloader/dynamic/**/*" />
 			</fileset>
 		</jar>
 
-		<jar file="${dist}/libs/cons.jar" manifest="${dist}/Manifest.MF">
+		<jar duplicate="fail" file="${dist}/libs/cons.jar" manifest="${dist}/Manifest.MF">
 			<fileset dir="${cls}">
 				<include name="org/jdownloader/container/**/*" />
 			</fileset>
@@ -214,7 +221,7 @@
 
 		<!--laf-->
 
-		<jar file="${dist}/libs/laf/syntheticaJDCustom.jar" manifest="${dist}/Manifest.MF">
+		<jar duplicate="fail" file="${dist}/libs/laf/syntheticaJDCustom.jar" manifest="${dist}/Manifest.MF">
 
 			<fileset dir="${cls}">
 
@@ -231,7 +238,7 @@
 
 		</jar>
 
-		<jar file="${dist}/libs/laf/syntheticaJDPlain.jar" manifest="${dist}/Manifest.MF">
+		<jar duplicate="fail" file="${dist}/libs/laf/syntheticaJDPlain.jar" manifest="${dist}/Manifest.MF">
 
 			<fileset dir="${cls}">
 
@@ -273,7 +280,7 @@
 		</manifest>
 		<!--CORE-->
 
-		<jar file="${dist}/Core.jar" manifest="${dist}/Manifest.MF">
+		<jar duplicate="fail" file="${dist}/Core.jar" manifest="${dist}/Manifest.MF">
 
 			<fileset dir="${cls}">
 				<include name="**/*.class" />
@@ -364,7 +371,7 @@
 			<!--<attribute name="Class-Path" value="" />-->
 
 		</manifest>
-		<jar file="${dist}/JDownloader.jar" manifest="${dist}/Manifest.MF">
+		<jar duplicate="fail" file="${dist}/JDownloader.jar" manifest="${dist}/Manifest.MF">
 			<zipfileset src="${dep.awu}/libs/miglayout.jar" excludes="META-INF/*" />
 			<zipfileset src="${dep.awu}/libs/proxyVole.jar" excludes="META-INF/*" />
 			<zipfileset src="${dep.updateclient}/libs/xz.jar" excludes="META-INF/*" />
@@ -403,6 +410,8 @@
 			<fileset dir="themes">
 				<include name="themes/standard/**/images/dialog/**/*" />
 				<include name="themes/standard/**/images/update*" />
+				<exclude name="**/*.psd" />
+				<exclude name="**/*.pnd" />
 			</fileset>
 		</jar>
 		<delete file="${dist}/Manifest.MF" failonerror="true" />
@@ -438,7 +447,7 @@
 			<echo message="Creating @{package}" />
 			<mkdir dir="${dist}/extensions" />
 
-			<jar jarfile="${dist}/extensions/@{package}.jar" manifest="${dist}/Manifest.MF">
+			<jar duplicate="fail" jarfile="${dist}/extensions/@{package}.jar" manifest="${dist}/Manifest.MF">
 				<fileset dir="${cls}">
 					<include name="org/jdownloader/extensions/@{include}/**/*" />
 				</fileset>
@@ -455,7 +464,7 @@
 		<manifest file="${dist}/Manifest.MF">
 			<attribute name="Created-By" value="JD-Team and Friends" />
 		</manifest>
-		
+
 		<buildAddon package="EventScripter" include="eventscripter" />
 		<buildAddon package="JDChat" include="chat" />
 		<buildAddon package="infobar" include="infobar" />
@@ -484,7 +493,7 @@
 		<sequential>
 			<echo message="Creating @{name}" />
 			<mkdir dir="${dist}/reconnect/" />
-			<jar jarfile="${dist}/reconnect/@{name}.reconnect" manifest="${dist}/Manifest.MF">
+			<jar duplicate="fail" jarfile="${dist}/reconnect/@{name}.reconnect" manifest="${dist}/Manifest.MF">
 				<fileset dir="${cls}">
 					<include name="jd/controlling/reconnect/plugins/@{name}/**" />
 				</fileset>

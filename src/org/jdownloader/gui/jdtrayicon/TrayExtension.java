@@ -20,6 +20,8 @@ import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Frame;
 import java.awt.Point;
+import java.awt.Rectangle;
+import java.awt.Robot;
 import java.awt.SystemTray;
 import java.awt.Toolkit;
 import java.awt.TrayIcon;
@@ -228,25 +230,31 @@ public class TrayExtension extends AbstractExtension<TrayConfig, TrayiconTransla
                             // workaround for gnome 3 transparency bug
                             if (getSettings().isGnomeTrayIconTransparentEnabled() && (CrossSystem.isUnix())) {
                                 // http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6453521
-                                DesktopSupportLinux desktop = new DesktopSupportLinux();
-                                if (desktop.isGnomeDesktop() || desktop.isXFCEDesktop()) {
-                                    LogController.CL(TrayExtension.class).info("Apply LinuxTrayIcon workaround");
-                                    java.awt.Robot robo = new java.awt.Robot();
-                                    Color tmp, newColor;
-                                    int cr, cb, cg;
-                                    float alpha;
-                                    for (int y = 0; y < img.getHeight(); y++) {
-                                        newColor = robo.getPixelColor(1, y);
-                                        for (int x = 0; x < img.getWidth(); x++) {
-                                            tmp = new Color(img.getRGB(x, y));
-                                            alpha = ((img.getRGB(x, y) >> 24) & 0xFF) / 255F;
-                                            cr = (int) (alpha * tmp.getRed() + (1 - alpha) * newColor.getRed());
-                                            cg = (int) (alpha * tmp.getGreen() + (1 - alpha) * newColor.getGreen());
-                                            cb = (int) (alpha * tmp.getBlue() + (1 - alpha) * newColor.getBlue());
-                                            tmp = new Color(cr, cg, cb);
-                                            img.setRGB(x, y, tmp.getRGB());
+                                final DesktopSupportLinux desktop = new DesktopSupportLinux();
+                                try {
+                                    if ((desktop.isGnomeDesktop() || desktop.isXFCEDesktop()) && !desktop.isWayland()) {
+                                        getSettings().setGnomeTrayIconTransparentEnabled(false);
+                                        getSettings()._getStorageHandler().write();// disable+write to avoid crash on next try
+                                        // Wayland/java crashes onjava.awt.Robot.createScreenCapture
+                                        LogController.CL(TrayExtension.class).info("Apply LinuxTrayIcon workaround");
+                                        final Robot robo = new java.awt.Robot();
+                                        final BufferedImage screenCapture = robo.createScreenCapture(new Rectangle(2, img.getHeight()));
+                                        for (int y = 0; y < img.getHeight(); y++) {
+                                            final Color pixel = new Color(screenCapture.getRGB(1, y));
+                                            for (int x = 0; x < img.getWidth(); x++) {
+                                                final Color tmp = new Color(img.getRGB(x, y));
+                                                final float alpha = ((img.getRGB(x, y) >> 24) & 0xFF) / 255F;
+                                                final int cr = (int) (alpha * tmp.getRed() + (1 - alpha) * pixel.getRed());
+                                                final int cg = (int) (alpha * tmp.getGreen() + (1 - alpha) * pixel.getGreen());
+                                                final int cb = (int) (alpha * tmp.getBlue() + (1 - alpha) * pixel.getBlue());
+                                                img.setRGB(x, y, new Color(cr, cg, cb).getRGB());
+                                            }
                                         }
                                     }
+                                } catch (final Throwable e) {
+                                    LogController.CL().log(e);
+                                } finally {
+                                    getSettings().setGnomeTrayIconTransparentEnabled(true);
                                 }
                             }
                             /*

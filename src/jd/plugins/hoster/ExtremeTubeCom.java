@@ -13,10 +13,9 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.IOException;
+import java.util.LinkedHashMap;
 
 import jd.PluginWrapper;
 import jd.http.Browser;
@@ -29,11 +28,13 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
+import jd.plugins.components.PluginJSonUtils;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "extremetube.com" }, urls = { "http://(www\\.)?extremetube\\.com/(video/|embed_player\\.php\\?id=|embed/)[a-z0-9\\-]+" }) 
+import org.jdownloader.scripting.JavaScriptEngineFactory;
+
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "extremetube.com" }, urls = { "https?://(www\\.)?extremetube\\.com/(video/|embed_player\\.php\\?id=|embed/)[a-z0-9\\-]+" })
 public class ExtremeTubeCom extends PluginForHost {
-
-    private String DLLINK = null;
+    private String dllink = null;
 
     public ExtremeTubeCom(PluginWrapper wrapper) {
         super(wrapper);
@@ -59,7 +60,7 @@ public class ExtremeTubeCom extends PluginForHost {
     @Override
     public void handleFree(DownloadLink downloadLink) throws Exception {
         requestFileInformation(downloadLink);
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, DLLINK, true, 0);
+        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 0);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -69,38 +70,45 @@ public class ExtremeTubeCom extends PluginForHost {
 
     @SuppressWarnings("deprecation")
     @Override
-    public AvailableStatus requestFileInformation(DownloadLink downloadLink) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(DownloadLink downloadLink) throws Exception {
         this.setBrowserExclusive();
         downloadLink.setName(new Regex(downloadLink.getDownloadURL(), "extremetube\\.com/video/(.+)").getMatch(0));
         // Set cookie so we can watch all videos ;)
         br.setCookie("http://www.extremetube.com/", "age_verified", "1");
         br.setFollowRedirects(true);
         br.getPage(downloadLink.getDownloadURL());
-        if (br.getURL().equals("http://www.extremetube.com/") || !br.containsHTML("\\.swf|</video>")) {
+        if (br.getURL().equals("http://www.extremetube.com/") || br.getHttpConnection().getResponseCode() == 404 || br.containsHTML(">This video has been removed<")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         String filename = br.getRegex("<h1 class=\"title\\-video\\-box float\\-left\" title=\"(.*?)\"").getMatch(0);
+        final String json = br.getRegex("(?:var\\s*|window\\.)flashvars\\s*=\\s*(\\{.*?\\})\\s*;").getMatch(0);
+        if (json == null) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
+        final LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(json);
         final String[] qualities = { "1080p", "720p", "480p", "360p", "240p", "180p" };
         for (final String quality : qualities) {
-            DLLINK = br.getRegex("quality_" + quality + "\":\"(http[^<>\"]*?)\"").getMatch(0);
-            if (DLLINK != null) {
-                DLLINK = DLLINK.replace("\\", "");
+            dllink = (String) entries.get("quality_" + quality);
+            if (dllink != null) {
                 break;
             }
         }
-        if (filename == null || DLLINK == null) {
-            logger.info("filename: " + filename + ", DLLINK: " + DLLINK);
+        if (dllink == null) {
+            dllink = PluginJSonUtils.getJsonValue(json, "video_url");
+        }
+        if (filename == null || dllink == null) {
+            logger.info("filename: " + filename + ", dllink: " + dllink);
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        DLLINK = Encoding.htmlDecode(DLLINK);
+        dllink = Encoding.htmlDecode(dllink);
         filename = filename.trim();
-        downloadLink.setFinalFileName(Encoding.htmlDecode(filename) + ".flv");
+        downloadLink.setFinalFileName(Encoding.htmlDecode(filename) + ".mp4");
         Browser br2 = br.cloneBrowser();
         // In case the link redirects to the finallink
         br2.setFollowRedirects(true);
         URLConnectionAdapter con = null;
         try {
-            con = br2.openGetConnection(DLLINK);
+            con = br2.openGetConnection(dllink);
             if (!con.getContentType().contains("html")) {
                 downloadLink.setDownloadSize(con.getLongContentLength());
             } else {

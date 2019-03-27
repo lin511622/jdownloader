@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.gui.swing.jdgui;
 
 import java.awt.Cursor;
@@ -94,6 +93,7 @@ import org.appwork.utils.formatter.SizeFormatter;
 import org.appwork.utils.logging2.LogInterface;
 import org.appwork.utils.logging2.LogSource;
 import org.appwork.utils.os.CrossSystem;
+import org.appwork.utils.speedmeter.SpeedMeterInterface.Resolution;
 import org.appwork.utils.swing.EDTHelper;
 import org.appwork.utils.swing.EDTRunner;
 import org.appwork.utils.swing.SwingUtils;
@@ -143,7 +143,6 @@ import org.jdownloader.settings.GraphicalUserInterfaceSettings.ShowSpeedInWindow
 import org.jdownloader.settings.SilentModeSettings.DialogDuringSilentModeAction;
 import org.jdownloader.settings.staticreferences.CFG_GUI;
 import org.jdownloader.settings.staticreferences.CFG_SILENTMODE;
-import org.jdownloader.statistics.StatsManager;
 import org.jdownloader.updatev2.InstallLog;
 import org.jdownloader.updatev2.RestartController;
 import org.jdownloader.updatev2.SmartRlyExitRequest;
@@ -154,15 +153,10 @@ import org.jdownloader.updatev2.UpdaterListener;
 
 public class JDGui implements UpdaterListener, OwnerFinder {
     private static final String TITLE_PATTERN_UPDATE            = "\\|([^\\|]*)\\#UPDATENOTIFY([^\\|]*)\\|";
-
     private static final String TITLE_PATTERN_TITLE             = "\\|([^\\|]*)\\#TITLE([^\\|]*)\\|";
-
     private static final String TITLE_PATTERN_SPEED_AVERAGE     = "\\|([^\\|]*)\\#AVGSPEED([^\\|]*)\\|";
-
     private static final String TITLE_PATTERN_RUNNING_DOWNLOADS = "\\|([^\\|]*)\\#RUNNING_DOWNLOADS([^\\|]*)\\|";
-
     private static final String TITLE_PATTERN_SPEED             = "\\|([^\\|]*)\\#SPEED([^\\|]*)\\|";
-
     static {
         if (Application.isHeadless()) {
             throw new HeadlessException();
@@ -175,17 +169,14 @@ public class JDGui implements UpdaterListener, OwnerFinder {
      * @author Coalado
      */
     public static enum Panels {
-
         /**
          * Represents the {@link DownloadView}.
          */
         DOWNLOADLIST,
-
         /**
          * Represents the {@link LinkgrabberView}.
          */
         LINKGRABBER,
-
     }
 
     private static JDGui INSTANCE;
@@ -196,16 +187,12 @@ public class JDGui implements UpdaterListener, OwnerFinder {
      * @return
      */
     public static JDGui getInstance() {
-
         return JDGui.INSTANCE;
     }
 
     public static void help(final String title, final String msg, final Icon icon) {
-
         Timer timer = new Timer(200, new ActionListener() {
-
             public void actionPerformed(ActionEvent e) {
-
                 if (CFG_GUI.CFG.isHelpDialogsEnabled()) {
                     HelpDialog.show(Dialog.STYLE_SHOW_DO_NOT_DISPLAY_AGAIN, title, msg, icon);
                 }
@@ -213,35 +200,23 @@ public class JDGui implements UpdaterListener, OwnerFinder {
         });
         timer.setRepeats(false);
         timer.start();
-
     }
 
     private MainFrameClosingHandler closingHandler;
-
     private DownloadsView           downloadView;
-
     private Thread                  initThread          = null;
-
     private LinkGrabberView         linkgrabberView;
     private LogSource               logger;
     protected JDownloaderMainFrame  mainFrame;
-
     private MainTabbedPane          mainTabbedPane;
     private JDMenuBar               menuBar;
     private StatusBarImpl           statusBar;
-
     private MainToolBar             toolBar;
-
     private final TrayExtension     tray;
-
     private Thread                  trayIconChecker;
-
     private JPanel                  waitingPane;
-
     private volatile Timer          speedInTitleUpdater;
-
     private boolean                 busy;
-
     protected FrameStatus           stateForNextVisible = null;
 
     private JDGui() {
@@ -249,18 +224,15 @@ public class JDGui implements UpdaterListener, OwnerFinder {
         initFrame("JDownloader");
         AbstractDialog.setDefaultRoot(getMainFrame());
         updateTitle();
-
         // Important for unittests
         this.mainFrame.setName("MAINFRAME");
         UpdateController.getInstance().getEventSender().addListener(this, true);
         initDialogLocators();
-
         AbstractDialog.setGlobalOwnerFinder(this);
         this.initDefaults();
         this.initComponents();
         this.setWindowIcon();
         this.layoutComponents();
-
         // init tray
         tray = new TrayExtension();
         try {
@@ -269,32 +241,22 @@ public class JDGui implements UpdaterListener, OwnerFinder {
             logger.log(e1);
         }
         initLocationAndDimension();
-
         //
         initToolTipSettings();
-
         initUpdateFrameListener();
-
         initCaptchaToFrontListener();
-
         initShiftControlSWindowResetKeyListener();
         // Launcher.INIT_COMPLETE
         SecondLevelLaunch.GUI_COMPLETE.executeWhenReached(new Runnable() {
-
             public void run() {
                 onGuiInitComplete();
-
             }
-
         });
-
         initSilentModeHooks();
         KeyObserver.getInstance();
-
         BubbleNotify.getInstance();
         setSpeedInTitleUpdaterEnabled(CFG_GUI.SPEED_IN_WINDOW_TITLE.getValue() != ShowSpeedInWindowTitleTrigger.NEVER);
         CFG_GUI.SPEED_IN_WINDOW_TITLE.getStorageHandler().getEventSender().addListener(new GenericConfigEventListener<Object>() {
-
             @Override
             public void onConfigValueModified(KeyHandler<Object> keyHandler, Object newValue) {
                 setSpeedInTitleUpdaterEnabled(CFG_GUI.SPEED_IN_WINDOW_TITLE.getValue() != ShowSpeedInWindowTitleTrigger.NEVER);
@@ -304,15 +266,11 @@ public class JDGui implements UpdaterListener, OwnerFinder {
             public void onConfigValidatorError(KeyHandler<Object> keyHandler, Object invalidValue, ValidationException validateException) {
             }
         });
-
         getMainFrame().setAlwaysOnTop(CFG_GUI.MAIN_WINDOW_ALWAYS_ON_TOP.isEnabled());
-
         CFG_GUI.MAIN_WINDOW_ALWAYS_ON_TOP.getEventSender().addListener(new GenericConfigEventListener<Boolean>() {
-
             @Override
             public void onConfigValueModified(KeyHandler<Boolean> keyHandler, Boolean newValue) {
                 new EDTRunner() {
-
                     @Override
                     protected void runInEDT() {
                         getMainFrame().setAlwaysOnTop(CFG_GUI.MAIN_WINDOW_ALWAYS_ON_TOP.isEnabled());
@@ -324,39 +282,30 @@ public class JDGui implements UpdaterListener, OwnerFinder {
             public void onConfigValidatorError(KeyHandler<Boolean> keyHandler, Boolean invalidValue, ValidationException validateException) {
             }
         });
-
         jd.SecondLevelLaunch.UPDATE_HANDLER_SET.executeWhenReached(new Runnable() {
-
             @Override
             public void run() {
                 final UpdateHandler handler = UpdateController.getInstance().getHandler();
                 if (handler != null) {
-
                     handler.setGuiAlwaysOnTop(CFG_GUI.MAIN_WINDOW_ALWAYS_ON_TOP.isEnabled());
-
                     CFG_GUI.MAIN_WINDOW_ALWAYS_ON_TOP.getEventSender().addListener(new GenericConfigEventListener<Boolean>() {
-
                         @Override
                         public void onConfigValueModified(KeyHandler<Boolean> keyHandler, Boolean newValue) {
                             handler.setGuiAlwaysOnTop(CFG_GUI.MAIN_WINDOW_ALWAYS_ON_TOP.isEnabled());
-
                         }
 
                         @Override
                         public void onConfigValidatorError(KeyHandler<Boolean> keyHandler, Boolean invalidValue, ValidationException validateException) {
                         }
                     });
-
                 }
             }
         });
         getMainFrame().addWindowListener(new WindowAdapter() {
-
             @Override
             public void windowDeactivated(WindowEvent e) {
                 // required for some synthetica themes.
                 // without this, there will be a repaint error for inactiv painters in the mainmenu and toolbar
-
                 menuBar.repaint();
                 toolBar.repaint();
             }
@@ -369,12 +318,10 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                 toolBar.repaint();
             }
         });
-
     }
 
     private void setSpeedInTitleUpdaterEnabled(final boolean enabled) {
         new EDTRunner() {
-
             @Override
             protected void runInEDT() {
                 if (speedInTitleUpdater != null) {
@@ -402,7 +349,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                     speedInTitleUpdater.start();
                 }
             }
-
         };
     };
 
@@ -419,14 +365,12 @@ public class JDGui implements UpdaterListener, OwnerFinder {
 
     @Override
     public Window findDialogOwner(AbstractDialog<?> dialogModel, WindowStack windowStack) {
-
         return AbstractDialog.DEFAULT_OWNER_FINDER.findDialogOwner(dialogModel, windowStack);
     }
 
     public void flashTaskbar() {
         if (JsonConfig.create(GraphicalUserInterfaceSettings.class).isTaskBarFlashEnabled()) {
             new EDTRunner() {
-
                 @Override
                 protected void runInEDT() {
                     final int state = mainFrame.getExtendedState();
@@ -478,31 +422,24 @@ public class JDGui implements UpdaterListener, OwnerFinder {
     }
 
     public void initCaptchaToFrontListener() {
-
         mainFrame.addWindowFocusListener(new WindowFocusListener() {
-
             @Override
             public void windowGainedFocus(WindowEvent e) {
                 if (e.getOppositeWindow() == null) {
                     for (Window w : Window.getWindows()) {
                         if (w instanceof InternDialog && !((InternDialog) w).getDialogModel().isDisposed()) {
                             Window owner = ((InternDialog) w).getOwner();
-
                             if (owner == null && w.isVisible()) {
                                 WindowManager.getInstance().setZState(w, FrameState.TO_FRONT_FOCUSED);
                             }
                             // ((InternDialog)w).getDialogModel() instanceof AbstractCaptchaDialog)
-
                         }
-
                     }
                 }
-
             }
 
             @Override
             public void windowLostFocus(WindowEvent e) {
-
             }
         });
         //
@@ -573,7 +510,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
         this.linkgrabberView = new LinkGrabberView();
         this.mainTabbedPane.addTab(downloadView);
         this.mainTabbedPane.addTab(this.linkgrabberView);
-
         SecondLevelLaunch.GUI_COMPLETE.executeWhenReached(new Runnable() {
             @Override
             public void run() {
@@ -607,7 +543,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                                         @Override
                                         protected DefaultButtonPanel getDefaultButtonPanel() {
                                             DefaultButtonPanel ret = super.getDefaultButtonPanel();
-
                                             ret.add(new ExtButton(new AppAction() {
                                                 {
                                                     setName(_GUI.T.memory_chat());
@@ -618,7 +553,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                                                     CrossSystem.openURL("http://jdownloader.org/knowledge/chat");
                                                 }
                                             }));
-
                                             return ret;
                                         }
                                     };
@@ -626,10 +560,8 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                                     if (d.getCloseReason() == CloseReason.OK) {
                                         RestartController.getInstance().asyncRestart(new SmartRlyRestartRequest(true));
                                     }
-
                                 };
                             }.start();
-
                             // Dialog.getInstance().showMessageDialog("It seems that there is a memory Problem with your JDownloader
                             // installation.\r\nPlease Download the latest JDownloader 2 Installer, or visit our supportchat to ask for
                             // help.");
@@ -637,23 +569,17 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                             // CrossSystem.openURL("http://jdownloader.org/knowledge/chat");
                         }
                     }
-
                 };
                 SecondLevelLaunch.EXTENSIONS_LOADED.executeWhenReached(new Runnable() {
-
                     @Override
                     public void run() {
                         MenuManagerDownloadTableContext.getInstance().getMenuData();
                         MenuManagerLinkgrabberTableContext.getInstance().getMenuData();
                     }
                 });
-
             }
-
         });
-
         this.mainTabbedPane.setSelectedComponent(this.downloadView);
-
         if (CrossSystem.isMac()) {
             // add handling for Command+W for closing window on Mac OS
             KeyStroke closeKey = KeyStroke.getKeyStroke(KeyEvent.VK_W, Toolkit.getDefaultToolkit().getMenuShortcutKeyMask());
@@ -672,24 +598,20 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                 }
             });
         }
-
     }
 
     private void initDefaults() {
         this.mainFrame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
         this.mainFrame.addWindowListener(new WindowAdapter() {
-
             @Override
             public void windowClosing(WindowEvent e) {
                 System.out.println("WIndow Closing " + e);
                 if (e.getComponent() == getMainFrame()) {
-
                     if (closingHandler != null) {
                         System.out.println("Close Handler");
                         closingHandler.windowClosing(e);
                         return;
                     }
-
                     /*
                      * without trayicon also dont close/exit for macos
                      */
@@ -704,12 +626,10 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                         }.start();
                         return;
                     }
-
                     RestartController.getInstance().exitAsynch(new SmartRlyExitRequest());
                 }
             }
         });
-
         // Directly reshow another tooltip
         ToolTipManager.sharedInstance().setReshowDelay(0);
         // Increase time a tooltip is displayed (default is 4000)
@@ -720,14 +640,11 @@ public class JDGui implements UpdaterListener, OwnerFinder {
         RememberRelativeDialogLocator locator;
         // set a default locator to remmber dialogs position
         AbstractDialog.setDefaultLocator(locator = new RememberRelativeDialogLocator("", mainFrame) {
-
             @Override
             protected String getID(Window frame) {
                 try {
                     if (frame instanceof InternDialog) {
-
                         AbstractDialog dialog = ((InternDialog) frame).getDialogModel();
-
                         String key = dialog.getTitle();
                         if (StringUtils.isEmpty(key)) {
                             key = dialog.toString();
@@ -747,10 +664,8 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                 }
                 super.onClose(abstractDialog);
             }
-
         });
         locator.setFallbackLocator(new DialogLocator() {
-
             @Override
             public Point getLocationOnScreen(AbstractDialog<?> abstractDialog) {
                 if (abstractDialog.getDialog().getParent() != null && abstractDialog.getDialog().getParent().isShowing()) {
@@ -764,7 +679,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                 bounds.x += insets.left;
                 bounds.width -= insets.left + insets.right;
                 bounds.height -= insets.top + insets.bottom;
-
                 Point ret = AbstractLocator.validate(new Point(bounds.width - abstractDialog.getDialog().getSize().width, bounds.height - abstractDialog.getDialog().getSize().height), abstractDialog.getDialog());
                 return ret;
             }
@@ -772,10 +686,8 @@ public class JDGui implements UpdaterListener, OwnerFinder {
             @Override
             public void onClose(AbstractDialog<?> abstractDialog) {
             }
-
         });
         AbstractDialog.ZHANDLER = new WindowZHandler() {
-
             @Override
             public FrameState getWindowStateOnVisible(AbstractDialog<?> d) {
                 for (final Window w : Window.getWindows()) {
@@ -787,11 +699,9 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                 return CFG_GUI.CFG.getNewDialogFrameState();
             }
         };
-
     }
 
     private void initFrame(final String string) {
-
         mainFrame = new JDownloaderMainFrame(string, logger);
     }
 
@@ -800,7 +710,13 @@ public class JDGui implements UpdaterListener, OwnerFinder {
             @Override
             public void run() {
                 try {
-                    internalInitLocationAndDimension(mainFrame, logger, JsonConfig.create(GraphicalUserInterfaceSettings.class).getLastFrameStatus(), tray == null || !tray.getSettings().isEnabled() || !tray.getSettings().isStartMinimizedEnabled(), true);
+                    new EDTHelper<Void>() {
+                        @Override
+                        public Void edtRun() {
+                            internalInitLocationAndDimension(mainFrame, logger, JsonConfig.create(GraphicalUserInterfaceSettings.class).getLastFrameStatus(), tray == null || !tray.getSettings().isEnabled() || !tray.getSettings().isStartMinimizedEnabled(), true);
+                            return null;
+                        }
+                    }.waitForEDT();
                 } finally {
                     initThread = null;
                 }
@@ -811,7 +727,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
 
     public void initShiftControlSWindowResetKeyListener() {
         KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventPostProcessor(new KeyEventPostProcessor() {
-
             public boolean postProcessKeyEvent(final KeyEvent e) {
                 if (e.getID() == KeyEvent.KEY_RELEASED && e.isShiftDown() && e.isControlDown() && e.getKeyCode() == KeyEvent.VK_S) {
                     try {
@@ -836,14 +751,11 @@ public class JDGui implements UpdaterListener, OwnerFinder {
 
     public void initSilentModeHooks() {
         // Hook into dialog System
-
         Dialog.getInstance().setHandler(new DialogHandler() {
-
             @Override
             public <T> T showDialog(AbstractDialog<T> dialog) throws DialogClosedException, DialogCanceledException {
                 // synchronized (this) {
                 try {
-
                     dialog.forceDummyInit();
                     try {
                         if (dialog.evaluateDontShowAgainFlag()) {
@@ -867,27 +779,21 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                         // in this case, we should continue normal
                         logger.log(e);
                     }
-
                     boolean silentModeActive = isSilentModeActive();
-
                     if (silentModeActive && CFG_SILENTMODE.ON_DIALOG_DURING_SILENT_MODE_ACTION.getValue() == DialogDuringSilentModeAction.CANCEL_DIALOG) {
                         // Cancel dialog
                         throw new DialogClosedException(Dialog.RETURN_CLOSED);
                     }
-
                     // if this is the edt, we should not block it.. NEVER
                     if (!SwingUtilities.isEventDispatchThread()) {
-
                         // block dialog calls... the shall appear as soon as isSilentModeActive is false.
                         long countdown = -1;
-
                         if (dialog.isCountdownFlagEnabled()) {
                             long countdownDif = dialog.getCountdown();
                             countdown = System.currentTimeMillis() + countdownDif;
                         }
                         if (countdown < 0 && CFG_SILENTMODE.ON_DIALOG_DURING_SILENT_MODE_ACTION.getValue() == DialogDuringSilentModeAction.WAIT_IN_BACKGROUND_UNTIL_WINDOW_GETS_FOCUS_OR_TIMEOUT) {
                             countdown = System.currentTimeMillis() + CFG_SILENTMODE.ON_DIALOG_DURING_SILENT_MODE_ACTION_TIMEOUT.getValue();
-
                         }
                         if (silentModeActive) {
                             flashTaskbar();
@@ -908,7 +814,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                                     }
                                     try {
                                         return dialog.getReturnValue();
-
                                     } catch (Exception e) {
                                         // dialogs have not been initialized. so the getReturnValue might fail.
                                         logger.log(e);
@@ -930,21 +835,16 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                     logger.log(e);
                 }
                 dialog.resetDummyInit();
-
                 return Dialog.getInstance().getDefaultHandler().showDialog(dialog);
                 // }
-
             }
         });
     }
 
     private void initToolTipSettings() {
-
         ToolTipController.getInstance().setClassicToolstipsEnabled(CFG_GUI.TOOLTIP_ENABLED.isEnabled());
-
         ToolTipManager.sharedInstance().setEnabled(CFG_GUI.TOOLTIP_ENABLED.isEnabled());
         CFG_GUI.TOOLTIP_ENABLED.getEventSender().addListener(new GenericConfigEventListener<Boolean>() {
-
             @Override
             public void onConfigValidatorError(KeyHandler<Boolean> keyHandler, Boolean invalidValue, ValidationException validateException) {
             }
@@ -959,37 +859,27 @@ public class JDGui implements UpdaterListener, OwnerFinder {
 
     public void initUpdateFrameListener() {
         mainFrame.addWindowListener(new WindowListener() {
-
             public void windowActivated(WindowEvent e) {
-
             }
 
             public void windowClosed(WindowEvent e) {
-
             }
 
             public void windowClosing(WindowEvent e) {
-
             }
 
             public void windowDeactivated(WindowEvent e) {
-
             }
 
             public void windowDeiconified(WindowEvent e) {
-
                 UpdateController.getInstance().setGuiToFront(mainFrame);
-
             }
 
             public void windowIconified(WindowEvent e) {
-
             }
 
             public void windowOpened(WindowEvent e) {
-
                 UpdateController.getInstance().setGuiToFront(mainFrame);
-
             }
         });
     }
@@ -1004,11 +894,9 @@ public class JDGui implements UpdaterListener, OwnerFinder {
      * @param mainFrame
      */
     public void internalInitLocationAndDimension(final JDownloaderMainFrame mainFrame, final LogInterface logger, FrameStatus stat, final boolean setVisible, final boolean setExtendedState) {
-
         if (stat == null) {
             stat = new FrameStatus();
         }
-
         final FrameStatus status = stat;
         Dimension dim = null;
         if (status.getWidth() > 50 && status.getHeight() > 50) {
@@ -1017,7 +905,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
         if (dim == null) {
             dim = new Dimension(1024, 728);
         }
-
         Point loc = new Point(status.getX(), status.getY());
         boolean noOrInvalidLocation = (loc.x == -1 && loc.y == -1) || !status.isLocationSet();
         if (noOrInvalidLocation) {
@@ -1026,7 +913,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
             loc = new Point(usableDefaultBounds.x, usableDefaultBounds.y);
         }
         GraphicsDevice lastScreen = SwingUtils.getScreenByID(status.getScreenID());
-
         if (lastScreen == null) {
             if (!noOrInvalidLocation) {
                 // under windows 10, frames have a huge "border" (Probably the shadow). a window that has actually the size of 1920x1080
@@ -1043,25 +929,26 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                 if (screenByCoordinates == null || !screenByCoordinates.equals(lastScreen)) {
                     // maximized and last known normal location do not match
                     loc = new CenterOfScreenLocator().getCenterLocationByWindowBounds(new Rectangle(loc, dim));
-
                 }
                 break;
-
             }
         }
-
         if (noOrInvalidLocation || lastScreen == null) {
-
             loc = new CenterOfScreenLocator().getCenterLocationByWindowBounds(new Rectangle(loc, dim));
-
         }
-
         // try to find offscreen
         logger.info("Check if Screen Location are ok " + loc + " - " + dim);
-
         // ensure that the window is on screen
-        final Point finalLocation = loc == null ? null : AbstractLocator.correct(loc, dim);
-
+        if (loc != null) {
+            try {
+                loc = AbstractLocator.correct(loc, dim);
+            } catch (Throwable e) {
+                loc = null;
+                // java.lang.IllegalArgumentException: Window must not be zero
+                // Java10, maybe timing bug?
+                logger.log(e);
+            }
+        }
         Integer state = null;
         if (status.isSilentShutdown() && !status.isActive()) {
             // else frame would jump to the front
@@ -1073,12 +960,11 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                 state = status.getExtendedState().getId();
             }
         }
-
         final Dimension finalDim = dim;
         final WindowExtendedState extendedState = WindowExtendedState.get(state);
         stateForNextVisible = stat;
+        final Point finalLocation = loc;
         new EDTRunner() {
-
             @Override
             protected void runInEDT() {
                 mainFrame.setSize(finalDim);
@@ -1088,7 +974,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                 } else {
                     mainFrame.setLocationByPlatform(true);
                 }
-
                 mainFrame.setMinimumSize(new Dimension(400, 100));
                 // mainFrame.setSize(finalDim);
                 mainFrame.setPreferredSize(finalDim);
@@ -1097,7 +982,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                     if (setExtendedState) {
                         if (extendedState != null) {
                             WindowManager.getInstance().setExtendedState(mainFrame, extendedState);
-
                         }
                     }
                     stateForNextVisible = null;
@@ -1105,12 +989,10 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                 }
                 if (CrossSystem.isMac() && !mainFrame.isUndecorated()) {
                     mainFrame.addComponentListener(new ComponentAdapter() {
-
                         private String screenID;
 
                         @Override
                         public void componentMoved(ComponentEvent e) {
-
                             String newScreenID = mainFrame.getGraphicsConfiguration().getDevice().getIDstring();
                             if (!StringUtils.equals(newScreenID, screenID)) {
                                 // 7. Why a JFrame hides the OS TaskBar when being displayed maximized via JFrame#setExtendedState()?
@@ -1124,19 +1006,14 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                                 }
                                 screenID = newScreenID;
                             }
-
                         }
-
                     });
                 }
-
             }
         }.waitForEDT();
-
     }
 
     protected void internalSetWaiting(final boolean b) {
-
         if (busy == b) {
             return;
         }
@@ -1154,7 +1031,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
 
     public boolean isCurrentPanel(final Panels panelID) {
         return new EDTHelper<Boolean>() {
-
             @Override
             public Boolean edtRun() {
                 switch (panelID) {
@@ -1181,37 +1057,30 @@ public class JDGui implements UpdaterListener, OwnerFinder {
         Boolean ret = new EDTHelper<Boolean>() {
             @Override
             public Boolean edtRun() {
-
                 // don't block anthing if the frame is active anyway
                 if ((getMainFrame().hasFocus() || getMainFrame().isActive())/* && getMainFrame().isVisible() */) {
                     logger.info("SilentMode: Mainframe has Focus: ");
                     return false;
                 }
-
                 if (UpdateController.getInstance().getHandler() != null && GuiUtils.isActiveWindow(UpdateController.getInstance().getHandler().getGuiFrame())) {
                     logger.info("SilentMode: Updater Frame is Active");
                     return false;
                 }
-
                 for (Window w : Window.getWindows()) {
                     if ((w.hasFocus() || w.isActive())/* && w.isVisible() */) {
                         logger.info("SilentMode: No SilentMode. Active Window: " + w);
                         return false;
                     }
                 }
-
                 // don't block anything if the tray is active
                 if (tray.isEnabled() && tray.isActive()) {
                     logger.info("SilentMode: Tray");
-
                     return false;
                 }
-
                 if (CFG_SILENTMODE.MANUAL_ENABLED.isEnabled()) {
                     logger.info("SilentMode: MANUEL true");
                     return true;
                 }
-
                 switch (CFG_SILENTMODE.CFG.getAutoTrigger()) {
                 case JD_IN_TASKBAR:
                     if (getMainFrame().getState() == JFrame.ICONIFIED && getMainFrame().isVisible()) {
@@ -1229,7 +1098,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                     logger.info("SilentMode: auto false");
                     return false;
                 }
-
                 logger.info("SilentMode: else false");
                 return false;
             }
@@ -1248,81 +1116,59 @@ public class JDGui implements UpdaterListener, OwnerFinder {
     }
 
     public static void main(String[] args) {
-
     }
 
     private void layoutComponents() {
         final JPanel contentPane = new JPanel(new MigLayout("ins 0, wrap 1", "[grow,fill]", "[grow,fill]0[shrink]"));
         contentPane.add(this.mainTabbedPane);
-
         // contentPane.add(new
         // org.jdownloader.gui.views.linkgrabber.LinkGrabberPanel());
-
         // contentPane.add(tb);
         contentPane.add(this.statusBar, "dock SOUTH");
-
         this.mainFrame.setContentPane(contentPane);
         this.mainFrame.setJMenuBar(this.menuBar);
         this.mainFrame.add(this.toolBar, "dock NORTH");
-
     }
 
     protected void onGuiInitComplete() {
-
         mainTabbedPane.notifyCurrentTab();
         ShutdownController.getInstance().addShutdownEvent(new ShutdownEvent() {
             public long getMaxDuration() {
-
                 return 30000 * 10;
             }
 
             @Override
             public void onShutdown(final ShutdownRequest shutdownRequest) {
-
                 new EDTHelper<Object>() {
-
                     @Override
                     public Object edtRun() {
-
                         tray.dispose();
                         JDGui.this.mainTabbedPane.onClose();
                         FrameStatus framestatus = FrameStatus.create(mainFrame, JsonConfig.create(GraphicalUserInterfaceSettings.class).getLastFrameStatus());
                         System.out.println("Save FS: " + JSonStorage.serializeToJson(framestatus));
                         JsonConfig.create(GraphicalUserInterfaceSettings.class).setLastFrameStatus(framestatus);
-
                         WindowManager.getInstance().setVisible(JDGui.this.getMainFrame(), false, FrameState.OS_DEFAULT);
                         // Do not dispose. On Windows shutdown, windows kills the jvm as soon as the window get's disposed.
                         // JDGui.this.getMainFrame().dispose();
-
                         return null;
-
                     }
                 }.getReturnValue();
             }
         });
-
-        SecondLevelLaunch.ACCOUNTLIST_LOADED.executeWhenReached(new Runnable() {
-
+        SecondLevelLaunch.INIT_COMPLETE.executeWhenReached(new Runnable() {
             @Override
             public void run() {
-                new EDTRunner() {
-
-                    @Override
-                    protected void runInEDT() {
-
-                        Sponsor sp = SponsorUtils.getSponsor();
-
-                        if (sp != null) {
+                final Sponsor sp = SponsorUtils.getSponsor();
+                if (sp != null) {
+                    new EDTRunner() {
+                        @Override
+                        protected void runInEDT() {
                             MainTabbedPane.getInstance().setTopRightPainter(sp);
-
                         }
-
-                    }
-
-                };
+                    };
+                }
             }
         });
-
         FileCreationManager.getInstance().mkdir(Application.getResource("/tmp/update/self/JDU"));
         new Thread() {
             public void run() {
@@ -1335,7 +1181,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                     logger.info("Done: " + counter);
                 } catch (Throwable e) {
                     logger.log(e);
-
                 }
                 long start = System.currentTimeMillis();
                 while (UpdateController.getInstance().getHandler() == null) {
@@ -1387,7 +1232,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
     @Override
     public void onUpdatesAvailable(final boolean selfupdate, final InstallLog installlog) {
         new EDTRunner() {
-
             @Override
             protected void runInEDT() {
                 updateTitle();
@@ -1408,7 +1252,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
      *            TODO
      * @see Panels
      */
-
     public void requestPanel(final Panels panel) {
         new EDTHelper<Object>() {
             @Override
@@ -1445,9 +1288,7 @@ public class JDGui implements UpdaterListener, OwnerFinder {
     /**
      * Adds view to the main tabbedpane if setActive is true, the enw panel will be selected
      */
-
     public void setContent(final View view, boolean setActive) {
-
         if (!this.mainTabbedPane.contains(view)) {
             this.mainTabbedPane.addTab(view);
         }
@@ -1457,19 +1298,16 @@ public class JDGui implements UpdaterListener, OwnerFinder {
     }
 
     public void setFrameState(FrameState toFrontFocused) {
-
         switch (toFrontFocused) {
         case OS_DEFAULT:
             if (isSilentModeActive()) {
                 flashTaskbar();
             } else {
-
                 if (WindowManager.getInstance().getExtendedState(mainFrame) == WindowExtendedState.ICONIFIED) {
                     WindowManager.getInstance().setExtendedState(mainFrame, WindowExtendedState.NORMAL);
                 }
                 WindowManager.getInstance().setVisible(mainFrame, true, toFrontFocused);
             }
-
             break;
         case TO_BACK:
             flashTaskbar();
@@ -1482,14 +1320,12 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                     WindowManager.getInstance().setExtendedState(mainFrame, WindowExtendedState.NORMAL);
                 }
                 WindowManager.getInstance().setVisible(mainFrame, true, toFrontFocused);
-
             }
             break;
         case TO_FRONT_FOCUSED:
             if (isSilentModeActive()) {
                 flashTaskbar();
             } else {
-
                 if (WindowManager.getInstance().getExtendedState(mainFrame) == WindowExtendedState.ICONIFIED) {
                     WindowManager.getInstance().setExtendedState(mainFrame, WindowExtendedState.NORMAL);
                 }
@@ -1497,12 +1333,10 @@ public class JDGui implements UpdaterListener, OwnerFinder {
             }
             break;
         }
-
     }
 
     public void setFrameStatus(final int id) {
         new EDTRunner() {
-
             @Override
             protected void runInEDT() {
                 switch (id) {
@@ -1518,22 +1352,18 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                         mainFrame.setState(Frame.NORMAL);
                         WindowManager.getInstance().setVisible(mainFrame, true, FrameState.OS_DEFAULT);
                     }
-
                     break;
                 case UIConstants.WINDOW_STATUS_FOREGROUND_NO_FOCUS:
                     if (!GuiUtils.isActiveWindow(getMainFrame())) {
-
                         if (isSilentModeActive()) {
                             flashTaskbar();
                             return;
                         }
                         {
                             // AbstractDialog captchaDialog = null;
-
                             // if (finalCaptchaDialog != null) {
                             // finalCaptchaDialog.getDialog().setFocusableWindowState(false);
                             // }
-
                             if (WindowManager.getInstance().getExtendedState(mainFrame) == WindowExtendedState.ICONIFIED) {
                                 WindowManager.getInstance().setExtendedState(mainFrame, WindowExtendedState.NORMAL);
                             }
@@ -1542,27 +1372,22 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                             if (tray.isEnabled()) {
                                 setWindowToTray(false);
                             }
-
                         }
                     } else {
-
                         logger.info("No To Top. We already have focus");
                     }
                     break;
                 case UIConstants.WINDOW_STATUS_FOREGROUND:
                     if (!GuiUtils.isActiveWindow(getMainFrame())) {
-
                         if (isSilentModeActive()) {
                             flashTaskbar();
                             return;
                         }
                         {
                             // AbstractDialog captchaDialog = null;
-
                             // if (finalCaptchaDialog != null) {
                             // finalCaptchaDialog.getDialog().setFocusableWindowState(false);
                             // }
-
                             if (WindowManager.getInstance().getExtendedState(mainFrame) == WindowExtendedState.ICONIFIED) {
                                 WindowManager.getInstance().setExtendedState(mainFrame, WindowExtendedState.NORMAL);
                             }
@@ -1571,19 +1396,14 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                             if (tray.isEnabled()) {
                                 setWindowToTray(false);
                             }
-
                         }
                     } else {
-
                         logger.info("No To Top. We already have focus");
                     }
-
                     break;
                 }
             }
-
         };
-
     }
 
     public void setWaiting(final boolean b) {
@@ -1616,7 +1436,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
             }
         }.start();
         SecondLevelLaunch.GUI_COMPLETE.executeWhenReached(new Runnable() {
-
             public void run() {
                 if (Application.getJavaVersion() >= Application.JAVA16) {
                     final java.util.List<Image> list = new ArrayList<Image>();
@@ -1646,7 +1465,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                         }
                     }.start();
                 }
-
             }
         });
     }
@@ -1658,14 +1476,12 @@ public class JDGui implements UpdaterListener, OwnerFinder {
      * @param minimize
      */
     public void setWindowToTray(final boolean minimize) {
-
         new EDTHelper<Object>() {
             @Override
             public Object edtRun() {
                 ExtendedState estate = ExtendedState.get(getMainFrame());
                 /* set visible state */
                 if (!minimize) {
-
                     if (estate == null) {
                         logger.info("Bad ExtendedState \r\n" + getMainFrame().getExtendedState());
                         estate = ExtendedState.NORMAL;
@@ -1709,7 +1525,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                         }
                         break;
                     }
-
                     WindowManager.getInstance().setVisible(getMainFrame(), true, FrameState.TO_FRONT_FOCUSED);
                     switch (estate) {
                     case MAXIMIZED_BOTH:
@@ -1778,7 +1593,6 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                 return null;
             }
         }.start();
-
     }
 
     /**
@@ -1793,39 +1607,17 @@ public class JDGui implements UpdaterListener, OwnerFinder {
         } else if (container.getGroup() != null && container.getGroup().getName() != null) {
             name = container.getGroup().getName();
         }
-
         Icon icon = null;
         if (container.getIcon() != null) {
             icon = container.getIcon();
         } else if (container.getGroup() != null && container.getGroup().getIcon() != null) {
             icon = container.getGroup().getIcon();
         }
-
         final AddonConfig addonConfig = AddonConfig.getInstance(container, "_2", false);
-
         final JScrollPane scrollPane = new JScrollPane(addonConfig.getPanel());
         scrollPane.setBorder(null);
         scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-
         // this.mainTabbedPane.getSelectedView().setInfoPanel(col);
-    }
-
-    protected void showStatsDialog() {
-
-        ConfirmDialog d = new ConfirmDialog(Dialog.STYLE_SHOW_DO_NOT_DISPLAY_AGAIN, _GUI.T.JDGui_showStatsDialog_title_(), _GUI.T.JDGui_showStatsDialog_message_(), new AbstractIcon(IconKey.ICON_BUG, 32), _GUI.T.JDGui_showStatsDialog_yes_(), _GUI.T.JDGui_showStatsDialog_no_());
-        d.setDoNotShowAgainSelected(true);
-        try {
-            Dialog.getInstance().showDialog(d);
-            if (!d.isHiddenByDontShowAgain()) {
-                StatsManager.I().setEnabled(true);
-            }
-            return;
-        } catch (DialogClosedException e) {
-            e.printStackTrace();
-        } catch (DialogCanceledException e) {
-            e.printStackTrace();
-        }
-
     }
 
     protected void updateTitle() {
@@ -1835,46 +1627,32 @@ public class JDGui implements UpdaterListener, OwnerFinder {
     }
 
     private String generateTitle(String title) {
-
         String pattern = CFG_GUI.CFG.getTitlePattern();
         pattern = pattern.replaceAll(TITLE_PATTERN_TITLE, "$1" + title + "$2");
-
         switch (CFG_GUI.CFG.getSpeedInWindowTitle()) {
-
         case ALWAYS:
-
             pattern = updateTitle(pattern);
             break;
-
         case WHEN_WINDOW_IS_MINIMIZED:
             if (WindowManager.getInstance().getExtendedState(getMainFrame()) == WindowExtendedState.ICONIFIED) {
-
                 pattern = updateTitle(pattern);
             } else {
                 pattern = pattern.replaceAll(TITLE_PATTERN_SPEED, "");
-
                 pattern = pattern.replaceAll(TITLE_PATTERN_SPEED_AVERAGE, "");
             }
             break;
-
         default:
             pattern = pattern.replaceAll(TITLE_PATTERN_SPEED, "");
-
             pattern = pattern.replaceAll(TITLE_PATTERN_SPEED_AVERAGE, "");
             break;
         }
-
         if (UpdateController.getInstance().hasPendingUpdates()) {
-
             pattern = pattern.replaceAll(TITLE_PATTERN_UPDATE, "$1" + _GUI.T.JDGui_updateTitle_updates_available2() + "$2");
-
         } else {
-
             pattern = pattern.replaceAll(TITLE_PATTERN_UPDATE, "");
         }
         int running = DownloadWatchDog.getInstance().getActiveDownloads();
         if (DownloadWatchDog.getInstance().isRunning()) {
-
             pattern = pattern.replaceAll(TITLE_PATTERN_RUNNING_DOWNLOADS, "$1" + running + "$2");
         } else {
             pattern = pattern.replaceAll(TITLE_PATTERN_RUNNING_DOWNLOADS, "");
@@ -1885,28 +1663,23 @@ public class JDGui implements UpdaterListener, OwnerFinder {
     protected String updateTitle(String pattern) {
         int speed = DownloadWatchDog.getInstance().getDownloadSpeedManager().getSpeed();
         if (DownloadWatchDog.getInstance().isRunning()) {
-
             pattern = pattern.replaceAll(TITLE_PATTERN_SPEED, "$1" + SizeFormatter.formatBytes(Math.max(0, speed)) + "$2");
         } else {
             pattern = pattern.replaceAll(TITLE_PATTERN_SPEED, "");
         }
-
         long speedAverage = -1;
         SpeedMeterPanel sm = MainToolBar.getInstance().getSpeedMeter();
         if (sm != null) {
             speedAverage = sm.getAverageSpeed();
         }
         if (speedAverage < 0) {
-            speedAverage = DownloadWatchDog.getInstance().getDownloadSpeedManager().getSpeedMeter().getSpeedMeter();
+            speedAverage = DownloadWatchDog.getInstance().getDownloadSpeedManager().getSpeedMeter().getValue(Resolution.SECONDS);
         }
-
         if (DownloadWatchDog.getInstance().isRunning()) {
-
             pattern = pattern.replaceAll(TITLE_PATTERN_SPEED_AVERAGE, "$1" + SizeFormatter.formatBytes(Math.max(0, speedAverage)) + "$2");
         } else {
             pattern = pattern.replaceAll(TITLE_PATTERN_SPEED_AVERAGE, "");
         }
-
         return pattern;
     }
 
@@ -1918,10 +1691,8 @@ public class JDGui implements UpdaterListener, OwnerFinder {
                     try {
                         return new JDGui();
                     } finally {
-
                     }
                 }
-
             }.getReturnValue();
         }
     }
@@ -1956,16 +1727,21 @@ public class JDGui implements UpdaterListener, OwnerFinder {
     }
 
     public boolean badLaunchCheck() {
-        if (!getMainFrame().isVisible()) {
-            if (tray != null && tray.getSettings().isEnabled() && tray.getSettings().isStartMinimizedEnabled()) {
-                // ok
-            } else {
-                // this may happen. for example if the user set a password on jd, and does not enter the correct password on start!
-                ShutdownController.getInstance().requestShutdown(true);
-                return false;
+        return Boolean.TRUE.equals(new EDTHelper<Boolean>() {
+            @Override
+            public Boolean edtRun() {
+                if (!getMainFrame().isVisible()) {
+                    if (tray != null && tray.getSettings().isEnabled() && tray.getSettings().isStartMinimizedEnabled()) {
+                        // ok
+                    } else {
+                        // this may happen. for example if the user set a password on jd, and does not enter the correct password on start!
+                        ShutdownController.getInstance().requestShutdown(true);
+                        return false;
+                    }
+                }
+                return true;
             }
-        }
-        return true;
+        }.getReturnValue());
     }
 
     @Override
@@ -1981,5 +1757,4 @@ public class JDGui implements UpdaterListener, OwnerFinder {
     public FlashController getFlashController() {
         return flashController;
     }
-
 }

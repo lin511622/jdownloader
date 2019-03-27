@@ -31,7 +31,6 @@ import org.jdownloader.captcha.v2.ChallengeResponseController;
 import org.jdownloader.captcha.v2.ChallengeSolver;
 import org.jdownloader.captcha.v2.solver.browser.BrowserViewport;
 import org.jdownloader.captcha.v2.solver.browser.BrowserWindow;
-import org.jdownloader.captcha.v2.solverjob.SolverJob;
 import org.jdownloader.gui.IconKey;
 import org.jdownloader.gui.helpdialogs.HelpDialog;
 import org.jdownloader.gui.translate._GUI;
@@ -40,15 +39,12 @@ import org.jdownloader.plugins.CaptchaStepProgress;
 import org.jdownloader.settings.staticreferences.CFG_GUI;
 
 public class CaptchaHelperHostPluginAreYouHuman extends AbstractCaptchaHelperAreYouHuman<PluginForHost> {
-
     public CaptchaHelperHostPluginAreYouHuman(PluginForHost plugin, Browser br, String siteKey) {
         super(plugin, br, siteKey);
-
     }
 
     public CaptchaHelperHostPluginAreYouHuman(PluginForHost plugin, Browser br) {
         this(plugin, br, null);
-
     }
 
     public String getToken() throws PluginException, InterruptedException {
@@ -70,7 +66,6 @@ public class CaptchaHelperHostPluginAreYouHuman extends AbstractCaptchaHelperAre
             link.addPluginProgress(progress);
             final boolean insideAccountChecker = Thread.currentThread() instanceof AccountCheckerThread;
             final AreYouAHumanChallenge challenge = new AreYouAHumanChallenge(apiKey, getPlugin()) {
-
                 @Override
                 public boolean canBeSkippedBy(SkipRequest skipRequest, ChallengeSolver<?> solver, Challenge<?> challenge) {
                     if (insideAccountChecker) {
@@ -106,7 +101,7 @@ public class CaptchaHelperHostPluginAreYouHuman extends AbstractCaptchaHelperAre
                     return null;
                 }
             };
-            challenge.setTimeout(getPlugin().getCaptchaTimeout());
+            challenge.setTimeout(getPlugin().getChallengeTimeout(challenge));
             if (insideAccountChecker || FilePackage.isDefaultFilePackage(link.getFilePackage())) {
                 /**
                  * account login -> do not use antiCaptcha services
@@ -119,12 +114,12 @@ public class CaptchaHelperHostPluginAreYouHuman extends AbstractCaptchaHelperAre
                 }
             }
             getPlugin().invalidateLastChallengeResponse();
-            final BlacklistEntry blackListEntry = CaptchaBlackList.getInstance().matches(challenge);
+            final BlacklistEntry<?> blackListEntry = CaptchaBlackList.getInstance().matches(challenge);
             if (blackListEntry != null) {
                 logger.warning("Cancel. Blacklist Matching");
                 throw new CaptchaException(blackListEntry);
             }
-            final SolverJob<String> job = ChallengeResponseController.getInstance().handle(challenge);
+            ChallengeResponseController.getInstance().handle(challenge);
             if (!challenge.isSolved()) {
                 throw new PluginException(LinkStatus.ERROR_CAPTCHA);
             }
@@ -151,7 +146,6 @@ public class CaptchaHelperHostPluginAreYouHuman extends AbstractCaptchaHelperAre
                         HelpDialog.show(false, true, HelpDialog.getMouseLocation(), "SKIPPEDHOSTER", Dialog.STYLE_SHOW_DO_NOT_DISPLAY_AGAIN, _GUI.T.ChallengeDialogHandler_viaGUI_skipped_help_title(), _GUI.T.ChallengeDialogHandler_viaGUI_skipped_help_msg(), new AbstractIcon(IconKey.ICON_SKIPPED, 32));
                     }
                     break;
-
                 case BLOCK_PACKAGE:
                     CaptchaBlackList.getInstance().add(new BlockDownloadCaptchasByPackage(link.getParentNode()));
                     if (CFG_GUI.HELP_DIALOGS_ENABLED.isEnabled()) {

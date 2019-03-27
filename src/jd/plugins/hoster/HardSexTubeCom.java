@@ -13,13 +13,10 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.util.HashMap;
 import java.util.Map;
-
-import org.jdownloader.plugins.components.antiDDoSForHost;
 
 import jd.PluginWrapper;
 import jd.config.Property;
@@ -39,9 +36,10 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "gotporn.com", "hardsextube.com" }, urls = { "http://(www\\.)?hardsextube\\.com/(video|embed)/\\d+|https?://(?:www\\.)?gotporn\\.com/[a-z0-9\\-]+/video\\-\\d+", "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsdgfd32424" }) 
-public class HardSexTubeCom extends antiDDoSForHost {
+import org.jdownloader.plugins.components.antiDDoSForHost;
 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "gotporn.com", "hardsextube.com" }, urls = { "https?://(?:www\\.)?hardsextube\\.com/(video/)?(video|embed)/?-?\\d+|https?://(?:www\\.)?gotporn\\.com/[a-z0-9\\-]+/video\\-\\d+|https?://(?:www\\.)?gotporn\\.com/video/\\d+", "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsdgfd32424" })
+public class HardSexTubeCom extends antiDDoSForHost {
     public HardSexTubeCom(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium("http://www.gotporn.com/");
@@ -69,7 +67,9 @@ public class HardSexTubeCom extends antiDDoSForHost {
 
     @SuppressWarnings("deprecation")
     public void correctDownloadLink(DownloadLink link) {
-        link.setUrlDownload("http://www.gotporn.com/video/video-" + new Regex(link.getDownloadURL(), "(\\d+)/?$").getMatch(0));
+        if (link.getDownloadURL().contains("gotporn")) {
+            link.setUrlDownload("http://www.gotporn.com/video/video-" + new Regex(link.getDownloadURL(), "(\\d+)/?$").getMatch(0));
+        }
     }
 
     private static final String NORESUME                           = "NORESUME";
@@ -111,13 +111,20 @@ public class HardSexTubeCom extends antiDDoSForHost {
         if (filename == null) {
             filename = br.getRegex("<h1 class=\"title-block\">([^<>\"]*?)</h1>").getMatch(0);
         }
+        if (filename == null) { // hardsextube 20170505
+            filename = br.getRegex("gp\\-title=\"([^<>\"]*?)\"").getMatch(0);
+        }
         if (filename == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            filename = br.getRegex("data\\-video\\-id=\"([^<>\"]*?)\"").getMatch(0);
+        }
+        if (filename == null) {
+            /* Last chance fallback */
+            filename = vid;
         }
         filename = Encoding.htmlDecode(filename.trim());
         downloadLink.setProperty("plain_title", filename);
         if (enable_site) {
-            dllink = this.br.getRegex("\"(http[^<>\"]*?)\" type=\\'video/mp4\\'").getMatch(0);
+            dllink = this.br.getRegex("\"(http[^<>\"]*?)\" type=(\"|\\')video/mp4(\"|\\')").getMatch(0);
             if (dllink == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
@@ -169,7 +176,6 @@ public class HardSexTubeCom extends antiDDoSForHost {
             return AvailableStatus.TRUE;
         }
         downloadLink.setFinalFileName(filename + ext);
-
         URLConnectionAdapter con = null;
         dllink = HTMLEntities.unhtmlentities(dllink);
         try {
@@ -201,14 +207,12 @@ public class HardSexTubeCom extends antiDDoSForHost {
             }
             throw new PluginException(LinkStatus.ERROR_FATAL, "This file can only be downloaded by premium users");
         }
-
         boolean resume = true;
         if (downloadLink.getBooleanProperty(HardSexTubeCom.NORESUME, false)) {
             logger.info("Resume is disabled for this try");
             resume = false;
             downloadLink.setProperty(HardSexTubeCom.NORESUME, Boolean.valueOf(false));
         }
-
         dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, resume, 1);
         if (dl.getConnection().getContentType().contains("html")) {
             if (dl.getConnection().getResponseCode() == 403) {
@@ -253,7 +257,7 @@ public class HardSexTubeCom extends antiDDoSForHost {
                     }
                 }
                 br.setFollowRedirects(false);
-                br.postPage("http://www.gotporn.com/login", "remember-me=1&username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
+                br.postPage("https://www.gotporn.com/login", "remember-me=1&username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
                 if (br.getCookie(MAINPAGE, "hstauth") == null) {
                     if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
@@ -354,6 +358,8 @@ public class HardSexTubeCom extends antiDDoSForHost {
             } else if (ext.contains(".flv") && !ext.matches("\\.[A-Za-z0-9]{2,5}")) {
                 ext = ".flv";
             } else if (ext.contains(".mp4") && !ext.matches("\\.[A-Za-z0-9]{2,5}")) {
+                ext = ".mp4";
+            } else if (ext.equals(".")) { // finallink might be "encoded" so ext == .
                 ext = ".mp4";
             }
         } else {

@@ -13,11 +13,12 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+
+import org.jdownloader.scripting.JavaScriptEngineFactory;
 
 import jd.PluginWrapper;
 import jd.nutils.encoding.Encoding;
@@ -30,15 +31,11 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.PluginJSonUtils;
 
-import org.jdownloader.scripting.JavaScriptEngineFactory;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "wistia.com" }, urls = { "https?://(?:www\\.)?ksmedia\\-gmbh\\.wistia\\.com/medias/[A-Za-z0-9]+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "wistia.com" }, urls = { "https?://(?:www\\.)?ksmedia\\-gmbh\\.wistia\\.com/medias/[A-Za-z0-9]+|https?://fast\\.wistia\\.net/embed/iframe/[a-z0-9]+" })
 public class WistiaCom extends PluginForHost {
-
     public WistiaCom(PluginWrapper wrapper) {
         super(wrapper);
     }
-
     /* DEV NOTES */
     // Tags:
     // protocol: no https
@@ -50,7 +47,6 @@ public class WistiaCom extends PluginForHost {
     private static final boolean free_resume       = true;
     private static final int     free_maxchunks    = 0;
     private static final int     free_maxdownloads = -1;
-
     private String               dllink            = null;
     private boolean              server_issues     = false;
 
@@ -67,7 +63,7 @@ public class WistiaCom extends PluginForHost {
         final String fid = new Regex(link.getDownloadURL(), "([A-Za-z0-9]+)$").getMatch(0);
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
-        br.getPage("https://fast.wistia.com/embed/medias/" + fid + ".jsonp");
+        br.getPage(String.format("https://fast.wistia.com/embed/medias/%s.jsonp", fid));
         if (br.getHttpConnection().getResponseCode() == 404) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
@@ -80,17 +76,14 @@ public class WistiaCom extends PluginForHost {
             /* Offline */
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-
         LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaMap(json);
         entries = (LinkedHashMap<String, Object>) entries.get("media");
         final ArrayList<Object> ressourcelist = (ArrayList<Object>) entries.get("assets");
-
         String filename = (String) entries.get("name");
         final String description = (String) entries.get("seoDescription");
         if (filename == null) {
             filename = fid;
         }
-
         /* Find highest quality */
         long sizemax = 0;
         long sizetemp = 0;
@@ -98,15 +91,19 @@ public class WistiaCom extends PluginForHost {
         String dllink_temp = null;
         for (final Object videoo : ressourcelist) {
             entries = (LinkedHashMap<String, Object>) videoo;
+            final String type = (String) entries.get("type");
+            if (type.contains("hls")) {
+                /* 2017-10-05: Skip hls for now as we do not need it */
+                continue;
+            }
             dllink_temp = (String) entries.get("url");
             sizetemp = JavaScriptEngineFactory.toLong(entries.get("size"), 0);
             if (sizetemp > sizemax && dllink_temp != null) {
-                dllink = dllink_temp;
                 ext = (String) entries.get("ext");
+                dllink = dllink_temp;
                 sizemax = sizetemp;
             }
         }
-
         if (dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
@@ -118,6 +115,9 @@ public class WistiaCom extends PluginForHost {
         filename = Encoding.htmlDecode(filename);
         filename = filename.trim();
         filename = encodeUnicode(filename);
+        if (ext != null && ext.equalsIgnoreCase("m3u8")) {
+            ext = "mp4";
+        }
         if (ext != null && !ext.startsWith(".")) {
             ext = "." + ext;
         } else if (ext == null) {
@@ -126,14 +126,11 @@ public class WistiaCom extends PluginForHost {
         if (!filename.endsWith(ext)) {
             filename += ext;
         }
-
         if (description != null && description.length() > 0 && link.getComment() == null) {
             link.setComment(description);
         }
-
         link.setDownloadSize(sizemax);
         link.setFinalFileName(filename);
-
         return AvailableStatus.TRUE;
     }
 

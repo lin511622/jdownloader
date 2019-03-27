@@ -13,13 +13,12 @@ import org.appwork.storage.Storable;
 import org.appwork.storage.config.annotations.LabelInterface;
 import org.appwork.utils.IO;
 import org.appwork.utils.StringUtils;
-import org.appwork.utils.net.httpserver.requests.HttpRequest;
 import org.jdownloader.myjdownloader.client.json.DeviceErrorType;
 import org.jdownloader.myjdownloader.client.json.ServerErrorType;
 
 public class DocsPageFactoryImpl extends DefaultDocsPageFactory {
-    public DocsPageFactoryImpl(SessionRemoteAPI<?> api, HttpRequest request, String namespace) throws SecurityException, NoSuchMethodException {
-        super(api, namespace, request);
+    public DocsPageFactoryImpl(SessionRemoteAPI<?> api) throws SecurityException, NoSuchMethodException {
+        super(api);
     }
 
     @Override

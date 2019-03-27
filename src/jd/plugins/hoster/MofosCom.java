@@ -13,10 +13,19 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.File;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.Map.Entry;
+
+import org.appwork.storage.config.annotations.DefaultBooleanValue;
+import org.appwork.utils.StringUtils;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
+import org.jdownloader.controlling.filter.CompiledFiletypeFilter;
+import org.jdownloader.plugins.config.Order;
+import org.jdownloader.plugins.config.PluginConfigInterface;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
 
 import jd.PluginWrapper;
 import jd.controlling.AccountController;
@@ -24,6 +33,7 @@ import jd.http.Browser;
 import jd.http.Cookies;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
+import jd.parser.Regex;
 import jd.parser.html.Form;
 import jd.plugins.Account;
 import jd.plugins.Account.AccountType;
@@ -36,11 +46,8 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.SiteType.SiteTemplate;
 
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "mofos.com" }, urls = { "https?://members2\\.mofos\\.com/download/\\d+/[A-Za-z0-9\\-_]+/|http://mofosdecrypted.+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "mofos.com" }, urls = { "https?://members2\\.mofos\\.com/download/\\d+/[A-Za-z0-9\\-_]+/|mofosdecrypted://.+" })
 public class MofosCom extends PluginForHost {
-
     public MofosCom(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium("http://www.mofos.com/tour/signup/");
@@ -52,26 +59,24 @@ public class MofosCom extends PluginForHost {
     }
 
     /* Connection stuff */
-    private static final boolean FREE_RESUME                  = false;
-    private static final int     FREE_MAXCHUNKS               = 1;
-    private static final int     FREE_MAXDOWNLOADS            = 1;
+    private static final boolean FREE_RESUME                  = true;
+    private static final int     FREE_MAXCHUNKS               = 0;
+    private static final int     FREE_MAXDOWNLOADS            = -1;
     private static final boolean ACCOUNT_PREMIUM_RESUME       = true;
     private static final int     ACCOUNT_PREMIUM_MAXCHUNKS    = 0;
-    private static final int     ACCOUNT_PREMIUM_MAXDOWNLOADS = 20;
-
+    private static final int     ACCOUNT_PREMIUM_MAXDOWNLOADS = -1;
     private final String         type_premium_pic             = ".+\\.jpg.*?";
-
     public static final String   html_loggedin                = "data\\-membership";
-
     private String               dllink                       = null;
     private boolean              server_issues                = false;
+    private boolean              premiumonly                  = true;
 
     public static Browser prepBR(final Browser br) {
         return jd.plugins.hoster.BrazzersCom.pornportalPrepBR(br, "members2.mofos.com");
     }
 
     public void correctDownloadLink(final DownloadLink link) {
-        link.setUrlDownload(link.getDownloadURL().replaceAll("http://mofosdecrypted", "http://"));
+        link.setUrlDownload(link.getDownloadURL().replaceAll("mofosdecrypted://", "http://"));
     }
 
     @SuppressWarnings("deprecation")
@@ -81,62 +86,99 @@ public class MofosCom extends PluginForHost {
         server_issues = false;
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
+        link.setName(getFID(link));
+        link.setMimeHint(CompiledFiletypeFilter.VideoExtensions.MP4);
         final Account aa = AccountController.getInstance().getValidAccount(this);
-        if (aa == null) {
+        if (aa == null && !jd.plugins.decrypter.MofosCom.isFreeVideoUrl(link.getDownloadURL())) {
             link.getLinkStatus().setStatusText("Cannot check links without valid premium account");
             return AvailableStatus.UNCHECKABLE;
         }
-        this.login(this.br, aa, false);
-        dllink = link.getDownloadURL();
+        if (aa != null) {
+            this.login(this.br, aa, false);
+            dllink = link.getPluginPatternMatcher();
+        } else {
+            /* Trailer download */
+            this.br.getPage(this.getMainlink(link));
+            if (jd.plugins.decrypter.MofosCom.isOffline(this.br)) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            } else if (this.br.containsHTML("class=\"restricted\\-access\" style=\"display:block;\"")) {
+                logger.info("Trailer is not available or only available for premium users");
+                return AvailableStatus.TRUE;
+            }
+            final String json_source = this.br.getRegex("JSON\\.parse\\(\\'(.*?)\'\\)").getMatch(0);
+            if (StringUtils.isEmpty(json_source) && br.containsHTML("ideoParams\\s*?:\\s*?JSON\\.parse\\(\\'\\'\\)")) {
+                /* 2019-02-22: Non-playable video which is supposed to be online! */
+                server_issues = true;
+                return AvailableStatus.TRUE;
+            }
+            LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaMap(json_source);
+            entries = jd.plugins.decrypter.BrazzersCom.getVideoMapHttpStreams(entries);
+            /* Find highest quality */
+            int bitrate_max = 0;
+            int bitrate_temp = 0;
+            final Iterator<Entry<String, Object>> it = entries.entrySet().iterator();
+            while (it.hasNext()) {
+                final Entry<String, Object> ipentry = it.next();
+                final String quality_key = ipentry.getKey();
+                final String url_temp = (String) ipentry.getValue();
+                bitrate_temp = Integer.parseInt(new Regex(quality_key, "(\\d+)$").getMatch(0));
+                if (bitrate_temp > bitrate_max) {
+                    bitrate_max = bitrate_temp;
+                    dllink = url_temp;
+                }
+            }
+            premiumonly = false;
+        }
         final String fid = link.getStringProperty("fid", null);
-        URLConnectionAdapter con = null;
-        try {
-            con = br.openHeadConnection(dllink);
-            if (!con.getContentType().contains("html")) {
-                link.setDownloadSize(con.getLongContentLength());
-                link.setFinalFileName(Encoding.htmlDecode(getFileNameFromHeader(con)));
-            } else {
-                if (link.getDownloadURL().matches(type_premium_pic)) {
-                    /* Refresh directurl */
-                    final String number_formatted = link.getStringProperty("picnumber_formatted", null);
-                    if (fid == null || number_formatted == null) {
-                        /* User added url without decrypter --> Impossible to refresh this directurl! */
-                        throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-                    }
-                    this.br.getPage(jd.plugins.decrypter.MofosCom.getPicUrl(fid));
-                    if (jd.plugins.decrypter.MofosCom.isOffline(this.br)) {
-                        throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-                    }
-                    final String pictures[] = jd.plugins.decrypter.MofosCom.getPictureArray(this.br);
-                    for (final String finallink : pictures) {
-                        if (finallink.contains(number_formatted + ".jpg")) {
-                            dllink = finallink;
-                            break;
+        if (!StringUtils.isEmpty(dllink)) {
+            URLConnectionAdapter con = null;
+            try {
+                con = br.openHeadConnection(dllink);
+                if (!con.getContentType().contains("html")) {
+                    link.setDownloadSize(con.getLongContentLength());
+                    link.setFinalFileName(Encoding.htmlDecode(getFileNameFromHeader(con)));
+                } else {
+                    if (link.getDownloadURL().matches(type_premium_pic)) {
+                        /* Refresh directurl */
+                        final String number_formatted = link.getStringProperty("picnumber_formatted", null);
+                        if (fid == null || number_formatted == null) {
+                            /* User added url without decrypter --> Impossible to refresh this directurl! */
+                            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
                         }
-                    }
-                    if (dllink == null) {
-                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-                    }
-
-                    /* ... new URL should work! */
-                    con = br.openHeadConnection(dllink);
-                    if (!con.getContentType().contains("html")) {
-                        /* Set new url */
-                        link.setUrlDownload(dllink);
-                        /* If user copies url he should always get a valid one too :) */
-                        link.setContentUrl(dllink);
-                        link.setDownloadSize(con.getLongContentLength());
+                        this.br.getPage(jd.plugins.decrypter.MofosCom.getPicUrl(fid));
+                        if (jd.plugins.decrypter.MofosCom.isOffline(this.br)) {
+                            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+                        }
+                        final String pictures[] = jd.plugins.decrypter.MofosCom.getPictureArray(this.br);
+                        for (final String finallink : pictures) {
+                            if (finallink.contains(number_formatted + ".jpg")) {
+                                dllink = finallink;
+                                break;
+                            }
+                        }
+                        if (dllink == null) {
+                            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                        }
+                        /* ... new URL should work! */
+                        con = br.openHeadConnection(dllink);
+                        if (!con.getContentType().contains("html")) {
+                            /* Set new url */
+                            link.setUrlDownload(dllink);
+                            /* If user copies url he should always get a valid one too :) */
+                            link.setContentUrl(dllink);
+                            link.setDownloadSize(con.getLongContentLength());
+                        } else {
+                            server_issues = true;
+                        }
                     } else {
                         server_issues = true;
                     }
-                } else {
-                    server_issues = true;
                 }
-            }
-        } finally {
-            try {
-                con.disconnect();
-            } catch (final Throwable e) {
+            } finally {
+                try {
+                    con.disconnect();
+                } catch (final Throwable e) {
+                }
             }
         }
         return AvailableStatus.TRUE;
@@ -149,14 +191,19 @@ public class MofosCom extends PluginForHost {
     }
 
     private void doFree(final DownloadLink downloadLink, final boolean resumable, final int maxchunks, final String directlinkproperty) throws Exception, PluginException {
-        try {
+        if (!jd.plugins.decrypter.MofosCom.isFreeVideoUrl(this.getMainlink(downloadLink)) || premiumonly) {
             throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
-        } catch (final Throwable e) {
-            if (e instanceof PluginException) {
-                throw (PluginException) e;
-            }
+        } else if (StringUtils.isEmpty(dllink)) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        throw new PluginException(LinkStatus.ERROR_FATAL, "This file can only be downloaded by premium users");
+        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, FREE_RESUME, FREE_MAXCHUNKS);
+        if (dl.getConnection().getContentType().contains("html")) {
+            logger.warning("The final dllink seems not to be a file!");
+            br.followConnection();
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
+        downloadLink.setProperty("free_directlink", dllink);
+        dl.startDownload();
     }
 
     @Override
@@ -188,16 +235,18 @@ public class MofosCom extends PluginForHost {
                 }
                 br.getPage("http://members2." + account.getHoster() + "/access/login/");
                 String postdata = "rememberme=on&username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass());
-                if (br.containsHTML("api\\.recaptcha\\.net|google\\.com/recaptcha/api/")) {
-                    final Recaptcha rc = new Recaptcha(br, this);
-                    rc.findID();
-                    rc.load();
-                    final File cf = rc.downloadCaptcha(getLocalCaptchaFile());
-                    final DownloadLink dummyLink = new DownloadLink(this, "Account", account.getHoster(), "http://members." + account.getHoster() + "/", true);
-                    final String code = getCaptchaCode("recaptcha", cf, dummyLink);
-                    postdata += "&recaptcha_challenge_field=" + Encoding.urlEncode(rc.getChallenge()) + "&recaptcha_response_field=" + Encoding.urlEncode(code);
+                final DownloadLink dlinkbefore = this.getDownloadLink();
+                if (br.containsHTML("div class=\"g-recaptcha\"")) {
+                    if (dlinkbefore == null) {
+                        this.setDownloadLink(new DownloadLink(this, "Account", account.getHoster(), "http://" + account.getHoster(), true));
+                    }
+                    final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
+                    postdata += "&g-recaptcha-response=" + Encoding.urlEncode(recaptchaV2Response);
+                    if (dlinkbefore != null) {
+                        this.setDownloadLink(dlinkbefore);
+                    }
                 }
-                br.postPage("http://members2." + account.getHoster() + "/access/submit/", postdata);
+                br.postPage("/access/submit/", postdata);
                 final Form continueform = br.getFormbyKey("response");
                 if (continueform != null) {
                     /* Redirect from probiller.com to main website --> Login complete */
@@ -254,6 +303,107 @@ public class MofosCom extends PluginForHost {
         dl.startDownload();
     }
 
+    private String getFID(final DownloadLink dl) {
+        final String mainlink = getMainlink(dl);
+        final String fid;
+        if (jd.plugins.decrypter.MofosCom.isFreeVideoUrl(mainlink)) {
+            fid = new Regex(mainlink, "(\\d+)/?$").getMatch(0);
+        } else {
+            fid = new Regex(mainlink, "download/(\\d+/[A-Za-z0-9\\-_]+)/").getMatch(0);
+        }
+        return fid;
+    }
+
+    private String getMainlink(final DownloadLink dl) {
+        return dl.getStringProperty("mainlink", null);
+    }
+
+    @Override
+    public String getDescription() {
+        return "Lade Video- und Audioinhalte aus der ZDFMediathek herunter";
+    }
+
+    @Override
+    public Class<? extends PluginConfigInterface> getConfigInterface() {
+        return MofosConfigInterface.class;
+    }
+
+    public static interface MofosConfigInterface extends PluginConfigInterface {
+        @DefaultBooleanValue(true)
+        @Order(9)
+        boolean isFastLinkcheckEnabled();
+
+        void setFastLinkcheckEnabled(boolean b);
+
+        @DefaultBooleanValue(false)
+        @Order(20)
+        boolean isGrabBESTEnabled();
+
+        void setGrabBESTEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(21)
+        boolean isAddUnknownQualitiesEnabled();
+
+        void setAddUnknownQualitiesEnabled(boolean b);
+
+        /* Download-only */
+        @DefaultBooleanValue(true)
+        @Order(30)
+        boolean isGrab1080_12000Enabled();
+
+        void setGrab1080_12000Enabled(boolean b);
+
+        /* Download-only */
+        @DefaultBooleanValue(true)
+        @Order(30)
+        boolean isGrab720_8000Enabled();
+
+        void setGrab720_8000Enabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(30)
+        boolean isGrab720_3800Enabled();
+
+        void setGrab720_3800Enabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(40)
+        boolean isGrab720_2600Enabled();
+
+        void setGrab720_2600Enabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(45)
+        boolean isGrab720_2000Enabled();
+
+        void setGrab720_2000Enabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(50)
+        boolean isGrab480_2000Enabled();
+
+        void setGrab480_2000Enabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(60)
+        boolean isGrab480_1500Enabled();
+
+        void setGrab480_1500Enabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(70)
+        boolean isGrab480_1000Enabled();
+
+        void setGrab480_1000Enabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(80)
+        boolean isGrab272_650Enabled();
+
+        void setGrab272_650Enabled(boolean b);
+    }
+
     @Override
     public int getMaxSimultanPremiumDownloadNum() {
         return ACCOUNT_PREMIUM_MAXDOWNLOADS;
@@ -265,11 +415,33 @@ public class MofosCom extends PluginForHost {
     }
 
     @Override
+    public boolean canHandle(final DownloadLink downloadLink, final Account account) throws Exception {
+        return account != null || jd.plugins.decrypter.MofosCom.isFreeVideoUrl(getMainlink(downloadLink));
+    }
+
+    public boolean allowHandle(final DownloadLink downloadLink, final PluginForHost plugin) {
+        final boolean is_this_plugin = downloadLink.getHost().equalsIgnoreCase(plugin.getHost());
+        if (is_this_plugin) {
+            /* The original plugin is always allowed to download. */
+            return true;
+        } else if (!downloadLink.isEnabled() && "".equals(downloadLink.getPluginPatternMatcher())) {
+            /*
+             * setMultiHostSupport uses a dummy DownloadLink, with isEnabled == false. we must set to true for the host to be added to the
+             * supported host array.
+             */
+            return true;
+        } else {
+            /* Multihosts can only download 'trailer' URLs */
+            final String url = downloadLink.getPluginPatternMatcher();
+            return jd.plugins.decrypter.MofosCom.isFreeVideoUrl(getMainlink(downloadLink));
+        }
+    }
+
+    @Override
     public void reset() {
     }
 
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

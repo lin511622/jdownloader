@@ -41,7 +41,7 @@ public class GeTtDecrypter extends PluginForDecrypt {
         br.setFollowRedirects(true);
         final String parameter = param.toString().replace("#", "");
 
-        if (parameter.matches("https?://(?:www\\.)?ge\\.tt/(?:developers|press|tools|notifications|blog|about|javascript|button|contact|terms|api).*?")) {
+        if (parameter.matches("https?://(?:www\\.)?ge\\.tt/(?:developers|press|tools|notifications|blog|about|javascript|button|contact|terms|api|m).*?")) {
             decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
         }
@@ -75,7 +75,8 @@ public class GeTtDecrypter extends PluginForDecrypt {
             final String filename = (String) entries.get("filename");
             final String fileid = (String) entries.get("fileid");
             final long filesize = JavaScriptEngineFactory.toLong(entries.get("size"), 0);
-            final DownloadLink dl = createDownloadlink("http://api.ge.tt/1/files/" + folderid + "/" + fileid + "/blob?download");
+            final DownloadLink dl = createDownloadlink("http://proxy.ge.tt/1/files/" + folderid + "/" + fileid + "/blob?download");
+            dl.setContentUrl("http://ge.tt/" + folderid);
             dl.setName(filename);
             dl.setDownloadSize(filesize);
             dl.setAvailable(true);

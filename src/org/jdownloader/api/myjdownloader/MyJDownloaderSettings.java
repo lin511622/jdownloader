@@ -14,24 +14,35 @@ import org.appwork.storage.config.annotations.RequiresRestart;
 import org.appwork.storage.config.annotations.SpinnerValidator;
 import org.appwork.storage.config.annotations.StorageHandlerFactoryAnnotation;
 import org.appwork.storage.config.defaults.AbstractDefaultFactory;
+import org.appwork.utils.net.httpconnection.HTTPConnectionUtils.IPVERSION;
 
 //org.jdownloader.extensions.myjdownloader.MyJDownloaderExtension has been the old path of the settingsfile
 @StorageHandlerFactoryAnnotation(MyJDownloaderSettingsStorageHandlerFactory.class)
 public interface MyJDownloaderSettings extends ConfigInterface {
-
     public static enum DIRECTMODE {
-        @EnumLabel("Disable direct connections") NONE,
-        @EnumLabel("Only allow direct connections from lan") LAN,
-        @EnumLabel("Allow lan/wan connections with manual port forwarding") LAN_WAN_MANUAL,
-        @EnumLabel("Allow lan/wan connections with automatic port forwarding via upnp") LAN_WAN_UPNP
+        @EnumLabel("Disable direct connections")
+        NONE,
+        @EnumLabel("Only allow direct connections from lan")
+        LAN,
+        @EnumLabel("Allow lan/wan connections with manual port forwarding")
+        LAN_WAN_MANUAL,
+        @EnumLabel("Allow lan/wan connections with automatic port forwarding via upnp")
+        LAN_WAN_UPNP
     }
 
     @DefaultStringValue("api.jdownloader.org")
     @RequiresRestart("A JDownloader Restart is Required")
-    @AboutConfig
-    public String getConnectIP();
+    public String getServerHost();
 
-    public void setConnectIP(String url);
+    @AboutConfig
+    @DescriptionForConfigEntry("Set preferred IP version to use")
+    @DefaultEnumValue("SYSTEM")
+    @RequiresRestart("A JDownloader Restart is Required")
+    IPVERSION getPreferredIPVersion();
+
+    void setPreferredIPVersion(IPVERSION ipVersion);
+
+    public void setServerHost(String url);
 
     @DefaultIntArrayValue({ 80, 10101 })
     @AboutConfig
@@ -40,17 +51,15 @@ public interface MyJDownloaderSettings extends ConfigInterface {
     public void setDeviceConnectPorts(int port[]);
 
     @AboutConfig
+    public String[] getCustomDeviceIPs();
+
+    public void setCustomDeviceIPs(String deviceIPs[]);
+
+    @AboutConfig
     @DefaultBooleanValue(false)
     public boolean isDebugEnabled();
 
     public void setDebugEnabled(boolean s);
-
-    @DefaultIntValue(80)
-    @RequiresRestart("A JDownloader Restart is Required")
-    @AboutConfig
-    public int getClientConnectPort();
-
-    public void setClientConnectPort(int port);
 
     public String getEmail();
 
@@ -74,7 +83,6 @@ public interface MyJDownloaderSettings extends ConfigInterface {
     public void setUniqueDeviceIDV2(String id);
 
     public static class DeviceNameFactory extends AbstractDefaultFactory<String> {
-
         @Override
         public String getDefaultValue() {
             return "JDownloader@" + System.getProperty("user.name", "User");
@@ -131,16 +139,28 @@ public interface MyJDownloaderSettings extends ConfigInterface {
     public void setManualRemotePort(int port);
 
     public static enum MyJDownloaderError {
-        @EnumLabel("Outdated, please update your JDownloader") OUTDATED,
-        @EnumLabel("No Error -  everything is fine") NONE,
-        @EnumLabel("Username/email is unknown") EMAIL_INVALID,
-        @EnumLabel("Please confirm your account(Click the link in the Confirmal Email)") ACCOUNT_UNCONFIRMED,
-        @EnumLabel("Wrong Username or Password") BAD_LOGINS,
-        @EnumLabel("Service is down for Maintenance") SERVER_DOWN,
-        @EnumLabel("Connection problem to the MyJDownloader Service") IO,
-        @EnumLabel("Unknown error") UNKNOWN,
-        @EnumLabel("No Internet Connection") NO_INTERNET_CONNECTION,
-
+        @EnumLabel("Outdated, please update your JDownloader")
+        OUTDATED,
+        @EnumLabel("No Error -  everything is fine")
+        NONE,
+        @EnumLabel("Username/email is unknown")
+        EMAIL_INVALID,
+        @EnumLabel("Please confirm your account(Click the link in the Confirmal Email)")
+        ACCOUNT_UNCONFIRMED,
+        @EnumLabel("Wrong Username or Password")
+        BAD_LOGINS,
+        @EnumLabel("Service is overloaded")
+        SERVER_OVERLOAD,
+        @EnumLabel("Service is down for Maintenance")
+        SERVER_MAINTENANCE,
+        @EnumLabel("Service is down")
+        SERVER_DOWN,
+        @EnumLabel("Connection problem to the MyJDownloader Service")
+        IO,
+        @EnumLabel("Unknown error")
+        UNKNOWN,
+        @EnumLabel("No Internet Connection")
+        NO_INTERNET_CONNECTION,
     }
 
     @AboutConfig
@@ -148,5 +168,4 @@ public interface MyJDownloaderSettings extends ConfigInterface {
     public void setLatestError(MyJDownloaderError error);
 
     public MyJDownloaderError getLatestError();
-
 }

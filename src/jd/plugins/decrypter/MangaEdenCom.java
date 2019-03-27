@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.text.DecimalFormat;
@@ -31,11 +30,16 @@ import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "mangaeden.com" }, urls = { "http://(www\\.)?mangaeden\\.com/(?:[a-z]{2}/)?[a-z0-9\\-]+/[a-z0-9\\-]+/\\d+(?:\\.\\d+)?/1/" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "mangaeden.com" }, urls = { "https?://(www\\.)?mangaeden\\.com/(?:[a-z]{2}/)?[a-z0-9\\-]+/[a-z0-9\\-]+/\\d+(?:\\.\\d+)?/1/" })
 public class MangaEdenCom extends antiDDoSForDecrypt {
-
     public MangaEdenCom(PluginWrapper wrapper) {
         super(wrapper);
+    }
+
+    /** 2019-02-10: Too many requests --> error 503 */
+    @Override
+    public int getMaxConcurrentProcessingInstances() {
+        return 1;
     }
 
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
@@ -43,13 +47,20 @@ public class MangaEdenCom extends antiDDoSForDecrypt {
         final ArrayList<String> cryptedLinks = new ArrayList<String>();
         final String parameter = param.toString();
         br.setFollowRedirects(true);
+        br.setAllowedResponseCodes(new int[] { 503 });
         getPage(parameter);
-        if (br.containsHTML("404 NOT FOUND")) {
+        if (br.getHttpConnection().getResponseCode() == 404 || br.containsHTML("404 NOT FOUND")) {
             logger.info("Link offline: " + parameter);
+            decryptedLinks.add(this.createOfflinelink(parameter));
+            return decryptedLinks;
+        } else if (br.getHttpConnection().getResponseCode() == 503) {
+            logger.info("Too many requests - try again later");
+            decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
         }
         if (br.containsHTML("Isn't Out!<")) {
             logger.info("Link offline (next chapter isn't out yet): " + parameter);
+            decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
         }
         final String thisLinkpart = new Regex(br.getURL(), "mangaeden\\.com(/.*?)1/$").getMatch(0);
@@ -60,17 +71,20 @@ public class MangaEdenCom extends antiDDoSForDecrypt {
             return null;
         }
         fpName = Encoding.htmlDecode(fpName.trim()).replace("\n", "");
-
         for (final String currentPage : pages) {
             if (!cryptedLinks.contains(currentPage)) {
                 cryptedLinks.add(currentPage);
             }
         }
-
+        final FilePackage fp = FilePackage.getInstance();
+        fp.setName(Encoding.htmlDecode(fpName.trim()));
         // decrypt all pages
         final DecimalFormat df = new DecimalFormat(cryptedLinks.size() < 100 ? "00" : "000");
         int counter = 1;
         for (final String currentPage : cryptedLinks) {
+            if (isAbort()) {
+                break;
+            }
             if (!br.getURL().endsWith(currentPage)) {
                 getPage(currentPage);
             }
@@ -78,11 +92,11 @@ public class MangaEdenCom extends antiDDoSForDecrypt {
             final DownloadLink dd = createDownloadlink("directhttp://" + decryptedlink);
             dd.setAvailable(true);
             dd.setFinalFileName(fpName + "_" + df.format(counter) + getFileNameExtensionFromString(decryptedlink, ".jpg"));
+            fp.add(dd);
+            distribute(dd);
             decryptedLinks.add(dd);
             counter++;
         }
-        final FilePackage fp = FilePackage.getInstance();
-        fp.setName(Encoding.htmlDecode(fpName.trim()));
         fp.addLinks(decryptedLinks);
         return decryptedLinks;
     }
@@ -103,5 +117,4 @@ public class MangaEdenCom extends antiDDoSForDecrypt {
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

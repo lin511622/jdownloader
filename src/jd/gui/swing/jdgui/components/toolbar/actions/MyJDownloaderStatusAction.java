@@ -5,6 +5,10 @@ import java.awt.event.ActionEvent;
 import javax.swing.AbstractButton;
 import javax.swing.Icon;
 
+import jd.controlling.TaskQueue;
+import jd.gui.swing.jdgui.JDGui;
+import jd.gui.swing.jdgui.views.myjd.MyJDownloaderView;
+
 import org.appwork.scheduler.DelayedRunnable;
 import org.appwork.swing.components.ExtButton;
 import org.appwork.utils.swing.EDTRunner;
@@ -18,10 +22,6 @@ import org.jdownloader.gui.translate._GUI;
 import org.jdownloader.images.AbstractIcon;
 import org.jdownloader.images.BadgeIcon;
 import org.jdownloader.settings.staticreferences.CFG_MYJD;
-
-import jd.controlling.TaskQueue;
-import jd.gui.swing.jdgui.JDGui;
-import jd.gui.swing.jdgui.views.myjd.MyJDownloaderView;
 
 public class MyJDownloaderStatusAction extends AbstractToolBarAction {
     /**
@@ -50,17 +50,14 @@ public class MyJDownloaderStatusAction extends AbstractToolBarAction {
         }
 
         protected void idIconCheck(final Entry entry) {
-
         }
     }
 
     public class Button extends ExtButton implements MyJDownloaderListener {
-
         /**
          *
          */
         private static final long     serialVersionUID = 1L;
-
         private final DelayedRunnable iconDelayer;
 
         public Button() {
@@ -68,11 +65,9 @@ public class MyJDownloaderStatusAction extends AbstractToolBarAction {
             setIcon(new AbstractIcon(getIconKey(), 22));
             setHideActionText(true);
             iconDelayer = new DelayedRunnable(TaskQueue.TIMINGQUEUE, 500, 2000) {
-
                 @Override
                 public void delayedrun() {
                     new EDTRunner() {
-
                         @Override
                         protected void runInEDT() {
                             final MyJDownloaderConnectionStatus connectionStatus = MyJDownloaderController.getInstance().getConnectionStatus();
@@ -84,6 +79,8 @@ public class MyJDownloaderStatusAction extends AbstractToolBarAction {
                                     switch (latestError) {
                                     case IO:
                                     case SERVER_DOWN:
+                                    case SERVER_OVERLOAD:
+                                    case SERVER_MAINTENANCE:
                                     case NO_INTERNET_CONNECTION:
                                         setIcon(new NoAPIIconWarnIcon(new AbstractIcon(getIconKey(), 22), new AbstractIcon(IconKey.ICON_WARNING_RED, 16), 2, 2).crop(24, 24));
                                         break;
@@ -127,6 +124,8 @@ public class MyJDownloaderStatusAction extends AbstractToolBarAction {
                     switch (latestError) {
                     case IO:
                     case SERVER_DOWN:
+                    case SERVER_OVERLOAD:
+                    case SERVER_MAINTENANCE:
                     case NO_INTERNET_CONNECTION:
                         return _GUI.T.MyJDownloaderSettingsPanel_runInEDT_connections(connections);
                     default:
@@ -139,7 +138,6 @@ public class MyJDownloaderStatusAction extends AbstractToolBarAction {
                 }
             }
             return _GUI.T.MyJDownloaderSettingsPanel_runInEDT_disconnected_();
-
         }
 
         @Override

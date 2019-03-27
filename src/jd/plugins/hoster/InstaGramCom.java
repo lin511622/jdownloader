@@ -13,23 +13,21 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
 import java.net.URL;
-import java.util.HashMap;
-import java.util.Map;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 
 import jd.PluginWrapper;
 import jd.config.ConfigContainer;
 import jd.config.ConfigEntry;
-import jd.config.Property;
 import jd.controlling.AccountController;
 import jd.http.Browser;
-import jd.http.Cookie;
 import jd.http.Cookies;
 import jd.http.URLConnectionAdapter;
+import jd.http.requests.PostRequest;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.parser.html.Form;
@@ -44,11 +42,8 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.PluginJSonUtils;
 
-import org.appwork.utils.StringUtils;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "instagram.com" }, urls = { "https?://(?:www\\.)?(?:instagram\\.com|instagr\\.am)/p/[A-Za-z0-9_-]+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "instagram.com" }, urls = { "instagrammdecrypted://[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)?" })
 public class InstaGramCom extends PluginForHost {
-
     @SuppressWarnings("deprecation")
     public InstaGramCom(PluginWrapper wrapper) {
         super(wrapper);
@@ -56,16 +51,12 @@ public class InstaGramCom extends PluginForHost {
         this.enablePremium(MAINPAGE + "/accounts/login/");
     }
 
-    private String dllink = null;
+    private String  dllink        = null;
+    private boolean server_issues = false;
 
     @Override
     public String getAGBLink() {
         return MAINPAGE + "/about/legal/terms/#";
-    }
-
-    @SuppressWarnings("deprecation")
-    public void correctDownloadLink(final DownloadLink link) {
-        link.setUrlDownload(link.getDownloadURL().replace("instagr.am/", "instagram.com/").replaceFirst("^http://", "https://").replaceFirst("://in", "://www.in"));
     }
 
     /* Connection stuff */
@@ -74,7 +65,6 @@ public class InstaGramCom extends PluginForHost {
     private static final int     MAXCHUNKS_pictures                = 1;
     private static final int     MAXCHUNKS_videos                  = 0;
     private static final int     MAXDOWNLOADS                      = -1;
-
     private static final String  MAINPAGE                          = "https://www.instagram.com";
     public static final String   QUIT_ON_RATE_LIMIT_REACHED        = "QUIT_ON_RATE_LIMIT_REACHED";
     public static final String   PREFER_SERVER_FILENAMES           = "PREFER_SERVER_FILENAMES";
@@ -84,21 +74,21 @@ public class InstaGramCom extends PluginForHost {
     public static final boolean  defaultQUIT_ON_RATE_LIMIT_REACHED = false;
     public static final boolean  defaultONLY_GRAB_X_ITEMS          = false;
     public static final int      defaultONLY_GRAB_X_ITEMS_NUMBER   = 25;
-
     private static Object        LOCK                              = new Object();
-
     private boolean              is_private_url                    = false;
 
     @SuppressWarnings("deprecation")
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws IOException, PluginException {
+        dllink = null;
+        server_issues = false;
+        is_private_url = downloadLink.getBooleanProperty("private_url", false);
         this.setBrowserExclusive();
         /*
-         * Decrypter can set this status - basically to be able to handfle private urls correctly in host plugin in case users' account gets
+         * Decrypter can set this status - basically to be able to handle private urls correctly in host plugin in case users' account gets
          * disabled for whatever reason.
          */
         prepBR(this.br);
-        is_private_url = downloadLink.getBooleanProperty("private_url", false);
         boolean is_logged_in = false;
         final Account aa = AccountController.getInstance().getValidAccount(this);
         if (aa != null) {
@@ -112,61 +102,89 @@ public class InstaGramCom extends PluginForHost {
             downloadLink.getLinkStatus().setStatusText("Login required to download this content");
             return AvailableStatus.UNCHECKABLE;
         }
-        String getlink = downloadLink.getDownloadURL();
-        if (!getlink.endsWith("/")) {
-            /* Add slash to the end to prevent 302 redirect to speed up the download process a tiny bit. */
-            getlink += "/";
-        }
-        br.getPage(getlink);
-        if (br.containsHTML("Oops, an error occurred") || br.getRequest().getHttpConnection().getResponseCode() == 404) {
-            /* This will also happen if a user tries to access private urls without being logged in! */
-            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-        }
-        String ext = ".mp4";
-        dllink = PluginJSonUtils.getJsonValue(this.br, "video_url");
-        // Maybe we have a picture
-        if (dllink == null) {
-            ext = null;
-            dllink = br.getRegex("property=\"og:image\" content=\"(http[^<>\"]*?)\"").getMatch(0);
-            String remove = new Regex(dllink, "(/[a-z0-9]+?x[0-9]+/)").getMatch(0); // Size
-            if (remove != null) {
-                dllink = dllink.replace(remove, "/");
+        dllink = downloadLink.getStringProperty("directurl", null);
+        /*
+         * 2017-04-28: By removing the resolution inside the picture URL, we can download the original image - usually, resolution will be
+         * higher than before then but it can also get smaller - which is okay as it is the original content.
+         */
+        final String resolution_inside_url = new Regex(dllink, "(/s\\d+x\\d+/)").getMatch(0);
+        if (resolution_inside_url != null) {
+            String drlink = dllink.replace(resolution_inside_url, "/");
+            drlink = checkLink(drlink);
+            if (drlink != null) {
+                dllink = drlink;
             }
-            downloadLink.setContentUrl(dllink);
+        } else {
+            dllink = checkLink(dllink);
         }
         if (dllink == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            String getlink = downloadLink.getDownloadURL().replace("instagrammdecrypted://", "https://www.instagram.com/p/");
+            if (!getlink.endsWith("/")) {
+                /* Add slash to the end to prevent 302 redirect to speed up the download process a tiny bit. */
+                getlink += "/";
+            }
+            br.getPage(getlink);
+            if (br.getRequest().getHttpConnection().getResponseCode() == 404 || br.containsHTML("Oops, an error occurred")) {
+                /*
+                 * This will also happen if a user tries to access private urls without being logged in --> Which is why we need to know the
+                 * private_url status from the crawler!
+                 */
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
+            /* Set releasedate as property */
+            String date = PluginJSonUtils.getJson(this.br, "date");
+            if (date == null || !date.matches("\\d+")) {
+                date = PluginJSonUtils.getJson(this.br, "taken_at_timestamp");
+            }
+            if (date != null && date.matches("\\d+")) {
+                setReleaseDate(downloadLink, Long.parseLong(date));
+            }
+            String ext = ".mp4";
+            dllink = PluginJSonUtils.getJsonValue(this.br, "video_url");
+            if (dllink == null) {
+                // Maybe we have a picture
+                ext = null;
+                dllink = br.getRegex("property=\"og:image\" content=\"(http[^<>\"]*?)\"").getMatch(0);
+                String remove = new Regex(dllink, "(/[a-z0-9]+?x[0-9]+/)").getMatch(0); // Size
+                if (remove != null) {
+                    String flink = dllink.replace(remove, "/");
+                    flink = checkLink(flink);
+                    if (flink != null) {
+                        dllink = flink;
+                    }
+                }
+                downloadLink.setContentUrl(dllink);
+            }
+            if (dllink == null) {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            }
+            dllink = Encoding.htmlDecode(dllink.replace("\\", ""));
+            if (ext == null) {
+                ext = getFileNameExtensionFromString(dllink, ".jpg");
+            }
+            String server_filename = getFileNameFromURL(new URL(dllink));
+            if (this.getPluginConfig().getBooleanProperty(PREFER_SERVER_FILENAMES, defaultPREFER_SERVER_FILENAMES) && server_filename != null) {
+                server_filename = fixServerFilename(server_filename, ext);
+                downloadLink.setFinalFileName(server_filename);
+            } else {
+                // decrypter has set the proper name!
+                // if the user toggles PREFER_SERVER_FILENAMES setting many times the name can change.
+                final String name = downloadLink.getStringProperty("decypter_filename", null);
+                if (name != null) {
+                    downloadLink.setFinalFileName(name);
+                } else {
+                    // do not change.
+                    logger.warning("missing storable, filename will not be renamed");
+                }
+            }
         }
-        dllink = Encoding.htmlDecode(dllink.replace("\\", ""));
-        final String username = br.getRegex("\"owner\".*?\"username\": ?\"([^<>\"]*?)\"").getMatch(0);
-        final String linkid = new Regex(downloadLink.getDownloadURL(), "([A-Za-z0-9_-]+)$").getMatch(0);
-        String filename = null;
-        if (StringUtils.isNotEmpty(username)) {
-            filename = username + " - " + linkid;
-        } else {
-            filename = linkid;
-        }
-        filename = filename.trim();
-        if (ext == null) {
-            ext = getFileNameExtensionFromString(dllink, ".jpg");
-        }
-        String server_filename = getFileNameFromURL(new URL(dllink));
-        if (this.getPluginConfig().getBooleanProperty(PREFER_SERVER_FILENAMES, defaultPREFER_SERVER_FILENAMES) && server_filename != null) {
-            server_filename = fixServerFilename(server_filename, ext);
-            downloadLink.setFinalFileName(server_filename);
-        } else {
-            downloadLink.setFinalFileName(Encoding.htmlDecode(filename) + ext);
-        }
-        final Browser br2 = br.cloneBrowser();
-        // In case the link redirects to the finallink
-        br2.setFollowRedirects(true);
         URLConnectionAdapter con = null;
         try {
-            con = br2.openGetConnection(dllink);
-            if (!con.getContentType().contains("html")) {
+            con = br.openGetConnection(dllink);
+            if (!con.getContentType().contains("html") && !con.getContentType().contains("text")) {
                 downloadLink.setDownloadSize(con.getLongContentLength());
             } else {
-                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+                server_issues = true;
             }
         } finally {
             try {
@@ -175,6 +193,36 @@ public class InstaGramCom extends PluginForHost {
             }
         }
         return AvailableStatus.TRUE;
+    }
+
+    private String checkLink(String flink) throws IOException, PluginException {
+        URLConnectionAdapter con = null;
+        final Browser br2 = br.cloneBrowser();
+        br2.setFollowRedirects(true);
+        try {
+            con = br2.openHeadConnection(flink);
+            if (con.getContentType().contains("html") || con.getContentType().contains("text")) {
+                flink = null;
+            }
+        } catch (final Exception e) {
+            logger.log(e);
+        } finally {
+            if (con != null) {
+                try {
+                    con.disconnect();
+                } catch (final Exception e) {
+                }
+            }
+        }
+        return flink;
+    }
+
+    public static void setReleaseDate(final DownloadLink dl, final long date) {
+        final String targetFormat = "yyyy-MM-dd";
+        final Date theDate = new Date(date * 1000);
+        final SimpleDateFormat formatter = new SimpleDateFormat(targetFormat);
+        final String formattedDate = formatter.format(theDate);
+        dl.setProperty("date", formattedDate);
     }
 
     public static String fixServerFilename(String server_filename, final String correctExtension) {
@@ -192,17 +240,21 @@ public class InstaGramCom extends PluginForHost {
         requestFileInformation(downloadLink);
         if (this.is_private_url) {
             throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
+        } else if (server_issues) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown server error", 10 * 60 * 1000l);
+        } else if (dllink == null) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         handleDownload(downloadLink);
     }
 
     public void handleDownload(final DownloadLink downloadLink) throws Exception {
         int maxchunks = MAXCHUNKS_pictures;
-        if (downloadLink.getFinalFileName().contains(".mp4")) {
+        if (downloadLink.getFinalFileName() != null && downloadLink.getFinalFileName().contains(".mp4") || downloadLink.getName() != null && downloadLink.getName().contains(".mp4")) {
             maxchunks = MAXCHUNKS_videos;
         }
         dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, RESUME, maxchunks);
-        if (dl.getConnection().getContentType().contains("html")) {
+        if (dl.getConnection().getContentType().contains("html") || dl.getConnection().getContentType().contains("text")) {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
@@ -214,41 +266,41 @@ public class InstaGramCom extends PluginForHost {
         return MAXDOWNLOADS;
     }
 
-    @SuppressWarnings("unchecked")
     public static void login(final Browser br, final Account account, final boolean force) throws Exception {
         synchronized (LOCK) {
             try {
                 // Load cookies
                 br.setCookiesExclusive(true);
                 prepBR(br);
-                final Object ret = account.getProperty("cookies", null);
-                boolean acmatch = Encoding.urlEncode(account.getUser()).equals(account.getStringProperty("name", Encoding.urlEncode(account.getUser())));
-                if (acmatch) {
-                    acmatch = Encoding.urlEncode(account.getPass()).equals(account.getStringProperty("pass", Encoding.urlEncode(account.getPass())));
-                }
-                if (acmatch && ret != null && ret instanceof HashMap<?, ?> && !force) {
-                    final HashMap<String, String> cookies = (HashMap<String, String>) ret;
-                    if (account.isValid()) {
-                        for (final Map.Entry<String, String> cookieEntry : cookies.entrySet()) {
-                            final String key = cookieEntry.getKey();
-                            final String value = cookieEntry.getValue();
-                            br.setCookie(MAINPAGE, key, value);
-                        }
+                final Cookies cookies = account.loadCookies("");
+                if (cookies != null) {
+                    br.setCookies(MAINPAGE, cookies);
+                    br.getPage(MAINPAGE + "/");
+                    if (br.getCookies(MAINPAGE).get("sessionid", Cookies.NOTDELETEDPATTERN) == null || br.getCookies(MAINPAGE).get("ds_user_id", Cookies.NOTDELETEDPATTERN) == null) {
+                        br.clearCookies(MAINPAGE);
+                    } else {
+                        account.saveCookies(br.getCookies(MAINPAGE), "");
                         return;
                     }
                 }
                 br.getPage(MAINPAGE + "/");
-                try {
-                    br.setHeader("Accept", "*/*");
-                    br.setHeader("X-Instagram-AJAX", "1");
-                    br.setHeader("X-CSRFToken", br.getCookie("instagram.com", "csrftoken"));
-                    br.setHeader("X-Requested-With", "XMLHttpRequest");
-                    br.postPage("/accounts/login/ajax/", "username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
-                } finally {
-                    br.setHeader("X-Instagram-AJAX", null);
-                    br.setHeader("X-CSRFToken", null);
-                    br.setHeader("X-Requested-With", null);
+                final String csrftoken = br.getRegex("\"csrf_token\"\\s*:\\s*\"(.*?)\"").getMatch(0);
+                if (csrftoken == null) {
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
+                br.setCookie(MAINPAGE, "csrftoken", csrftoken);
+                final String rollout_hash = br.getRegex("\"rollout_hash\"\\s*:\\s*\"(.*?)\"").getMatch(0);
+                if (rollout_hash == null) {
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                }
+                PostRequest post = new PostRequest("https://www.instagram.com/accounts/login/ajax/");
+                post.getHeaders().put("Accept", "*/*");
+                post.getHeaders().put("X-Instagram-AJAX", rollout_hash);
+                post.getHeaders().put("X-CSRFToken", csrftoken);
+                post.getHeaders().put("X-Requested-With", "XMLHttpRequest");
+                post.setContentType("application/x-www-form-urlencoded");
+                post.setPostDataString("username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()) + "&queryParams=%7B%7D");
+                br.getPage(post);
                 if ("fail".equals(PluginJSonUtils.getJsonValue(br, "status"))) {
                     // 2 factor (Coded semi blind).
                     if ("checkpoint_required".equals(PluginJSonUtils.getJsonValue(br, "message"))) {
@@ -282,7 +334,6 @@ public class InstaGramCom extends PluginForHost {
                         throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                     }
                 }
-
                 if (!br.containsHTML("\"authenticated\"\\s*:\\s*true\\s*")) {
                     if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
@@ -290,37 +341,24 @@ public class InstaGramCom extends PluginForHost {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!\r\nQuick help:\r\nYou're sure that the username and password you entered are correct?\r\nIf your password contains special characters, change it (remove them) and try again!", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     }
                 }
-                // Save cookies
-                final HashMap<String, String> cookies = new HashMap<String, String>();
-                final Cookies add = br.getCookies(MAINPAGE);
-                for (final Cookie c : add.getCookies()) {
-                    cookies.put(c.getKey(), c.getValue());
-                }
-                account.setProperty("name", Encoding.urlEncode(account.getUser()));
-                account.setProperty("pass", Encoding.urlEncode(account.getPass()));
-                account.setProperty("cookies", cookies);
+                account.saveCookies(br.getCookies(MAINPAGE), "");
             } catch (final PluginException e) {
-                account.setProperty("cookies", Property.NULL);
+                if (e.getLinkStatus() == LinkStatus.ERROR_PREMIUM) {
+                    account.clearCookies("");
+                }
                 throw e;
             }
         }
     }
 
-    @SuppressWarnings("deprecation")
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         final AccountInfo ai = new AccountInfo();
-        try {
-            login(this.br, account, true);
-        } catch (PluginException e) {
-            account.setValid(false);
-            throw e;
-        }
+        login(this.br, account, true);
         ai.setUnlimitedTraffic();
         account.setType(AccountType.FREE);
         account.setConcurrentUsePossible(true);
         ai.setStatus("Free Account");
-        account.setValid(true);
         return ai;
     }
 

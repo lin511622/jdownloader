@@ -7,6 +7,14 @@ import java.util.Map;
 
 import javax.swing.Icon;
 
+import jd.SecondLevelLaunch;
+import jd.gui.swing.jdgui.components.premiumbar.ServiceCollection;
+import jd.gui.swing.jdgui.components.premiumbar.ServicePanel;
+import jd.gui.swing.jdgui.components.premiumbar.ServicePanelExtender;
+import jd.gui.swing.jdgui.views.settings.panels.anticaptcha.AbstractCaptchaSolverConfigPanel;
+import jd.http.Browser;
+import jd.nutils.encoding.Encoding;
+
 import org.appwork.storage.config.JsonConfig;
 import org.appwork.storage.config.ValidationException;
 import org.appwork.storage.config.events.GenericConfigEventListener;
@@ -16,10 +24,6 @@ import org.appwork.utils.Application;
 import org.appwork.utils.Regex;
 import org.appwork.utils.StringUtils;
 import org.appwork.utils.logging2.extmanager.LoggerFactory;
-import org.jdownloader.captcha.v2.solver.cheapcaptcha.CheapCaptchaSolverService;
-import org.jdownloader.captcha.v2.solver.dbc.DeathByCaptchaSolverService;
-import org.jdownloader.captcha.v2.solver.endcaptcha.EndCaptchaSolverService;
-import org.jdownloader.captcha.v2.solver.imagetyperz.ImageTyperzSolverService;
 import org.jdownloader.captcha.v2.solver.jac.JacSolverService;
 import org.jdownloader.captcha.v2.solver.service.AbstractSolverService;
 import org.jdownloader.gui.IconKey;
@@ -27,14 +31,6 @@ import org.jdownloader.gui.translate._GUI;
 import org.jdownloader.images.AbstractIcon;
 import org.jdownloader.settings.advanced.AdvancedConfigManager;
 import org.jdownloader.settings.staticreferences.CFG_9KWCAPTCHA;
-
-import jd.SecondLevelLaunch;
-import jd.gui.swing.jdgui.components.premiumbar.ServiceCollection;
-import jd.gui.swing.jdgui.components.premiumbar.ServicePanel;
-import jd.gui.swing.jdgui.components.premiumbar.ServicePanelExtender;
-import jd.gui.swing.jdgui.views.settings.panels.anticaptcha.AbstractCaptchaSolverConfigPanel;
-import jd.http.Browser;
-import jd.nutils.encoding.Encoding;
 
 public class NineKwSolverService extends AbstractSolverService implements ServicePanelExtender {
     private static final NineKwSolverService INSTANCE = new NineKwSolverService();
@@ -251,18 +247,12 @@ public class NineKwSolverService extends AbstractSolverService implements Servic
     @Override
     public Map<String, Integer> getWaitForOthersDefaultMap() {
         HashMap<String, Integer> ret = new HashMap<String, Integer>();
-        // ret.put(Captcha9kwSolverClick.ID, 60000);
-        // ret.put(DialogClickCaptchaSolver.ID, 60000);
-        // ret.put(DialogBasicCaptchaSolver.ID, 60000);
-        // ret.put(CaptchaAPISolver.ID, 60000);
         ret.put(JacSolverService.ID, 30000);
-        // ret.put(Captcha9kwSolver.ID, 60000);
-        // ret.put(CaptchaMyJDSolverService.ID, 60000);
-        // ret.put(CBSolverService.ID, 60000);
-        ret.put(DeathByCaptchaSolverService.ID, 60000);
-        ret.put(ImageTyperzSolverService.ID, 60000);
-        ret.put(CheapCaptchaSolverService.ID, 60000);
-        ret.put(EndCaptchaSolverService.ID, 60000);
+        // ret.put(DeathByCaptchaSolverService.ID, 60000);
+        // ret.put(ImageTyperzSolverService.ID, 60000);
+        // ret.put(CheapCaptchaSolverService.ID, 60000);
+        // ret.put(EndCaptchaSolverService.ID, 60000);
+        // ret.put(TwoCaptchaSolverService.ID, 60000);
         return ret;
     }
 

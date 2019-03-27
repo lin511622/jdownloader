@@ -13,16 +13,13 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.IOException;
 import java.util.Locale;
 
 import jd.PluginWrapper;
 import jd.config.Property;
 import jd.http.Browser;
-import jd.http.Browser.BrowserException;
 import jd.http.Cookies;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
@@ -37,18 +34,23 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.PluginJSonUtils;
-import jd.utils.JDUtilities;
 
+import org.appwork.utils.Files;
+import org.appwork.utils.StringUtils;
 import org.appwork.utils.formatter.SizeFormatter;
 import org.appwork.utils.formatter.TimeFormatter;
 import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "freedisc.pl" }, urls = { "http://(www\\.)?freedisc\\.pl/(#(!|%21))?[A-Za-z0-9\\-_]+,f\\-\\d+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "freedisc.pl" }, urls = { "https?://(www\\.)?freedisc\\.pl/(#(!|%21))?[A-Za-z0-9\\-_]+,f-\\d+(,[a-z0-9])?" })
 public class FreeDiscPl extends PluginForHost {
-
     public FreeDiscPl(PluginWrapper wrapper) {
         super(wrapper);
-        this.enablePremium("http://freedisc.pl/start");
+        this.enablePremium("http://freedisc.pl/");
+        this.setStartIntervall(1000);
+        try {
+            Browser.setRequestIntervalLimitGlobal("freedisc.pl", 250, 20, 60000);
+        } catch (final Throwable e) {
+        }
     }
 
     @Override
@@ -70,64 +72,94 @@ public class FreeDiscPl extends PluginForHost {
     private static final boolean ACCOUNT_PREMIUM_RESUME       = true;
     private static final int     ACCOUNT_PREMIUM_MAXCHUNKS    = 0;
     private static final int     ACCOUNT_PREMIUM_MAXDOWNLOADS = 20;
-    private static final String  KNOWN_EXTENSIONS             = "asf|avi|flv|m4u|m4v|mov|mkv|mp4|mpeg4?|mpg|ogm|vob|wmv|webm";
+    protected static Cookies     botSafeCookies               = new Cookies();
 
     private Browser prepBR(final Browser br) {
+        prepBRStatic(br);
+        synchronized (botSafeCookies) {
+            if (!botSafeCookies.isEmpty()) {
+                br.setCookies(this.getHost(), botSafeCookies);
+            }
+        }
+        return br;
+    }
+
+    public static Browser prepBRStatic(final Browser br) {
         br.setAllowedResponseCodes(410);
         return br;
     }
 
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         br.setReadTimeout(3 * 60 * 1000);
         br.setConnectTimeout(3 * 60 * 1000);
-        try {
-            br.getPage(link.getDownloadURL());
-        } catch (final BrowserException e) {
-            if (br.getRequest().getHttpConnection().getResponseCode() == 410) {
+        prepBR(this.br);
+        br.getPage(link.getDownloadURL());
+        if (br.getRequest().getHttpConnection().getResponseCode() == 410) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        } else if (this.br.getHttpConnection().getResponseCode() == 404 || br.containsHTML("Ten plik został usunięty przez użytkownika lub administratora|Użytkownik nie posiada takiego pliku|<title>404 error") || !br.getURL().contains(",f")) {
+            /* Check this last as botBlocked also contains 404. */
+            if (isBotBlocked(br)) {
+                return AvailableStatus.UNCHECKABLE;
+            } else {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
-            throw e;
-        }
-        if (br.containsHTML("Ten plik został usunięty przez użytkownika lub administratora|Użytkownik nie posiada takiego pliku|<title>404 error") || !br.getURL().contains(",f")) {
-            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         // Handle no public files as offline
         if (br.containsHTML("Ten plik nie jest publicznie dostępny")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-        String filename = br.getRegex("itemprop=\"name\">([^<>\"]*?)</h2>").getMatch(0);
+        String fileName = br.getRegex("itemprop=\"name\">\\s*([^<>\"]*?)</h").getMatch(0);
         // itemprop="name" style=" font-size: 17px; margin-top: 6px;">Alternatywne Metody Analizy technicznej .pdf</h1>
-        if (filename == null) {
-            filename = br.getRegex("itemprop=\"name\"( style=\"[^<>\"/]+\")?>([^<>\"]*?)</h1>").getMatch(1);
+        if (fileName == null) {
+            fileName = br.getRegex("itemprop=\"name\"( style=\"[^<>\"/]+\")?>([^<>\"]*?)</h1>").getMatch(1);
+            if (fileName == null) {
+                if (isBotBlocked(this.br)) {
+                    return AvailableStatus.UNCHECKABLE;
+                } else {
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                }
+            }
         }
-        String filesize = br.getRegex("class=\\'frameFilesSize\\'>Rozmiar pliku</div>[\t\n\r ]+<div class=\\'frameFilesCountNumber\\'>([^<>\"]*?)</div>").getMatch(0);
+        fileName = fileName.trim();
+        final String fpat = "\\s*([0-9]+(?:[\\.,][0-9]+)?\\s*[A-Z]{1,2})";
+        String filesize = br.getRegex("class='frameFilesSize'>Rozmiar pliku</div>[\t\n\r ]+<div class='frameFilesCountNumber'>" + fpat).getMatch(0);
         if (filesize == null) {
-            filesize = br.getRegex("Rozmiar pliku</div>[\t\n\r ]+<div class=\\'frameFilesCountNumber\\'>([^<>\"]*?)</div>").getMatch(0);
+            filesize = br.getRegex("Rozmiar pliku</div>[\t\n\r ]+<div class='frameFilesCountNumber'>" + fpat).getMatch(0);
+            if (filesize == null) {
+                filesize = br.getRegex("</i> Rozmiar pliku</div><div class='frameFilesCountNumber'>" + fpat).getMatch(0);
+                if (filesize == null) {
+                    filesize = br.getRegex("class='frameFilesCountNumber'>" + fpat).getMatch(0);
+                    if (filesize == null) {
+                        filesize = br.getRegex("<i class=\"icon-hdd\"></i>\\s*Rozmiar\\s*</div>\\s*<div class='value'>" + fpat).getMatch(0);
+                    }
+                }
+            }
         }
-        if (filesize == null) {
-            filesize = br.getRegex("</i> Rozmiar pliku</div><div class=\\'frameFilesCountNumber\\'>([^<>\"]*?)</div>").getMatch(0);
-        }
-        if (filesize == null) {
-            filesize = br.getRegex("class=\\'frameFilesCountNumber\\'>([^<>\"]*?)</div><div class=\\'frameFilesViews\\'><i class=").getMatch(0);
-        }
-        if (filesize == null) {
-            filesize = br.getRegex("<i class=\"icon-hdd\"></i>Rozmiar </div><div class=\\'value\\'>([^<>\"]*?)</div><div class=\\'key\\'>").getMatch(0);
-        }
-        if (filename == null || filesize == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-        }
+        final String htmlUrlExtension = br.getRegex("meta\\s*property\\s*=\\s*\"og:url\"\\s*content\\s*=\\s*\"https?://.+?-([a-z0-9]+)\"").getMatch(0);
         final String storedfileName = link.getName();
-        String storedExt = "";
+        String extension = "";
         if (storedfileName != null) {
-            storedExt = storedfileName.substring(storedfileName.lastIndexOf(".") + 1);
+            final String storedExt = storedfileName.lastIndexOf(".") != -1 ? storedfileName.substring(storedfileName.lastIndexOf(".") + 1) : null;
+            if (storedExt != null && ("." + storedExt).matches(DirectHTTP.ENDINGS)) {
+                extension = storedExt;
+            }
         }
-        if (link.getName() == null || (storedExt != null && !storedExt.matches(KNOWN_EXTENSIONS))) {
-            link.setName(Encoding.htmlDecode(filename.trim()));
+        if (StringUtils.isEmpty(extension) && htmlUrlExtension != null && ("." + htmlUrlExtension).matches(DirectHTTP.ENDINGS)) {
+            extension = htmlUrlExtension;
         }
-        link.setDownloadSize(SizeFormatter.getSize(filesize));
+        if (!link.isNameSet() || (extension != null && ("." + extension).matches(DirectHTTP.ENDINGS))) {
+            final String fileNameExt = fileName.substring(fileName.lastIndexOf(".") + 1);
+            if (extension != null && (fileNameExt == null || !("." + fileNameExt).matches(DirectHTTP.ENDINGS))) {
+                fileName = fileName + "." + extension;
+            }
+            link.setName(Encoding.htmlDecode(fileName.trim()));
+        }
+        if (filesize != null) {
+            link.setDownloadSize(SizeFormatter.getSize(filesize));
+        }
         return AvailableStatus.TRUE;
     }
 
@@ -138,6 +170,11 @@ public class FreeDiscPl extends PluginForHost {
     }
 
     private void doFree(final DownloadLink downloadLink, boolean resumable, int maxchunks, final String directlinkproperty) throws Exception, PluginException {
+        if (isBotBlocked(this.br)) {
+            this.handleAntiBot(this.br);
+            /* Important! Check status if we were blocked before! */
+            requestFileInformation(downloadLink);
+        }
         String dllink = checkDirectLink(downloadLink, directlinkproperty);
         final boolean isvideo = downloadLink.getBooleanProperty("isvideo", false);
         if (dllink != null) {
@@ -149,12 +186,13 @@ public class FreeDiscPl extends PluginForHost {
             }
         } else {
             final boolean videostreamIsAvailable = br.containsHTML("rel=\"video_src\"");
-            final String videoEmbedUrl = br.getRegex("<iframe src=\"(http://freedisc\\.pl/embed/video/\\d+[^<>\"]*?)\"").getMatch(0);
+            final String videoEmbedUrl = br.getRegex("<iframe src=\"(https?://freedisc\\.pl/embed/video/\\d+[^<>\"]*?)\"").getMatch(0);
             resumable = true;
             maxchunks = 0;
-            final String fid = new Regex(downloadLink.getDownloadURL(), "(\\d+)$").getMatch(0);
-            br.postPageRaw("http://freedisc.pl/download/payment_info", "{\"item_id\":\"" + fid + "\",\"item_type\":1,\"code\":\"\",\"file_id\":" + fid + ",\"no_headers\":1,\"menu_visible\":0}");
-            br.getRequest().setHtmlCode(unescape(br.toString()));
+            // final String fid = new Regex(downloadLink.getDownloadURL(), "(\\d+)$").getMatch(0);
+            final String fid = new Regex(downloadLink.getDownloadURL(), "f-(\\d+)").getMatch(0);
+            postPageRaw("//freedisc.pl/download/payment_info", "{\"item_id\":\"" + fid + "\",\"item_type\":1,\"code\":\"\",\"file_id\":" + fid + ",\"no_headers\":1,\"menu_visible\":0}");
+            br.getRequest().setHtmlCode(Encoding.unicodeDecode(this.br.toString()));
             if (br.containsHTML("Pobranie plików większych jak [0-9\\.]+ (MB|GB|TB), wymaga opłacenia kosztów transferu")) {
                 logger.info("File is premiumonly --> Maybe stream download is possible!");
                 /* Premiumonly --> But maybe we can download the video-stream */
@@ -163,26 +201,13 @@ public class FreeDiscPl extends PluginForHost {
                     /* Stream-downloads always have no limits! */
                     resumable = true;
                     maxchunks = 0;
-                    br.getPage(videoEmbedUrl);
-                    dllink = br.getRegex("data\\-video\\-url=\"(http://[^<>\"]*?)\"").getMatch(0);
+                    getPage(videoEmbedUrl);
+                    dllink = br.getRegex("data-video-url=\"(https?://[^<>\"]*?)\"").getMatch(0);
                     if (dllink == null) {
-                        dllink = br.getRegex("player\\.swf\\?file=(http://[^<>\"]*?)\"").getMatch(0);
+                        dllink = br.getRegex("player\\.swf\\?file=(https?://[^<>\"]*?)\"").getMatch(0);
                     }
                     if (dllink != null) {
                         logger.info("Stream download handling seems to have worked successfully");
-                        String ext = null;
-                        final String currentFname = downloadLink.getName();
-                        if (currentFname.contains(".")) {
-                            ext = currentFname.substring(currentFname.lastIndexOf("."));
-                        }
-                        if (ext == null || (ext != null && ext.length() <= 5)) {
-                            downloadLink.setFinalFileName(downloadLink.getName() + ".mp4");
-                        } else if (ext.length() > 5) {
-                            ext = dllink.substring(dllink.lastIndexOf(".") + 1);
-                            if (ext.matches(KNOWN_EXTENSIONS)) {
-                                downloadLink.setFinalFileName(downloadLink.getName() + "." + ext);
-                            }
-                        }
                         downloadLink.setProperty("isvideo", true);
                     } else {
                         logger.info("Stream download handling seems to have failed");
@@ -202,26 +227,85 @@ public class FreeDiscPl extends PluginForHost {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
         }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, resumable, maxchunks);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, resumable, maxchunks);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
+            if (this.br.containsHTML("Ten plik jest chwilowo niedos")) {
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error", 5 * 60 * 1000l);
+            }
             if (br.getURL().contains("freedisc.pl/pierrw,f-")) {
                 throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error", 5 * 60 * 1000l);
             }
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        String server_filename = getFileNameFromDispositionHeader(dl.getConnection());
+        fileNameHandling(downloadLink, dl.getConnection());
+        downloadLink.setProperty(directlinkproperty, dllink);
+        dl.startDownload();
+    }
+
+    private final void fileNameHandling(DownloadLink downloadLink, URLConnectionAdapter con) {
+        String server_filename = getFileNameFromDispositionHeader(con);
         if (server_filename != null) {
             server_filename = Encoding.htmlDecode(server_filename);
             downloadLink.setFinalFileName(server_filename);
-        } else {
-            final String urlName = getFileNameFromURL(dl.getConnection().getURL());
-            if (downloadLink.getFinalFileName() == null && urlName != null && org.appwork.utils.Files.getExtension(urlName) != null) {
-                downloadLink.setFinalFileName(downloadLink.getName() + org.appwork.utils.Files.getExtension(urlName));
+        } else if (downloadLink.getFinalFileName() == null) {
+            final String urlName = getFileNameFromURL(con.getURL());
+            if (urlName != null && org.appwork.utils.Files.getExtension(urlName) != null) {
+                final String existingExtension = Files.getExtension(downloadLink.getName());
+                if (StringUtils.equalsIgnoreCase(existingExtension, "avi") || StringUtils.equalsIgnoreCase(existingExtension, "mp4")) {
+                    // replace extension
+                    downloadLink.setFinalFileName(downloadLink.getName().replaceFirst(existingExtension + "$", Files.getExtension(urlName)));
+                } else {
+                    // add extension
+                    downloadLink.setFinalFileName(downloadLink.getName() + "." + org.appwork.utils.Files.getExtension(urlName));
+                }
             }
         }
-        downloadLink.setProperty(directlinkproperty, dllink);
-        dl.startDownload();
+    }
+
+    public static boolean isBotBlocked(final Browser br) {
+        return br.containsHTML("Przez roboty internetowe nasze serwery się gotują|g-recaptcha");
+    }
+
+    private void getPage(final String url) throws Exception {
+        br.getPage(url);
+        handleAntiBot(this.br);
+    }
+
+    private void postPageRaw(final String url, final String parameters) throws Exception {
+        this.br.postPageRaw(url, parameters);
+        handleAntiBot(this.br);
+    }
+
+    private void handleAntiBot(final Browser br) throws Exception {
+        if (isBotBlocked(this.br)) {
+            /* Process anti-bot captcha */
+            logger.info("Login captcha / spam protection detected");
+            final DownloadLink originalDownloadLink = this.getDownloadLink();
+            final DownloadLink downloadlinkToUse;
+            try {
+                if (originalDownloadLink != null) {
+                    downloadlinkToUse = originalDownloadLink;
+                } else {
+                    /* E.g. for login process */
+                    downloadlinkToUse = new DownloadLink(this, "Account Login " + this.getHost(), this.getHost(), MAINPAGE, true);
+                }
+                this.setDownloadLink(downloadlinkToUse);
+                final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
+                br.postPage(br.getURL(), "g-recaptcha-response=" + Encoding.urlEncode(recaptchaV2Response));
+                if (isBotBlocked(this.br)) {
+                    throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Anti-Bot block", 5 * 60 * 1000l);
+                }
+            } finally {
+                if (originalDownloadLink != null) {
+                    this.setDownloadLink(originalDownloadLink);
+                }
+            }
+            // save the session!
+            synchronized (botSafeCookies) {
+                botSafeCookies = br.getCookies(this.getHost());
+            }
+        }
     }
 
     private String checkDirectLink(final DownloadLink downloadLink, final String property) {
@@ -249,20 +333,6 @@ public class FreeDiscPl extends PluginForHost {
         return FREE_MAXDOWNLOADS;
     }
 
-    private static boolean pluginloaded = false;
-
-    private static synchronized String unescape(final String s) {
-        /* we have to make sure the youtube plugin is loaded */
-        if (pluginloaded == false) {
-            final PluginForHost plugin = JDUtilities.getPluginForHost("youtube.com");
-            if (plugin == null) {
-                throw new IllegalStateException("youtube plugin not found!");
-            }
-            pluginloaded = true;
-        }
-        return jd.nutils.encoding.Encoding.unescapeYoutube(s);
-    }
-
     private static final String MAINPAGE = "http://freedisc.pl";
     private static Object       LOCK     = new Object();
 
@@ -277,14 +347,17 @@ public class FreeDiscPl extends PluginForHost {
                 if (cookies != null) {
                     /* Always try to re-use cookies. */
                     br.setCookies(this.getHost(), cookies);
-                    br.getPage("http://" + this.getHost() + "/start");
+                    br.getPage("https://" + this.getHost() + "/");
+                    handleAntiBot(br);
                     if (br.containsHTML("id=\"btnLogout\"")) {
+                        account.saveCookies(br.getCookies(this.getHost()), "");
                         return;
+                    } else {
+                        br.clearCookies(getHost());
                     }
-
                 }
-                Browser br = prepBR(new Browser());
-                br.getPage("http://" + this.getHost() + "/start");
+                br.getPage("https://" + this.getHost() + "/");
+                handleAntiBot(br);
                 // this is done via ajax!
                 br.getHeaders().put("Accept", "application/json, text/javascript, */*; q=0.01");
                 br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
@@ -301,26 +374,13 @@ public class FreeDiscPl extends PluginForHost {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!\r\nQuick help:\r\nYou're sure that the username and password you entered are correct?\r\nIf your password contains special characters, change it (remove them) and try again!", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     }
                 }
-                if (br.containsHTML("\"g-recaptcha\"")) {
-                    logger.info("Login captcha / spam protection detected");
-                    final DownloadLink originalDownloadLink = this.getDownloadLink();
-                    try {
-                        final DownloadLink dummyLink = new DownloadLink(this, "Account Login " + this.getHost(), this.getHost(), MAINPAGE, true);
-                        this.setDownloadLink(dummyLink);
-                        final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
-                        br.postPage(br.getURL(), "g-recaptcha-response=" + Encoding.urlEncode(recaptchaV2Response));
-                    } finally {
-                        this.setDownloadLink(originalDownloadLink);
-                    }
-
-                }
                 /* Only free accounts are supported */
                 account.setType(AccountType.FREE);
                 account.saveCookies(br.getCookies(this.getHost()), "");
-                // reload into standard browser
-                this.br.setCookies(this.getHost(), account.loadCookies(""));
             } catch (final PluginException e) {
-                account.clearCookies("");
+                if (e.getLinkStatus() == LinkStatus.ERROR_PREMIUM) {
+                    account.clearCookies("");
+                }
                 throw e;
             }
         }
@@ -329,12 +389,7 @@ public class FreeDiscPl extends PluginForHost {
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         final AccountInfo ai = new AccountInfo();
-        try {
-            login(account, true);
-        } catch (PluginException e) {
-            account.setValid(false);
-            throw e;
-        }
+        login(account, true);
         ai.setUnlimitedTraffic();
         if (account.getType() == AccountType.FREE) {
             /* free accounts can still have captcha */
@@ -380,17 +435,13 @@ public class FreeDiscPl extends PluginForHost {
                     throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
             }
-            dl = jd.plugins.BrowserAdapter.openDownload(br, link, dllink, ACCOUNT_PREMIUM_RESUME, ACCOUNT_PREMIUM_MAXCHUNKS);
+            dl = new jd.plugins.BrowserAdapter().openDownload(br, link, dllink, ACCOUNT_PREMIUM_RESUME, ACCOUNT_PREMIUM_MAXCHUNKS);
             if (dl.getConnection().getContentType().contains("html")) {
                 logger.warning("The final dllink seems not to be a file!");
                 br.followConnection();
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-            String server_filename = getFileNameFromHeader(dl.getConnection());
-            if (server_filename != null) {
-                server_filename = Encoding.htmlDecode(server_filename);
-                link.setFinalFileName(server_filename);
-            }
+            fileNameHandling(link, dl.getConnection());
             link.setProperty("premium_directlink", dllink);
             dl.startDownload();
         }
@@ -403,5 +454,4 @@ public class FreeDiscPl extends PluginForHost {
     @Override
     public void resetDownloadlink(final DownloadLink link) {
     }
-
 }

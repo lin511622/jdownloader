@@ -13,18 +13,17 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.Map.Entry;
+
+import org.appwork.storage.config.annotations.AboutConfig;
+import org.appwork.storage.config.annotations.DefaultBooleanValue;
+import org.jdownloader.plugins.config.Order;
+import org.jdownloader.plugins.config.PluginConfigInterface;
+import org.jdownloader.translate._JDT;
 
 import jd.PluginWrapper;
-import jd.config.ConfigContainer;
-import jd.config.ConfigEntry;
-import jd.http.Browser.BrowserException;
 import jd.http.URLConnectionAdapter;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
@@ -33,34 +32,14 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.download.DownloadInterface;
-import jd.utils.locale.JDL;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "tele5.de" }, urls = { "http://tele5\\.dedecrypted\\d+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "tele5.de" }, urls = { "tele5decrypted://.+" })
 public class TeleFiveDe extends PluginForHost {
-
-    public static LinkedHashMap<String, String[]> formats = new LinkedHashMap<String, String[]>(new LinkedHashMap<String, String[]>() {
-        {
-            /*
-             * Format-name:videoCodec, videoBitrate, videoResolution, audioCodec,
-             * audioBitrate
-             */
-            /*
-             * Video-bitrates and resultions here are not exact as they vary. Correct
-             * values will be in the filenames!
-             */
-            put("4_4_2", new String[] { "AVC", "400", "480x270", "AAC LC", "64" });
-            put("6_6_3", new String[] { "AVC", "600", "640x360", "AAC LC", "64" });
-            put("9_6_3", new String[] { "AVC", "900", "640x360", "AAC LC", "64" });
-
-        }
-    });
-
-    private String                                DLLINK  = null;
+    private String dllink = null;
 
     @SuppressWarnings("deprecation")
     public TeleFiveDe(final PluginWrapper wrapper) {
         super(wrapper);
-        setConfigElements();
     }
 
     @Override
@@ -73,27 +52,23 @@ public class TeleFiveDe extends PluginForHost {
         return -1;
     }
 
+    public void correctDownloadLink(final DownloadLink link) {
+        link.setUrlDownload(link.getDownloadURL().replace("tele5decrypted://", "http://"));
+    }
+
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws IOException, PluginException {
-        DLLINK = downloadLink.getStringProperty("directURL");
-        if (DLLINK == null) {
-            DLLINK = downloadLink.getStringProperty("directRTMPURL");
-        }
-        if (DLLINK.startsWith("http")) {
+        dllink = downloadLink.getDownloadURL();
+        if (dllink.startsWith("http")) {
             URLConnectionAdapter con = null;
             try {
-                try {
-                    con = this.br.openHeadConnection(DLLINK);
-                } catch (final BrowserException e) {
-                    throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-                }
+                con = this.br.openHeadConnection(dllink);
                 if (!con.getContentType().contains("html")) {
                     downloadLink.setDownloadSize(con.getLongContentLength());
                 } else {
                     throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
                 }
-                downloadLink.setProperty("directlink", DLLINK);
-                return AvailableStatus.TRUE;
+                downloadLink.setProperty("directlink", dllink);
             } finally {
                 try {
                     con.disconnect();
@@ -102,7 +77,6 @@ public class TeleFiveDe extends PluginForHost {
             }
         }
         // downloadLink.setProperty("FLVFIXER", true);
-
         return AvailableStatus.TRUE;
     }
 
@@ -113,20 +87,16 @@ public class TeleFiveDe extends PluginForHost {
     }
 
     private void download(final DownloadLink downloadLink) throws Exception {
-        if (DLLINK.startsWith("rtmp")) {
-            dl = new RTMPDownload(this, downloadLink, DLLINK);
+        if (dllink.startsWith("rtmp")) {
+            dl = new RTMPDownload(this, downloadLink, dllink);
             setupRTMPConnection(dl);
             ((RTMPDownload) dl).startDownload();
-
         } else {
             br.setFollowRedirects(true);
-            if (DLLINK == null) {
+            if (dllink == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-            if (DLLINK.startsWith("mms")) {
-                throw new PluginException(LinkStatus.ERROR_FATAL, "Protocol (mms://) not supported!");
-            }
-            dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, DLLINK, true, 1);
+            dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 1);
             if (dl.getConnection().getContentType().contains("html")) {
                 br.followConnection();
                 if (dl.getConnection().getResponseCode() == 403) {
@@ -140,7 +110,7 @@ public class TeleFiveDe extends PluginForHost {
 
     private void setupRTMPConnection(DownloadInterface dl) {
         jd.network.rtmp.url.RtmpUrlConnection rtmp = ((RTMPDownload) dl).getRtmpConnection();
-        String[] streamValue = DLLINK.split("@");
+        String[] streamValue = dllink.split("@");
         rtmp.setUrl(streamValue[0]);
         rtmp.setPlayPath(streamValue[1]);
         // rtmp.setLive(true);
@@ -154,49 +124,106 @@ public class TeleFiveDe extends PluginForHost {
         return "JDownloader's Tele5 plugin helps downloading videoclips from tele5.de.";
     }
 
-    private void setConfigElements() {
-        /* Fast linkcheck not needed as we get the filesize via API inside the decrypter. */
-        // getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), FAST_LINKCHECK,
-        // JDL.L("plugins.hoster.TeleFiveDe.FastLinkcheck",
-        // "Enable fast linkcheck?\r\nNOTE: If enabled, links will appear faster but filesize won't be shown before downloadstart.")).setDefaultValue(false));
-        final Iterator<Entry<String, String[]>> it = formats.entrySet().iterator();
-        while (it.hasNext()) {
-            /*
-             * Format-name:videoCodec, videoBitrate, videoResolution, audioCodec, audioBitrate
-             */
-            String usertext = "Load ";
-            final Entry<String, String[]> videntry = it.next();
-            final String internalname = videntry.getKey();
-            final String[] vidinfo = videntry.getValue();
-            final String videoCodec = vidinfo[0];
-            final String videoBitrate = vidinfo[1];
-            final String videoResolution = vidinfo[2];
-            final String audioCodec = vidinfo[3];
-            final String audioBitrate = vidinfo[4];
-            if (videoCodec != null) {
-                usertext += videoCodec + " ";
+    @Override
+    public Class<? extends PluginConfigInterface> getConfigInterface() {
+        return Tele5DeConfigInterface.class;
+    }
+
+    public static interface Tele5DeConfigInterface extends PluginConfigInterface {
+        public static class TRANSLATION {
+            public String getFastLinkcheckEnabled_label() {
+                return _JDT.T.lit_enable_fast_linkcheck();
             }
-            if (videoBitrate != null) {
-                usertext += videoBitrate + " ";
+
+            public String getGrabBESTEnabled_label() {
+                return _JDT.T.lit_add_only_the_best_video_quality();
             }
-            if (videoResolution != null) {
-                usertext += videoResolution + " ";
+
+            public String getOnlyBestVideoQualityOfSelectedQualitiesEnabled_label() {
+                return _JDT.T.lit_add_only_the_best_video_quality_within_user_selected_formats();
             }
-            if (audioCodec != null || audioBitrate != null) {
-                usertext += "with audio ";
-                if (audioCodec != null) {
-                    usertext += audioCodec + " ";
-                }
-                if (audioBitrate != null) {
-                    usertext += audioBitrate;
-                }
+
+            public String getAddUnknownQualitiesEnabled_label() {
+                return _JDT.T.lit_add_unknown_formats();
             }
-            if (usertext.endsWith(" ")) {
-                usertext = usertext.substring(0, usertext.lastIndexOf(" "));
+
+            public String getGrabHTTP225kVideoEnabled_label() {
+                return "Grab 225k 420x230?";
             }
-            final ConfigEntry vidcfg = new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), internalname, JDL.L("plugins.hoster.TeleFiveDe.ALLOW_" + internalname, usertext)).setDefaultValue(true);
-            getConfig().addEntry(vidcfg);
+
+            public String getGrabHTTP620kVideoEnabled_label() {
+                return "Grab 620k 640x360?";
+            }
+
+            public String getGrabHTTP1250kVideoEnabled_label() {
+                return "Grab 1250k 850x480?";
+            }
+
+            public String getGrabHTTP1650kVideoEnabled_label() {
+                return "Grab 1625k 1024x576?";
+            }
+
+            public String getGrabHTTP2400kVideoEnabled_label() {
+                return "Grab 2400k 1280x720?";
+            }
         }
+
+        public static final TRANSLATION TRANSLATION = new TRANSLATION();
+
+        @DefaultBooleanValue(true)
+        @Order(9)
+        boolean isFastLinkcheckEnabled();
+
+        void setFastLinkcheckEnabled(boolean b);
+
+        @DefaultBooleanValue(false)
+        @Order(20)
+        boolean isGrabBESTEnabled();
+
+        void setGrabBESTEnabled(boolean b);
+
+        @AboutConfig
+        @DefaultBooleanValue(false)
+        @Order(21)
+        boolean isOnlyBestVideoQualityOfSelectedQualitiesEnabled();
+
+        void setOnlyBestVideoQualityOfSelectedQualitiesEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(22)
+        boolean isAddUnknownQualitiesEnabled();
+
+        void setAddUnknownQualitiesEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(30)
+        boolean isGrabHTTP225kVideoEnabled();
+
+        void setGrabHTTP225kVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(40)
+        boolean isGrabHTTP620kVideoEnabled();
+
+        void setGrabHTTP620kVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(50)
+        boolean isGrabHTTP1250kVideoEnabled();
+
+        void setGrabHTTP1250kVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(60)
+        boolean isGrabHTTP1650kVideoEnabled();
+
+        void setGrabHTTP1650kVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(70)
+        boolean isGrabHTTP2400kVideoEnabled();
+
+        void setGrabHTTP2400kVideoEnabled(boolean b);
     }
 
     @Override
@@ -210,5 +237,4 @@ public class TeleFiveDe extends PluginForHost {
     @Override
     public void resetPluginGlobals() {
     }
-
 }

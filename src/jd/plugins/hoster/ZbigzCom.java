@@ -13,32 +13,30 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.util.Locale;
+import org.appwork.utils.StringUtils;
+import org.jdownloader.plugins.components.antiDDoSForHost;
 
 import jd.PluginWrapper;
 import jd.controlling.AccountController;
 import jd.http.Cookies;
 import jd.http.URLConnectionAdapter;
+import jd.http.requests.FormData;
+import jd.http.requests.PostFormDataRequest;
 import jd.nutils.encoding.Encoding;
-import jd.parser.Regex;
 import jd.plugins.Account;
+import jd.plugins.Account.AccountType;
 import jd.plugins.AccountInfo;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
-import jd.plugins.PluginForHost;
+import jd.plugins.components.PluginJSonUtils;
 
-import org.appwork.utils.formatter.SizeFormatter;
-import org.appwork.utils.formatter.TimeFormatter;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "zbigz.com" }, urls = { "http://(www\\.)?zbigz\\.com/file/[a-z0-9]+/\\d+" }) 
-public class ZbigzCom extends PluginForHost {
-
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "zbigz.com" }, urls = { "https?://(?:www\\.)?zbigz\\.com/file/[a-z0-9]+/\\d+|https?://api\\.zbigz\\.com/v1/storage/get/[a-f0-9]+" })
+public class ZbigzCom extends antiDDoSForHost {
     public ZbigzCom(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium("http://zbigz.com/page-premium-overview");
@@ -66,7 +64,12 @@ public class ZbigzCom extends PluginForHost {
         final Account aa = AccountController.getInstance().getValidAccount(this);
         if (aa != null) {
             login(aa, false);
-            br.getPage(downloadLink.getDownloadURL());
+            final boolean enable_antiddos_workaround = true;
+            if (enable_antiddos_workaround) {
+                br.getPage(downloadLink.getPluginPatternMatcher());
+            } else {
+                super.getPage(downloadLink.getPluginPatternMatcher());
+            }
             if (br.containsHTML("Page not found")) {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
@@ -74,7 +77,6 @@ public class ZbigzCom extends PluginForHost {
             if (DLLINK == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-
             URLConnectionAdapter con = null;
             try {
                 con = br.openGetConnection(DLLINK);
@@ -90,7 +92,6 @@ public class ZbigzCom extends PluginForHost {
                 } catch (Throwable e) {
                 }
             }
-
             return AvailableStatus.TRUE;
         } else {
             downloadLink.getLinkStatus().setStatusText("Status can only be checked with account enabled");
@@ -101,20 +102,11 @@ public class ZbigzCom extends PluginForHost {
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception, PluginException {
         requestFileInformation(downloadLink);
-        try {
-            throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
-        } catch (final Throwable e) {
-            if (e instanceof PluginException) {
-                throw (PluginException) e;
-            }
-        }
-        throw new PluginException(LinkStatus.ERROR_FATAL, "This file can only be downloaded by registered/premium users");
+        throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
     }
 
-    private static final String MAINPAGE = "http://zbigz.com";
-    private static Object       LOCK     = new Object();
+    private static Object LOCK = new Object();
 
-    @SuppressWarnings({ "unchecked", "deprecation" })
     private void login(final Account account, final boolean force) throws Exception {
         synchronized (LOCK) {
             try {
@@ -126,23 +118,31 @@ public class ZbigzCom extends PluginForHost {
                     return;
                 }
                 br.setFollowRedirects(true);
+                getPage("https://zbigz.com/login");
                 br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
-                br.postPage("https://zbigz.com/login.php", "e-mail=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
-                if (!br.containsHTML("loginIn \\(true,\\[true,")) {
-                    /* aybe login is valid but it's not a premium account */
-                    if (br.containsHTML("loginIn \\(true,")) {
-                        logger.info("Free accounts are not supported!");
-                        if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
-                            throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nNicht unterstützter Accounttyp!\r\nFalls du denkst diese Meldung sei falsch die Unterstützung dieses Account-Typs sich\r\ndeiner Meinung nach aus irgendeinem Grund lohnt,\r\nkontaktiere uns über das support Forum.", PluginException.VALUE_ID_PREMIUM_DISABLE);
-                        } else {
-                            throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUnsupported account type!\r\nIf you think this message is incorrect or it makes sense to add support for this account type\r\ncontact us via our support forum.", PluginException.VALUE_ID_PREMIUM_DISABLE);
-                        }
-                    }
-                    if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
-                    } else {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!\r\nQuick help:\r\nYou're sure that the username and password you entered are correct?\r\nIf your password contains special characters, change it (remove them) and try again!", PluginException.VALUE_ID_PREMIUM_DISABLE);
-                    }
+                br.getHeaders().put("Accept", "application/json, application/xml, text/plain, text/html, *.*");
+                postPage("https://api.zbigz.com/v1/account/info", "undefined=undefined");
+                /* Important header!! */
+                br.getHeaders().put("Origin", "https://zbigz.com");
+                final PostFormDataRequest authReq = br.createPostFormDataRequest("https://api.zbigz.com/v1/account/auth/token");
+                authReq.addFormData(new FormData("undefined", "undefined"));
+                super.sendRequest(authReq);
+                final String auth_token_name = PluginJSonUtils.getJson(br, "auth_token_name");
+                final String auth_token_value = PluginJSonUtils.getJson(br, "auth_token_value");
+                if (StringUtils.isEmpty(auth_token_name) || StringUtils.isEmpty(auth_token_value)) {
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                }
+                final PostFormDataRequest loginReq = br.createPostFormDataRequest("/v1/account/sign-in");
+                loginReq.addFormData(new FormData("login", account.getUser()));
+                loginReq.addFormData(new FormData("email", account.getUser()));
+                loginReq.addFormData(new FormData("password", account.getPass()));
+                loginReq.addFormData(new FormData("csrf_name", auth_token_name));
+                loginReq.addFormData(new FormData("csrf_value", auth_token_value));
+                loginReq.addFormData(new FormData("recaptcha", ""));
+                super.sendRequest(loginReq);
+                final String sessiontoken = PluginJSonUtils.getJson(br, "session");
+                if (StringUtils.isEmpty(sessiontoken)) {
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
                 }
                 account.saveCookies(this.br.getCookies(this.getHost()), "");
             } catch (final PluginException e) {
@@ -152,28 +152,31 @@ public class ZbigzCom extends PluginForHost {
         }
     }
 
-    @SuppressWarnings("deprecation")
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         AccountInfo ai = new AccountInfo();
         try {
             login(account, true);
         } catch (PluginException e) {
-            account.setValid(false);
             throw e;
         }
-        ai.setUnlimitedTraffic();
-        final Regex info = br.getRegex("loginIn \\(true,\\[true,\\'([^<>\"]*?)\\',\\'([^<>\"]*?)\\'");
-        if (info.getMatches().length != 1) {
-            account.setValid(false);
-            return ai;
+        /* Browser: https://zbigz.com/account */
+        final PostFormDataRequest accountInfoReq = br.createPostFormDataRequest("https://api.zbigz.com/v1/account/info");
+        accountInfoReq.addFormData(new FormData("undefined", "undefined"));
+        super.sendRequest(accountInfoReq);
+        final String premium_valid_date = PluginJSonUtils.getJson(br, "premium_valid_date");
+        final String premium_days = PluginJSonUtils.getJson(br, "premium_days");
+        if (!StringUtils.isEmpty(premium_valid_date) || "true".equalsIgnoreCase(premium_days)) {
+            account.setType(AccountType.PREMIUM);
+            ai.setUnlimitedTraffic();
+            /* TODO: Add proper code to display expire-date */
+            // ai.setValidUntil(TimeFormatter.getMilliSeconds(premium_valid_date, "dd MMM yyyy", Locale.ENGLISH));
+            // final String traffic = info.getMatch(1);
+            // ai.setTrafficLeft(SizeFormatter.getSize(traffic));
+        } else {
+            account.setType(AccountType.FREE);
+            ai.setTrafficLeft(0);
         }
-        final String expire = info.getMatch(0);
-        ai.setValidUntil(TimeFormatter.getMilliSeconds(expire, "dd MMM yyyy", Locale.ENGLISH));
-        final String traffic = info.getMatch(1);
-        ai.setTrafficLeft(SizeFormatter.getSize(traffic));
-        account.setValid(true);
-        ai.setStatus("Premium User");
         return ai;
     }
 
@@ -190,19 +193,7 @@ public class ZbigzCom extends PluginForHost {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        if (!this.dl.startDownload()) {
-            try {
-                if (dl.externalDownloadStop()) {
-                    return;
-                }
-            } catch (final Throwable e) {
-            }
-            /* unknown error, we disable multiple chunks */
-            if (link.getBooleanProperty(ZbigzCom.NOCHUNKS, false) == false) {
-                link.setProperty(ZbigzCom.NOCHUNKS, Boolean.valueOf(true));
-                throw new PluginException(LinkStatus.ERROR_RETRY);
-            }
-        }
+        this.dl.startDownload();
     }
 
     @Override
@@ -222,5 +213,4 @@ public class ZbigzCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

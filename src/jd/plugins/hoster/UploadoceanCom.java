@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.File;
@@ -25,6 +24,12 @@ import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
+
+import org.appwork.utils.formatter.SizeFormatter;
+import org.appwork.utils.formatter.TimeFormatter;
+import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+import org.jdownloader.plugins.components.antiDDoSForHost;
 
 import jd.PluginWrapper;
 import jd.config.Property;
@@ -48,19 +53,11 @@ import jd.plugins.components.SiteType.SiteTemplate;
 import jd.plugins.components.UserAgents;
 import jd.utils.locale.JDL;
 
-import org.appwork.utils.formatter.SizeFormatter;
-import org.appwork.utils.formatter.TimeFormatter;
-import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
-import org.jdownloader.plugins.components.antiDDoSForHost;
-
 @HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "uploadocean.com" }, urls = { "https?://(www\\.)?uploadocean\\.com/(?:embed\\-)?[a-z0-9]{12}" })
 public class UploadoceanCom extends antiDDoSForHost {
-
     /* Some HTML code to identify different (error) states */
     private static final String            HTML_PASSWORDPROTECTED          = "<br><b>Passwor(d|t):</b> <input";
     private static final String            HTML_MAINTENANCE_MODE           = ">This server is in maintenance mode";
-
     /* Here comes our XFS-configuration */
     /* primary website url, take note of redirects */
     private static final String            COOKIE_HOST                     = "http://uploadocean.com";
@@ -68,10 +65,8 @@ public class UploadoceanCom extends antiDDoSForHost {
     private static final String            NICE_HOSTproperty               = COOKIE_HOST.replaceAll("(https://|http://|\\.|\\-)", "");
     /* domain names used within download links */
     private static final String            DOMAINS                         = "(uploadocean\\.com)";
-
     /* Errormessages inside URLs */
     private static final String            URL_ERROR_PREMIUMONLY           = "/?op=login&redirect=";
-
     /* All kinds of XFS-plugin-configuration settings - be sure to configure this correctly when developing new XFS plugins! */
     /*
      * If activated, filename can be null - fuid will be used instead then. Also the code will check for imagehosts-continue-POST-forms and
@@ -84,41 +79,34 @@ public class UploadoceanCom extends antiDDoSForHost {
     private static final boolean           VIDEOHOSTER_2                   = false;
     /* Enable this for imagehosts */
     private static final boolean           IMAGEHOSTER                     = false;
-
-    private static final boolean           SUPPORTS_HTTPS                  = false;
+    private static final boolean           SUPPORTS_HTTPS                  = true;
     private static final boolean           SUPPORTS_HTTPS_FORCED           = false;
     private static final boolean           SUPPORTS_AVAILABLECHECK_ALT     = true;
     private static final boolean           SUPPORTS_AVAILABLECHECK_ABUSE   = true;
     private static final boolean           ENABLE_RANDOM_UA                = false;
     private static final boolean           ENABLE_HTML_FILESIZE_CHECK      = true;
     private static final boolean           ENABLE_HTML_FILESIZE_CHECK_DEEP = false;
-
     /* Waittime stuff */
     private static final boolean           WAITFORCED                      = false;
     private static final int               WAITSECONDSMIN                  = 3;
     private static final int               WAITSECONDSMAX                  = 100;
     private static final int               WAITSECONDSFORCED               = 5;
-
     /* Supported linktypes */
     private static final String            TYPE_EMBED                      = "https?://[A-Za-z0-9\\-\\.]+/embed\\-[a-z0-9]{12}";
     private static final String            TYPE_NORMAL                     = "https?://[A-Za-z0-9\\-\\.]+/[a-z0-9]{12}";
-
     /* Texts displaed to the user in some errorcases */
     private static final String            USERTEXT_ALLWAIT_SHORT          = "Waiting till new downloads can be started";
     private static final String            USERTEXT_MAINTENANCE            = "This server is under maintenance";
     private static final String            USERTEXT_PREMIUMONLY_LINKCHECK  = "Only downloadable via premium or registered";
-
     /* Properties */
     private static final String            PROPERTY_DLLINK_FREE            = "freelink";
     private static final String            PROPERTY_DLLINK_ACCOUNT_FREE    = "freelink2";
     private static final String            PROPERTY_DLLINK_ACCOUNT_PREMIUM = "premlink";
     private static final String            PROPERTY_PASS                   = "pass";
-
     /* Used variables */
     private String                         correctedBR                     = "";
     private String                         fuid                            = null;
     private String                         passCode                        = null;
-
     private static AtomicReference<String> agent                           = new AtomicReference<String>(null);
     /* note: CAN NOT be negative or zero! (ie. -1 or 0) Otherwise math sections fail. .:. use [1-20] */
     private static AtomicInteger           totalMaxSimultanFreeDownload    = new AtomicInteger(1);
@@ -136,7 +124,6 @@ public class UploadoceanCom extends antiDDoSForHost {
      * captchatype: null 4dignum solvemedia recaptcha<br />
      * other:<br />
      */
-
     @SuppressWarnings({ "deprecation", "unused" })
     @Override
     public void correctDownloadLink(final DownloadLink link) {
@@ -181,9 +168,7 @@ public class UploadoceanCom extends antiDDoSForHost {
         if (new Regex(correctedBR, "(No such file|>File Not Found<|>The file was removed by|Reason for deletion:\n|File Not Found|>The file expired|/deleted\\.png)").matches()) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-
         altbr = this.br.cloneBrowser();
-
         if (new Regex(correctedBR, HTML_MAINTENANCE_MODE).matches()) {
             if (SUPPORTS_AVAILABLECHECK_ABUSE) {
                 fileInfo[0] = this.getFnameViaAbuseLink(altbr, link);
@@ -228,13 +213,11 @@ public class UploadoceanCom extends antiDDoSForHost {
             return AvailableStatus.UNCHECKABLE;
         }
         scanInfo(fileInfo);
-
         // abbreviated over x chars long
         if (!inValidate(fileInfo[0]) && fileInfo[0].endsWith("&#133;") && SUPPORTS_AVAILABLECHECK_ABUSE) {
             logger.warning("filename length is larrrge");
             fileInfo[0] = this.getFnameViaAbuseLink(altbr, link);
         }
-
         if (fileInfo[0] == null && SUPPORTS_AVAILABLECHECK_ABUSE) {
             fileInfo[0] = this.getFnameViaAbuseLink(altbr, link);
         }
@@ -254,7 +237,7 @@ public class UploadoceanCom extends antiDDoSForHost {
             link.setMD5Hash(fileInfo[2].trim());
         }
         fileInfo[0] = fileInfo[0].replaceAll("(</b>|<b>|\\.html)", "");
-        link.setName(fileInfo[0].trim());
+        link.setName(Encoding.deepHtmlDecode(fileInfo[0].trim()));
         if (fileInfo[1] == null && SUPPORTS_AVAILABLECHECK_ALT) {
             /* Do alt availablecheck here but don't check availibility because we already know that the file must be online! */
             logger.info("Filesize not available, trying altAvailablecheck");
@@ -269,7 +252,6 @@ public class UploadoceanCom extends antiDDoSForHost {
     private String[] scanInfo(final String[] fileInfo) {
         final String sharebox0 = "copy\\(this\\);.+>(.+) - ([\\d\\.]+ (?:B|KB|MB|GB))</a></textarea>[\r\n\t ]+</div>";
         final String sharebox1 = "copy\\(this\\);.+\\](.+) - ([\\d\\.]+ (?:B|KB|MB|GB))\\[/URL\\]";
-
         /* standard traits from base page */
         if (fileInfo[0] == null) {
             fileInfo[0] = new Regex(correctedBR, "You have requested.*?https?://(www\\.)?" + DOMAINS + "/" + fuid + "/(.*?)</font>").getMatch(2);
@@ -298,6 +280,9 @@ public class UploadoceanCom extends antiDDoSForHost {
         if (fileInfo[0] == null) {
             fileInfo[0] = new Regex(correctedBR, "class=\"dfilename\">([^<>\"]*?)<").getMatch(0);
         }
+        if (fileInfo[0] == null) {
+            fileInfo[0] = new Regex(correctedBR, "<title>(?:Download)?([^<>]+)</title>").getMatch(0);
+        }
         if (ENABLE_HTML_FILESIZE_CHECK) {
             if (fileInfo[1] == null) {
                 fileInfo[1] = new Regex(correctedBR, "\\(([0-9]+ bytes)\\)").getMatch(0);
@@ -311,7 +296,6 @@ public class UploadoceanCom extends antiDDoSForHost {
                 if (fileInfo[1] == null) {
                     fileInfo[1] = new Regex(correctedBR, sharebox1).getMatch(1);
                 }
-
                 if (fileInfo[1] == null) {
                     fileInfo[1] = new Regex(correctedBR, ">Size</span>[\t\n\r ]*?<span><b>([^<>\"]+)<").getMatch(0);
                 }
@@ -561,7 +545,6 @@ public class UploadoceanCom extends antiDDoSForHost {
                     skipWaittime = true;
                 } else if (br.containsHTML("solvemedia\\.com/papi/")) {
                     logger.info("Detected captcha method \"solvemedia\" for this host");
-
                     final org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia sm = new org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia(br);
                     File cf = null;
                     try {
@@ -721,15 +704,12 @@ public class UploadoceanCom extends antiDDoSForHost {
     private void correctBR() throws NumberFormatException, PluginException {
         correctedBR = br.toString();
         ArrayList<String> regexStuff = new ArrayList<String>();
-
         // remove custom rules first!!! As html can change because of generic cleanup rules.
-
         /* generic cleanup */
         regexStuff.add("<\\!(\\-\\-.*?\\-\\-)>");
         /* 2016-08-31: Removed this one RegEx as it was causing issues! */
         // regexStuff.add("(display: ?none;\">.*?</div>)");
         regexStuff.add("(visibility:hidden>.*?<)");
-
         for (String aRegex : regexStuff) {
             String results[] = new Regex(correctedBR, aRegex).getColumn(0);
             if (results != null) {
@@ -790,26 +770,21 @@ public class UploadoceanCom extends antiDDoSForHost {
 
     private String decodeDownloadLink(final String s) {
         String decoded = null;
-
         try {
             Regex params = new Regex(s, "\\'(.*?[^\\\\])\\',(\\d+),(\\d+),\\'(.*?)\\'");
-
             String p = params.getMatch(0).replaceAll("\\\\", "");
             int a = Integer.parseInt(params.getMatch(1));
             int c = Integer.parseInt(params.getMatch(2));
             String[] k = params.getMatch(3).split("\\|");
-
             while (c != 0) {
                 c--;
                 if (k[c].length() != 0) {
                     p = p.replaceAll("\\b" + Integer.toString(c, a) + "\\b", k[c]);
                 }
             }
-
             decoded = p;
         } catch (Exception e) {
         }
-
         String finallink = null;
         if (decoded != null) {
             /* Open regex is possible because in the unpacked JS there are usually only 1 links */
@@ -883,7 +858,6 @@ public class UploadoceanCom extends antiDDoSForHost {
             }
             wait = i;
         }
-
         wait -= passedTime;
         if (wait > 0) {
             logger.info("Waiting waittime: " + wait);
@@ -1282,5 +1256,4 @@ public class UploadoceanCom extends antiDDoSForHost {
     public SiteTemplate siteTemplateType() {
         return SiteTemplate.SibSoft_XFileShare;
     }
-
 }

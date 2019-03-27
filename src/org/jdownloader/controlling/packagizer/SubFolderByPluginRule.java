@@ -7,7 +7,6 @@ import org.jdownloader.gui.IconKey;
 import org.jdownloader.translate._JDT;
 
 public class SubFolderByPluginRule extends PackagizerRule {
-
     public static final String ID = "SubFolderByPluginRule";
 
     public SubFolderByPluginRule() {

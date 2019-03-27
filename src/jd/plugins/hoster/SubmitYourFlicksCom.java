@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -32,9 +31,9 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.PluginJSonUtils;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "submityourflicks.com" }, urls = { "http://(www\\.)?submityourflicks\\.com/(\\d+[a-z0-9\\-]+\\.html|embconfig/\\d+|embedded/\\d+)" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "submityourflicks.com" }, urls = { "https?://(www\\.)?submityourflicks\\.com/(\\d+[a-z0-9\\-]+\\.html|embconfig/\\d+|embedded/\\d+)" })
 public class SubmitYourFlicksCom extends PluginForHost {
-
+    /* Name of their old (removed) portal: submityourtapes.com */
     private String dllink = null;
 
     public SubmitYourFlicksCom(PluginWrapper wrapper) {
@@ -67,7 +66,7 @@ public class SubmitYourFlicksCom extends PluginForHost {
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         br.getPage(downloadLink.getDownloadURL());
-        if (br.getURL().contains("submityourflicks.com/404.php") || br.containsHTML("(<title>Wops 404 \\.\\.\\.</title>|class=\"style1\">404 \\- this page does not exist|http-equiv=refresh content=\"2; url=http://www\\.submityourflicks\\.com)") || br.getHttpConnection().getResponseCode() == 404) {
+        if (br.getURL().contains("submityourflicks.com/404.php") || br.containsHTML("(<title>Wops 404 \\.\\.\\.</title>|class=\"style1\">404 \\- this page does not exist|http-equiv=refresh content=\"2; url=http://www\\.submityourflicks\\.com|>Content Removed<)") || br.getHttpConnection().getResponseCode() == 404) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         } else if (br.getURL().contains("utm_campaign")) {
             /* Advertising-redirect */
@@ -88,10 +87,17 @@ public class SubmitYourFlicksCom extends PluginForHost {
             dllink = br.getRegex("file[\t\n\r ]*?:[\t\n\r ]*?\"(http[^<>\"]+)\"").getMatch(0);
         }
         if (dllink == null) {
+            dllink = br.getRegex("file:\\s*\"(.*?)\"").getMatch(0);
+        }
+        if (dllink == null) {
             final String clip = PluginJSonUtils.getJsonNested(br.toString(), "clip");
             dllink = new Regex((clip != null ? clip : ""), "url\\s*:\\s*'(.*?)'").getMatch(0);
         }
+        if (dllink == null) {
+            dllink = br.getRegex("<source src=\"([^<>\"]+)\"").getMatch(0);
+        }
         if (filename == null || dllink == null) {
+            logger.info("filename: " + filename + ", dllink: " + dllink);
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         dllink = Encoding.htmlDecode(dllink);
@@ -105,6 +111,8 @@ public class SubmitYourFlicksCom extends PluginForHost {
             con = br2.openHeadConnection(dllink);
             if (!con.getContentType().contains("html")) {
                 downloadLink.setDownloadSize(con.getLongContentLength());
+            } else if (con.getResponseCode() == 401) {
+                logger.info("Got 401 Unauthorized");
             } else {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
@@ -122,10 +130,10 @@ public class SubmitYourFlicksCom extends PluginForHost {
         requestFileInformation(downloadLink);
         dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 0);
         if (dl.getConnection().getContentType().contains("html")) {
-            if (dl.getConnection().getResponseCode() == 403) {
+            if (dl.getConnection().getResponseCode() == 401) {
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 401", 60 * 60 * 1000l);
+            } else if (dl.getConnection().getResponseCode() == 403) {
                 throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 60 * 60 * 1000l);
-            } else if (dl.getConnection().getResponseCode() == 404) {
-                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 404", 60 * 60 * 1000l);
             }
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);

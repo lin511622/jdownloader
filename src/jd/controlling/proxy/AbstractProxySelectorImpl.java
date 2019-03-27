@@ -3,7 +3,9 @@ package jd.controlling.proxy;
 import java.io.IOException;
 import java.net.URL;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CopyOnWriteArraySet;
@@ -15,7 +17,10 @@ import jd.http.Request;
 import jd.plugins.Account;
 import jd.plugins.Plugin;
 
+import org.appwork.storage.JSonStorage;
+import org.appwork.utils.Exceptions;
 import org.appwork.utils.net.httpconnection.HTTPProxy;
+import org.jdownloader.logging.LogController;
 import org.jdownloader.updatev2.FilterList;
 import org.jdownloader.updatev2.ProxyData;
 
@@ -60,10 +65,7 @@ public abstract class AbstractProxySelectorImpl implements ProxySelectorInterfac
 
     public boolean isAllowedByFilter(final String host, final Account acc) {
         final FilterList lFilter = filter;
-        if (lFilter == null) {
-            return true;
-        }
-        return lFilter.validate(host, acc == null ? null : acc.getUser());
+        return lFilter == null || lFilter.validate(host, acc == null ? null : acc.getUser());
     }
 
     public void setFilter(final FilterList filter) {
@@ -76,6 +78,21 @@ public abstract class AbstractProxySelectorImpl implements ProxySelectorInterfac
         ret.setFilter(getFilter());
         ret.setRangeRequestsSupported(isResumeAllowed());
         return ret;
+    }
+
+    abstract public String toDetailsString();
+
+    @Override
+    public String toString() {
+        try {
+            final Map<String, Object> data = new HashMap<String, Object>();
+            data.put("class", getClass().getName());
+            data.put("proxy", toProxyData());
+            data.put("banlist", banList.toString());
+            return JSonStorage.toString(data);
+        } catch (Throwable e) {
+            return Exceptions.getStackTrace(e);
+        }
     }
 
     abstract public Type getType();
@@ -94,7 +111,6 @@ public abstract class AbstractProxySelectorImpl implements ProxySelectorInterfac
      * by default a proxy supports resume
      */
     private boolean                                               resumeIsAllowed                 = true;
-
     protected final CopyOnWriteArraySet<SingleDownloadController> activeSingleDownloadControllers = new CopyOnWriteArraySet<SingleDownloadController>();
     protected final CopyOnWriteArrayList<SelectProxyByURLHook>    selectProxyByURLHooks           = new CopyOnWriteArrayList<SelectProxyByURLHook>();
     private boolean                                               reconnectSupported;
@@ -108,7 +124,6 @@ public abstract class AbstractProxySelectorImpl implements ProxySelectorInterfac
     }
 
     public AbstractProxySelectorImpl() {
-
     }
 
     public boolean add(final SingleDownloadController singleDownloadController) {
@@ -141,16 +156,19 @@ public abstract class AbstractProxySelectorImpl implements ProxySelectorInterfac
 
     public void addSessionBan(final ConnectionBan newBan) {
         if (newBan != null) {
+            boolean addFlag = true;
             for (final ConnectionBan oldBan : banList) {
                 if (oldBan.isExpired()) {
                     banList.remove(oldBan);
                 } else if (oldBan.canSwallow(newBan)) {
-                    return;
+                    addFlag = false;
                 } else if (newBan.canSwallow(oldBan)) {
                     banList.remove(oldBan);
                 }
             }
-            banList.addIfAbsent(newBan);
+            if (addFlag && banList.addIfAbsent(newBan)) {
+                LogController.CL().severe(newBan.toString());
+            }
         }
     }
 

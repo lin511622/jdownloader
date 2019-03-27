@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.util.HashMap;
@@ -37,11 +36,9 @@ import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
-import jd.plugins.components.UserAgents.BrowserName;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "sizedrive.com", "file4go.net", "file4go.com" }, urls = { "http://(?:www\\.)?(?:file4go|sizedrive)\\.(?:com|net)/(?:r/|d/|download\\.php\\?id=)([a-f0-9]{20})", "regex://nullfied/ranoasdahahdom", "regex://nullfied/ranoasdahahdom" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "file4go.net", "file4go.com", "sizedrive.com" }, urls = { "http://(?:www\\.)?(?:file4go|sizedrive)\\.(?:com|net|biz)/(?:r/|d/|download\\.php\\?id=)([a-f0-9]{20})", "regex://nullfied/ranoasdahahdom", "regex://nullfied/ranoasdahahdom" })
 public class File4GoCom extends antiDDoSForHost {
-
     public File4GoCom(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium(MAINPAGE);
@@ -52,7 +49,7 @@ public class File4GoCom extends antiDDoSForHost {
         return MAINPAGE;
     }
 
-    private static final String MAINPAGE = "http://www.file4go.net";
+    private static final String MAINPAGE = "http://www.file4go.com";
     private static Object       LOCK     = new Object();
 
     @Override
@@ -64,26 +61,17 @@ public class File4GoCom extends antiDDoSForHost {
 
     @Override
     public String rewriteHost(String host) {
-        if (host == null || "file4go.com".equals(host) || "file4go.net".equals(host) || "file4go.com".equals(host)) {
-            return "sizedrive.com";
+        if (host == null || "sizedrive.com".equals(host) || "file4go.com".equals(host) || "file4go.net".equals(host) || "file4go.biz".equals(host)) {
+            return "file4go.com";
         }
         return super.rewriteHost(host);
-    }
-
-    @Override
-    protected boolean useRUA() {
-        return true;
-    }
-
-    @Override
-    protected BrowserName setBrowserName() {
-        return BrowserName.Firefox;
     }
 
     @SuppressWarnings("deprecation")
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         this.setBrowserExclusive();
+        correctDownloadLink(link);
         br.setCookie(MAINPAGE, "animesonline", "1");
         br.setCookie(MAINPAGE, "musicasab", "1");
         br.setCookie(MAINPAGE, "poup", "1");
@@ -92,7 +80,7 @@ public class File4GoCom extends antiDDoSForHost {
         // do not follow redirects, as they can lead to 404 which is faked based on country of origin ?
         getPage(link.getDownloadURL());
         redirectControl(br);
-        if (br.containsHTML("Arquivo Temporariamente Indisponivel|ARQUIVO DELATADO PELO USUARIO OU REMOVIDO POR <|ARQUIVO DELATADO POR <b>INATIVIDADE|O arquivo Não foi encotrado em nossos servidores")) {
+        if (br.containsHTML(">404 ARQUIVO N�O ENCOTRADO<|Arquivo Temporariamente Indisponivel|ARQUIVO DELATADO PELO USUARIO OU REMOVIDO POR <|ARQUIVO DELATADO POR <b>INATIVIDADE|O arquivo Não foi encotrado em nossos servidores")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         String filename = br.getRegex(">Nome:</b>\\s*(.*?)\\s*(?:</p>)?</span>").getMatch(0);
@@ -263,12 +251,7 @@ public class File4GoCom extends antiDDoSForHost {
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         AccountInfo ai = new AccountInfo();
-        try {
-            login(account, true);
-        } catch (final PluginException e) {
-            account.setValid(false);
-            throw e;
-        }
+        login(account, true);
         ai.setUnlimitedTraffic();
         String expire = br.getRegex(">Premium Stop: (\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}:\\d{2}) </b>").getMatch(0);
         account.setValid(true);

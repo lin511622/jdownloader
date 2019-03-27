@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.util.ArrayList;
@@ -34,9 +33,8 @@ import jd.plugins.PluginForHost;
 
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
-@HostPlugin(revision = "$Revision: 28691 $", interfaceVersion = 3, names = { "500px.com" }, urls = { "https?://(?:www\\.)?500px\\.com/photo/\\d+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "500px.com" }, urls = { "https?://(?:www\\.)?500px\\.com/photo/\\d+" })
 public class FivehundretPxCom extends PluginForHost {
-
     public FivehundretPxCom(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -45,7 +43,6 @@ public class FivehundretPxCom extends PluginForHost {
     // Tags:
     // protocol: no https
     // other:
-
     private String dllink = null;
 
     @Override
@@ -57,7 +54,7 @@ public class FivehundretPxCom extends PluginForHost {
     public void correctDownloadLink(DownloadLink link) throws Exception {
         if (link.getSetLinkID() == null) {
             final String ID = new Regex(link.getPluginPatternMatcher(), "photo/(\\d+)").getMatch(0);
-            link.setLinkID(ID);
+            link.setLinkID(getHost() + "://" + ID);
         }
     }
 
@@ -137,7 +134,7 @@ public class FivehundretPxCom extends PluginForHost {
             // set part name if not set previously
             downloadLink.setFinalFileName(filename);
         }
-        dllink = Encoding.htmlDecode(dllink);
+        dllink = Encoding.htmlOnlyDecode(dllink);
         final Browser br2 = br.cloneBrowser();
         // In case the link redirects to the finallink
         br2.setFollowRedirects(true);
@@ -188,7 +185,7 @@ public class FivehundretPxCom extends PluginForHost {
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception {
         requestFileInformation(downloadLink);
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, false, 1);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, false, 1);
         if (dl.getConnection().getContentType().contains("html")) {
             if (dl.getConnection().getResponseCode() == 403) {
                 throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 60 * 60 * 1000l);

@@ -13,7 +13,8 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "met-art.com" }, urls = { "https?://members\\.met-art\\.com/members/(media/.+|movie\\.php.+|movie\\.mp4.+|zip\\.php\\?zip=[A-Z0-9]+\\&type=(high|med|low))" }) public class MetArtCom extends PluginForHost {
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "met-art.com", "sexart.com" }, urls = { "https?://members\\.met-art\\.com/members/(media/.+|movie\\.php.+|movie\\.mp4.+|zip\\.php\\?zip=[A-Z0-9]+\\&type=(high|med|low))|decryptedmetartcom://.+", "decryptedsexartcom://.+" })
+public class MetArtCom extends PluginForHost {
 
     public MetArtCom(PluginWrapper wrapper) {
         super(wrapper);
@@ -25,9 +26,13 @@ import jd.plugins.PluginForHost;
         return "http://guests.met-art.com/faq/";
     }
 
+    public void correctDownloadLink(final DownloadLink link) {
+        link.setUrlDownload(link.getDownloadURL().replaceFirst("decrypted[a-z0-9]+://", "https://"));
+    }
+
     @Override
-    public AvailableStatus requestFileInformation(DownloadLink parameter) throws Exception {
-        String name = null;
+    public AvailableStatus requestFileInformation(final DownloadLink parameter) throws Exception {
+        String name = new Regex(parameter.getDownloadURL(), "file=([^\\&]+)").getMatch(0);
         if (parameter.getDownloadURL().contains("/media/")) {
             name = new Regex(parameter.getDownloadURL(), "/media/.*?/[A-F0-9]+/(.+)").getMatch(0);
         } else if (parameter.getDownloadURL().contains("movie.php")) {
@@ -37,9 +42,13 @@ import jd.plugins.PluginForHost;
         } else if (parameter.getDownloadURL().contains("zip.php")) {
             name = new Regex(parameter.getDownloadURL(), "zip\\.php\\?zip=([A-Z0-9]+)\\&").getMatch(0);
         }
-        if (name == null) name = "Unknown Filename";
+        if (name == null) {
+            name = "Unknown Filename";
+        }
         String type = new Regex(parameter.getDownloadURL(), "movie\\.(php|mp4).*?type=(.*?)&").getMatch(1);
-        if (parameter.getDownloadURL().contains("zip.php")) type = ".zip";
+        if (parameter.getDownloadURL().contains("zip.php")) {
+            type = ".zip";
+        }
         if (type != null) {
             if ("avi".equalsIgnoreCase(type)) {
                 name = name + ".avi";
@@ -58,13 +67,8 @@ import jd.plugins.PluginForHost;
     }
 
     @Override
-    public void handleFree(DownloadLink link) throws Exception {
-        try {
-            throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
-        } catch (final Throwable e) {
-            if (e instanceof PluginException) throw (PluginException) e;
-        }
-        throw new PluginException(LinkStatus.ERROR_FATAL, "Met-Art members only!");
+    public void handleFree(final DownloadLink link) throws Exception {
+        throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
     }
 
     @Override
@@ -76,7 +80,9 @@ import jd.plugins.PluginForHost;
     }
 
     public boolean canHandle(DownloadLink downloadLink, Account account) throws Exception {
-        if (account == null) return false;
+        if (account == null) {
+            return false;
+        }
         return true;
     }
 
@@ -87,7 +93,7 @@ import jd.plugins.PluginForHost;
         try {
             this.setBrowserExclusive();
             br.getHeaders().put("Authorization", "Basic " + Encoding.Base64Encode(account.getUser() + ":" + account.getPass()));
-            con = br.openGetConnection("http://members.met-art.com/members/");
+            con = br.openGetConnection("http://members." + account.getHoster() + "/members/");
             if (con.getResponseCode() == 401) {
                 throw new Throwable("Account invalid");
             } else {
@@ -111,7 +117,9 @@ import jd.plugins.PluginForHost;
         br.getHeaders().put("Authorization", "Basic " + Encoding.Base64Encode(account.getUser() + ":" + account.getPass()));
         br.setFollowRedirects(true);
         dl = jd.plugins.BrowserAdapter.openDownload(br, link, link.getDownloadURL(), true, 0);
-        if (dl.getConnection().getResponseCode() == 401) { throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE); }
+        if (dl.getConnection().getResponseCode() == 401) {
+            throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
+        }
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);

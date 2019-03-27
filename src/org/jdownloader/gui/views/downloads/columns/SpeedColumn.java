@@ -3,6 +3,7 @@ package org.jdownloader.gui.views.downloads.columns;
 import java.awt.Color;
 import java.awt.event.ActionEvent;
 import java.awt.event.MouseEvent;
+import java.text.DecimalFormat;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.swing.Icon;
@@ -11,10 +12,22 @@ import javax.swing.JPopupMenu;
 import javax.swing.JSeparator;
 import javax.swing.SwingConstants;
 
+import jd.controlling.downloadcontroller.DownloadWatchDog;
+import jd.controlling.downloadcontroller.SingleDownloadController;
+import jd.controlling.packagecontroller.AbstractNode;
+import jd.plugins.Account;
+import jd.plugins.DownloadLink;
+import jd.plugins.FilePackage;
+import jd.plugins.PluginForHost;
+import jd.plugins.PluginProgress;
+import jd.plugins.download.DownloadInterface;
+
 import org.appwork.storage.config.JsonConfig;
 import org.appwork.storage.config.ValidationException;
 import org.appwork.storage.config.events.GenericConfigEventListener;
 import org.appwork.storage.config.handler.KeyHandler;
+import org.appwork.swing.exttable.ExtColumn;
+import org.appwork.swing.exttable.ExtDefaultRowSorter;
 import org.appwork.swing.exttable.columnmenu.LockColumnWidthAction;
 import org.appwork.swing.exttable.columns.ExtTextColumn;
 import org.appwork.utils.formatter.SizeFormatter;
@@ -30,21 +43,10 @@ import org.jdownloader.images.NewTheme;
 import org.jdownloader.plugins.DownloadPluginProgress;
 import org.jdownloader.premium.PremiumInfoDialog;
 import org.jdownloader.settings.GraphicalUserInterfaceSettings;
+import org.jdownloader.settings.GraphicalUserInterfaceSettings.SIZEUNIT;
 import org.jdownloader.settings.staticreferences.CFG_GUI;
 
-import jd.controlling.downloadcontroller.DownloadWatchDog;
-import jd.controlling.downloadcontroller.SingleDownloadController;
-import jd.controlling.packagecontroller.AbstractNode;
-import jd.nutils.Formatter;
-import jd.plugins.Account;
-import jd.plugins.DownloadLink;
-import jd.plugins.FilePackage;
-import jd.plugins.PluginForHost;
-import jd.plugins.PluginProgress;
-import jd.plugins.download.DownloadInterface;
-
 public class SpeedColumn extends ExtTextColumn<AbstractNode> {
-
     /**
      *
      */
@@ -52,13 +54,14 @@ public class SpeedColumn extends ExtTextColumn<AbstractNode> {
     private final AtomicBoolean warningEnabled      = new AtomicBoolean(false);
     private final Icon          warningIcon;
     private final AtomicBoolean speedLimiterEnabled = new AtomicBoolean(false);
+    private final DecimalFormat formatter;
+    private final SIZEUNIT      maxSizeUnit;
 
     public SpeedColumn() {
         super(_GUI.T.SpeedColumn_SpeedColumn());
         rendererField.setHorizontalAlignment(SwingConstants.RIGHT);
         warningEnabled.set(CFG_GUI.PREMIUM_ALERT_SPEED_COLUMN_ENABLED.isEnabled());
         CFG_GUI.PREMIUM_ALERT_SPEED_COLUMN_ENABLED.getEventSender().addListener(new GenericConfigEventListener<Boolean>() {
-
             @Override
             public void onConfigValueModified(KeyHandler<Boolean> keyHandler, Boolean newValue) {
                 warningEnabled.set(Boolean.TRUE.equals(newValue));
@@ -69,10 +72,8 @@ public class SpeedColumn extends ExtTextColumn<AbstractNode> {
             }
         });
         warningIcon = NewTheme.I().getIcon(IconKey.ICON_WARNING, 16);
-
         speedLimiterEnabled.set(org.jdownloader.settings.staticreferences.CFG_GENERAL.DOWNLOAD_SPEED_LIMIT_ENABLED.isEnabled());
         org.jdownloader.settings.staticreferences.CFG_GENERAL.DOWNLOAD_SPEED_LIMIT_ENABLED.getEventSender().addListener(new GenericConfigEventListener<Boolean>() {
-
             public void onConfigValidatorError(KeyHandler<Boolean> keyHandler, Boolean invalidValue, ValidationException validateException) {
             }
 
@@ -80,13 +81,32 @@ public class SpeedColumn extends ExtTextColumn<AbstractNode> {
                 speedLimiterEnabled.set(Boolean.TRUE.equals(newValue));
             }
         }, false);
+        this.formatter = new DecimalFormat("0.00");
+        if (JsonConfig.create(GraphicalUserInterfaceSettings.class).getMaxSizeUnit().isIECPrefix()) {
+            maxSizeUnit = SIZEUNIT.MiB;
+        } else {
+            maxSizeUnit = SIZEUNIT.MB;
+        }
+        this.setRowSorter(new ExtDefaultRowSorter<AbstractNode>() {
+            @Override
+            public int compare(final AbstractNode o1, final AbstractNode o2) {
+                final long s1 = getSpeed(o1);
+                final long s2 = getSpeed(o2);
+                if (s1 == s2) {
+                    return 0;
+                } else if (this.getSortOrderIdentifier() != ExtColumn.SORT_ASC) {
+                    return s1 > s2 ? -1 : 1;
+                } else {
+                    return s1 < s2 ? -1 : 1;
+                }
+            }
+        });
     }
 
     public JPopupMenu createHeaderPopup() {
         final JPopupMenu ret = new JPopupMenu();
         LockColumnWidthAction action;
         ret.add(new JCheckBoxMenuItem(action = new LockColumnWidthAction(this)));
-
         ret.add(new JCheckBoxMenuItem(new AppAction() {
             {
                 setName(_GUI.T.literall_premium_alert());
@@ -144,17 +164,17 @@ public class SpeedColumn extends ExtTextColumn<AbstractNode> {
             if (dlc == null || (acc = dlc.getAccount()) != null) {
                 return false;
             }
-            PluginForHost plugin = dl.getDefaultPlugin();
+            final PluginForHost plugin = dl.getDefaultPlugin();
             if (plugin == null || !plugin.isSpeedLimited(dl, acc) | !plugin.isPremiumEnabled()) {
                 /* no account support yet for this plugin */
                 return false;
             }
-            long limit = dlc.getConnectionHandler().getLimit();
+            final long limit = dlc.getConnectionHandler().getLimit();
             if (limit > 0 && limit < 50 * 1024) {
                 /* we have an active limit that is smaller than our warn speed */
                 return false;
             }
-            DownloadInterface dli = dlc.getDownloadInstance();
+            final DownloadInterface dli = dlc.getDownloadInstance();
             if (dli != null && ((DownloadLink) value).getView().getBytesLoaded() > 100 * 1024) {
                 if (((DownloadLink) value).getView().getSpeedBps() < 50 * 1024) {
                     return true;
@@ -188,8 +208,19 @@ public class SpeedColumn extends ExtTextColumn<AbstractNode> {
                 e1.printStackTrace();
             }
         }
-
         return false;
+    }
+
+    protected long getSpeed(AbstractNode value) {
+        if (value instanceof DownloadLink) {
+            final PluginProgress pluginProgress = ((DownloadLink) value).getPluginProgress();
+            if (pluginProgress instanceof DownloadPluginProgress) {
+                return ((DownloadPluginProgress) pluginProgress).getSpeed();
+            }
+        } else if (value instanceof FilePackage) {
+            return DownloadWatchDog.getInstance().getDownloadSpeedbyFilePackage((FilePackage) value);
+        }
+        return -1;
     }
 
     @Override
@@ -197,15 +228,15 @@ public class SpeedColumn extends ExtTextColumn<AbstractNode> {
         if (value instanceof DownloadLink) {
             final PluginProgress pluginProgress = ((DownloadLink) value).getPluginProgress();
             if (pluginProgress instanceof DownloadPluginProgress) {
-                long speed = ((DownloadPluginProgress) pluginProgress).getSpeed();
-                if (speed > 0) {
-                    return Formatter.formatReadable(speed) + "/s";
+                final long speed = ((DownloadPluginProgress) pluginProgress).getSpeed();
+                if (speed >= 0) {
+                    return SIZEUNIT.formatValue(maxSizeUnit, formatter, speed) + "/s";
                 }
             }
         } else if (value instanceof FilePackage) {
             final long speed = DownloadWatchDog.getInstance().getDownloadSpeedbyFilePackage((FilePackage) value);
             if (speed >= 0) {
-                return Formatter.formatReadable(speed) + "/s";
+                return SIZEUNIT.formatValue(maxSizeUnit, formatter, speed) + "/s";
             }
         }
         return null;

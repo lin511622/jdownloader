@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.io.ByteArrayInputStream;
@@ -27,6 +26,12 @@ import javax.xml.xpath.XPath;
 import javax.xml.xpath.XPathConstants;
 import javax.xml.xpath.XPathFactory;
 
+import org.appwork.utils.StringUtils;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
+import org.w3c.dom.Document;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
 import jd.http.Browser;
@@ -37,16 +42,11 @@ import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.PluginForDecrypt;
+import jd.plugins.components.PluginJSonUtils;
 import jd.plugins.components.RuTubeVariant;
 
-import org.jdownloader.scripting.JavaScriptEngineFactory;
-import org.w3c.dom.Document;
-import org.w3c.dom.Node;
-import org.w3c.dom.NodeList;
-
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "rutube.ru" }, urls = { "https?://((www\\.)?rutube\\.ru/(tracks/\\d+\\.html|(play/|video/)?embed/\\d+(?:\\?p=[A-Za-z0-9]+)?|video/[a-f0-9]{32})|video\\.rutube.ru/([a-f0-9]{32}|\\d+))" })
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "rutube.ru" }, urls = { "https?://((?:www\\.)?rutube\\.ru/(tracks/\\d+\\.html|(play/|video/)?embed/\\d+(.*?p=[A-Za-z0-9\\-_]+)?|video/[a-f0-9]{32})|video\\.rutube.ru/([a-f0-9]{32}|\\d+))" })
 public class RuTubeRuDecrypter extends PluginForDecrypt {
-
     public RuTubeRuDecrypter(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -59,28 +59,32 @@ public class RuTubeRuDecrypter extends PluginForDecrypt {
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
         final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         br = new Browser();
-
         parameter = param.toString();
-
         uid = new Regex(parameter, "/([a-f0-9]{32})").getMatch(0);
         vid = new Regex(parameter, "rutube\\.ru/(?:play/|video/)?embed/(\\d+)").getMatch(0);
-        privatevalue = new Regex(parameter, "p=([A-Za-z0-9]+)").getMatch(0);
+        privatevalue = new Regex(parameter, "p=([A-Za-z0-9\\-_]+)").getMatch(0);
         if (vid == null) {
             vid = new Regex(parameter, "video\\.rutube\\.ru/(\\d+)").getMatch(0);
         }
         if (uid == null) {
+            /* Find long 'effective_video'-id */
             br.setFollowRedirects(true);
             if (vid != null) {
-                // embed link, grab info since we are already on this page
-                getPage("http://rutube.ru/play/embed/" + vid + "?wmode=opaque&autoStart=true");
-
-                final String b = HTMLEntities.unhtmlentities(HTMLEntities.unhtmlDoubleQuotes(br.toString()));
-                uid = new Regex(b, "\"id\"\\s*:\\s*\"([a-f0-9]{32})\"").getMatch(0);
-                if (uid == null) {
-                    /* E.g. video/private/[a-f0-9]{32} */
-                    uid = new Regex(b, "<link rel=\"canonical\" href=\"https?://rutube\\.ru/video[^<>\"\\']+([a-f0-9]{32})").getMatch(0);
+                final boolean useNewAPI = true;
+                if (useNewAPI) {
+                    br.getPage("https://rutube.ru/api/play/options/" + vid + "/?format=json&no_404=true&referer=" + Encoding.urlEncode(parameter));
+                    uid = PluginJSonUtils.getJson(br, "effective_video");
+                } else {
+                    // embed link, grab info since we are already on this page
+                    getPage("http://rutube.ru/play/embed/" + vid + "?wmode=opaque&autoStart=true");
+                    final String b = HTMLEntities.unhtmlentities(HTMLEntities.unhtmlDoubleQuotes(br.toString()));
+                    uid = new Regex(b, "\"id\"\\s*:\\s*\"([a-f0-9]{32})\"").getMatch(0);
+                    if (uid == null) {
+                        /* E.g. video/private/[a-f0-9]{32} */
+                        uid = new Regex(b, "<link rel=\"canonical\" href=\"https?://rutube\\.ru/video[^<>\"\\']+([a-f0-9]{32})").getMatch(0);
+                    }
                 }
-                if (uid == null) {
+                if (StringUtils.isEmpty(uid)) {
                     String msg = getErrorMessage();
                     if (msg != null) {
                         decryptedLinks.add(createOfflinelink(parameter, "Offline - " + vid + " - " + msg, msg));
@@ -102,7 +106,6 @@ public class RuTubeRuDecrypter extends PluginForDecrypt {
             if (uid == null) {
                 throw new Exception("Unknown LinkType");
             }
-
         }
         if (uid != null && decryptedLinks.isEmpty()) {
             final DownloadLink link = createDownloadlink(uid);
@@ -111,7 +114,6 @@ public class RuTubeRuDecrypter extends PluginForDecrypt {
             }
             decryptedLinks.add(link);
         }
-
         return decryptedLinks;
     }
 
@@ -154,7 +156,6 @@ public class RuTubeRuDecrypter extends PluginForDecrypt {
         if (privatevalue != null) {
             ret.setProperty("privatevalue", privatevalue);
         }
-
         try {
             if (vid == null) {
                 final Browser br = this.br.cloneBrowser();
@@ -173,20 +174,17 @@ public class RuTubeRuDecrypter extends PluginForDecrypt {
                     return createOfflinelink(parameter, vid + " - " + msg, msg);
                 }
             }
-            // swf requests over json
-            Browser ajax = cloneBrowser(br);
+            Browser ajax = getAjaxBR(br);
             getPage(ajax, "/api/play/options/" + vid + "/?format=json&no_404=true&sqr4374_compat=1&referer=" + Encoding.urlEncode(br.getURL()) + "&_t=" + System.currentTimeMillis());
             final HashMap<String, Object> entries = (HashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(ajax.toString());
             final String videoBalancer = (String) JavaScriptEngineFactory.walkJson(entries, "video_balancer/default");
             if (videoBalancer != null) {
                 final DocumentBuilder parser = DocumentBuilderFactory.newInstance().newDocumentBuilder();
                 final XPath xPath = XPathFactory.newInstance().newXPath();
-                ajax = cloneBrowser(br);
+                ajax = getAjaxBR(br);
                 ajax.getPage(videoBalancer);
-
                 Document d = parser.parse(new ByteArrayInputStream(ajax.toString().getBytes("UTF-8")));
                 String baseUrl = xPath.evaluate("/manifest/baseURL", d).trim();
-
                 NodeList f4mUrls = (NodeList) xPath.evaluate("/manifest/media", d, XPathConstants.NODESET);
                 Node best = f4mUrls.item(f4mUrls.getLength() - 1);
                 ArrayList<RuTubeVariant> variantsVideo = new ArrayList<RuTubeVariant>();
@@ -197,32 +195,26 @@ public class RuTubeRuDecrypter extends PluginForDecrypt {
                     String height = getAttByNamedItem(best, "height");
                     String bitrate = getAttByNamedItem(best, "bitrate");
                     String f4murl = getAttByNamedItem(best, "href");
-                    ajax = cloneBrowser(br);
+                    ajax = getAjaxBR(br);
                     ajax.getPage(baseUrl + f4murl);
-
                     d = parser.parse(new ByteArrayInputStream(ajax.toString().getBytes("UTF-8")));
                     // baseUrl = xPath.evaluate("/manifest/baseURL", d).trim();
                     double duration = Double.parseDouble(xPath.evaluate("/manifest/duration", d));
-
                     NodeList mediaUrls = (NodeList) xPath.evaluate("/manifest/media", d, XPathConstants.NODESET);
                     Node media;
                     for (int j = 0; j < mediaUrls.getLength(); j++) {
                         media = mediaUrls.item(j);
                         // System.out.println(new String(Base64.decode(xPath.evaluate("/manifest/media[" + (j + 1) + "]/metadata",
                         // d).trim())));
-
                         RuTubeVariant var = new RuTubeVariant(width, height, bitrate, getAttByNamedItem(media, "streamId"));
                         variantsVideo.add(var);
                         bestVariant = var;
-
                     }
-
                 }
                 if (variantsVideo.size() > 0) {
                     ret.setVariants(variantsVideo);
                     ret.setVariant(bestVariant);
                 }
-
                 return ret;
             } else {
                 logger.info("Video not available in your country: " + "http://rutube.ru/api/video/" + vid);
@@ -235,10 +227,14 @@ public class RuTubeRuDecrypter extends PluginForDecrypt {
         return null;
     }
 
-    private Browser cloneBrowser(Browser br) {
+    private Browser getAjaxBR(final Browser br) {
         final Browser ajax = br.cloneBrowser();
+        // rv40.0 don't get "video_balancer".
+        ajax.getHeaders().put("User-Agent", "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:51.0) Gecko/20100101 Firefox/51.0");
         ajax.getHeaders().put("Accept", "*/*");
-        ajax.getHeaders().put("X-Requested-With", "ShockwaveFlash/22.0.0.209");
+        ajax.getHeaders().put("Content-Type", "application/json");
+        /* 2017-03-22: This Header is not required anymore! */
+        // ajax.getHeaders().put("X-Requested-With", "ShockwaveFlash/22.0.0.209");
         return ajax;
     }
 
@@ -259,5 +255,4 @@ public class RuTubeRuDecrypter extends PluginForDecrypt {
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

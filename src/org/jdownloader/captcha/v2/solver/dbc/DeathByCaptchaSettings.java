@@ -46,4 +46,8 @@ public interface DeathByCaptchaSettings extends ChallengeSolverConfig {
     HashMap<String, Integer> getBubbleTimeoutByHostMap();
 
     void setBubbleTimeoutByHostMap(HashMap<String, Integer> map);
+
+    @AboutConfig
+    @DefaultBooleanValue(false)
+    boolean isEnabled();
 }

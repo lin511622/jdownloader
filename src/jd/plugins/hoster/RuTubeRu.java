@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.ByteArrayInputStream;
@@ -28,6 +27,14 @@ import javax.xml.xpath.XPathConstants;
 import javax.xml.xpath.XPathExpressionException;
 import javax.xml.xpath.XPathFactory;
 
+import org.appwork.utils.StringUtils;
+import org.jdownloader.controlling.linkcrawler.LinkVariant;
+import org.jdownloader.downloader.hds.HDSDownloader;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
+import org.w3c.dom.Document;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+
 import jd.PluginWrapper;
 import jd.http.Browser;
 import jd.http.Request;
@@ -41,17 +48,8 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.RuTubeVariant;
 
-import org.appwork.utils.StringUtils;
-import org.jdownloader.controlling.linkcrawler.LinkVariant;
-import org.jdownloader.downloader.hds.HDSDownloader;
-import org.jdownloader.scripting.JavaScriptEngineFactory;
-import org.w3c.dom.Document;
-import org.w3c.dom.Node;
-import org.w3c.dom.NodeList;
-
 @HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "rutube.ru" }, urls = { "http://(www\\.)?video\\.decryptedrutube\\.ru/[0-9a-f]{32}" })
 public class RuTubeRu extends PluginForHost {
-
     public RuTubeRu(final PluginWrapper wrapper) {
         super(wrapper);
         setStartIntervall(5000l);
@@ -95,7 +93,6 @@ public class RuTubeRu extends PluginForHost {
     public void setActiveVariantByLink(DownloadLink downloadLink, LinkVariant variant) {
         downloadLink.setDownloadSize(-1);
         super.setActiveVariantByLink(downloadLink, variant);
-
     }
 
     @Override
@@ -108,7 +105,6 @@ public class RuTubeRu extends PluginForHost {
         final Browser ajax = cloneBrowser(br);
         dl = new HDSDownloader(downloadLink, ajax, downloadLink.getStringProperty("f4vUrl"));
         dl.startDownload();
-
     }
 
     @Override
@@ -120,19 +116,21 @@ public class RuTubeRu extends PluginForHost {
         String regId = "http://video\\.rutube\\.ru/([0-9a-f]{32})";
         String nextId = new Regex(dllink, regId).getMatch(0);
         br.setCustomCharset("utf-8");
-        getPage("http://rutube.ru/api/play/trackinfo/" + nextId + "/");
+        /*
+         * 2017-02-21: Using User-Agent 'Mozilla/5.0 (Windows NT 6.3; WOW64; rv:40.0) Gecko/20100101 Firefox/40.0' will return a different
+         * 'video_balancer' object which leads to a (lower quality?) http videourl.
+         */
+        // br.getHeaders().put("User-Agent", "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:50.0) Gecko/20100101 Firefox/50.0");
+        getPage("https://rutube.ru/api/play/trackinfo/" + nextId + "/");
         if (br.containsHTML("<root><detail>Not found</detail></root>")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         final Document doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(new ByteArrayInputStream(br.toString().getBytes("UTF-8")));
         final XPath xPath = XPathFactory.newInstance().newXPath();
-
         String filename = getText(doc, xPath, "/root/title");
-
         if (filename == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-
         if (var != null) {
             downloadLink.setFinalFileName(Encoding.htmlDecode(filename.trim()) + "_" + var.getHeight() + "p" + ".mp4");
         }
@@ -143,84 +141,69 @@ public class RuTubeRu extends PluginForHost {
         getPage(ajax, "/api/play/options/" + vid + "/?format=json&no_404=true&sqr4374_compat=1&referer=" + Encoding.urlEncode(br.getURL()) + "&_t=" + System.currentTimeMillis());
         final HashMap<String, Object> entries = (HashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(ajax.toString());
         final String videoBalancer = (String) JavaScriptEngineFactory.walkJson(entries, "video_balancer/default");
-
-        if (videoBalancer != null) {
-            final DocumentBuilder parser = DocumentBuilderFactory.newInstance().newDocumentBuilder();
-
+        if (videoBalancer == null) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        }
+        final DocumentBuilder parser = DocumentBuilderFactory.newInstance().newDocumentBuilder();
+        ajax = cloneBrowser(br);
+        ajax.getPage(videoBalancer);
+        Document d = parser.parse(new ByteArrayInputStream(ajax.toString().getBytes("UTF-8")));
+        String baseUrl = xPath.evaluate("/manifest/baseURL", d).trim();
+        NodeList f4mUrls = (NodeList) xPath.evaluate("/manifest/media", d, XPathConstants.NODESET);
+        Node best = f4mUrls.item(f4mUrls.getLength() - 1);
+        RuTubeVariant bestVariant = null;
+        long bestSizeEstimation = 0;
+        String bestUrl = null;
+        String width = null;
+        String height = null;
+        String bitrate = null;
+        String f4murl = null;
+        for (int i = 0; i < f4mUrls.getLength(); i++) {
+            best = f4mUrls.item(i);
+            width = getAttByNamedItem(best, "width");
+            height = getAttByNamedItem(best, "height");
+            bitrate = getAttByNamedItem(best, "bitrate");
+            f4murl = getAttByNamedItem(best, "href");
             ajax = cloneBrowser(br);
-            ajax.getPage(videoBalancer);
-
-            Document d = parser.parse(new ByteArrayInputStream(ajax.toString().getBytes("UTF-8")));
-            String baseUrl = xPath.evaluate("/manifest/baseURL", d).trim();
-
-            NodeList f4mUrls = (NodeList) xPath.evaluate("/manifest/media", d, XPathConstants.NODESET);
-            Node best = f4mUrls.item(f4mUrls.getLength() - 1);
-
-            RuTubeVariant bestVariant = null;
-            long bestSizeEstimation = 0;
-            String bestUrl = null;
-
-            String width = null;
-            String height = null;
-            String bitrate = null;
-            String f4murl = null;
-            for (int i = 0; i < f4mUrls.getLength(); i++) {
-                best = f4mUrls.item(i);
-                width = getAttByNamedItem(best, "width");
-                height = getAttByNamedItem(best, "height");
-                bitrate = getAttByNamedItem(best, "bitrate");
-                f4murl = getAttByNamedItem(best, "href");
-
-                ajax = cloneBrowser(br);
-                ajax.getPage(baseUrl + f4murl);
-
-                d = parser.parse(new ByteArrayInputStream(ajax.toString().getBytes("UTF-8")));
-                double duration = Double.parseDouble(xPath.evaluate("/manifest/duration", d));
-                bestSizeEstimation = (long) ((duration * Long.parseLong(bitrate) * 1024l) / 8);
-
-                NodeList mediaUrls = (NodeList) xPath.evaluate("/manifest/media", d, XPathConstants.NODESET);
-                Node media;
-                for (int j = 0; j < mediaUrls.getLength(); j++) {
-                    media = mediaUrls.item(j);
-                    if (var == null) {
-                        downloadLink.setDownloadSize(bestSizeEstimation);
-                        downloadLink.setProperty("f4vUrl", Request.getLocation(getAttByNamedItem(media, "url"), ajax.getRequest()));
-                        downloadLink.setFinalFileName(Encoding.htmlDecode(filename.trim()) + "_" + height + "p" + ".mp4");
-                        return AvailableStatus.TRUE;
-                    }
-                    if (var == null || StringUtils.equals(getAttByNamedItem(media, "streamId"), var.getStreamID())) {
-                        // found
-                        bestUrl = getAttByNamedItem(media, "url");
-                        if (var != null) {
-                            if (StringUtils.equals(var.getWidth(), width)) {
-                                if (StringUtils.equals(var.getHeight(), height)) {
-                                    if (StringUtils.equals(var.getBitrate(), bitrate)) {
-                                        downloadLink.setDownloadSize(bestSizeEstimation);
-                                        downloadLink.setProperty("f4vUrl", Request.getLocation(getAttByNamedItem(media, "url"), ajax.getRequest()));
-                                        downloadLink.setFinalFileName(Encoding.htmlDecode(filename.trim()) + "_" + height + "p" + ".mp4");
-                                        return AvailableStatus.TRUE;
-                                    }
+            ajax.getPage(baseUrl + f4murl);
+            d = parser.parse(new ByteArrayInputStream(ajax.toString().getBytes("UTF-8")));
+            double duration = Double.parseDouble(xPath.evaluate("/manifest/duration", d));
+            bestSizeEstimation = (long) ((duration * Long.parseLong(bitrate) * 1024l) / 8);
+            NodeList mediaUrls = (NodeList) xPath.evaluate("/manifest/media", d, XPathConstants.NODESET);
+            Node media;
+            for (int j = 0; j < mediaUrls.getLength(); j++) {
+                media = mediaUrls.item(j);
+                if (var == null) {
+                    downloadLink.setDownloadSize(bestSizeEstimation);
+                    downloadLink.setProperty("f4vUrl", Request.getLocation(getAttByNamedItem(media, "url"), ajax.getRequest()));
+                    downloadLink.setFinalFileName(Encoding.htmlDecode(filename.trim()) + "_" + height + "p" + ".mp4");
+                    return AvailableStatus.TRUE;
+                }
+                if (var == null || StringUtils.equals(getAttByNamedItem(media, "streamId"), var.getStreamID())) {
+                    // found
+                    bestUrl = getAttByNamedItem(media, "url");
+                    if (var != null) {
+                        if (StringUtils.equals(var.getWidth(), width)) {
+                            if (StringUtils.equals(var.getHeight(), height)) {
+                                if (StringUtils.equals(var.getBitrate(), bitrate)) {
+                                    downloadLink.setDownloadSize(bestSizeEstimation);
+                                    downloadLink.setProperty("f4vUrl", Request.getLocation(getAttByNamedItem(media, "url"), ajax.getRequest()));
+                                    downloadLink.setFinalFileName(Encoding.htmlDecode(filename.trim()) + "_" + height + "p" + ".mp4");
+                                    return AvailableStatus.TRUE;
                                 }
                             }
                         }
                     }
-
                 }
-
             }
-            if (bestSizeEstimation > 0) {
-
-                downloadLink.setFinalFileName(Encoding.htmlDecode(filename.trim()) + "_" + height + "p" + ".mp4");
-                downloadLink.setDownloadSize(bestSizeEstimation);
-                downloadLink.setProperty("f4vUrl", bestUrl);
-                return AvailableStatus.TRUE;
-            }
-
-            return AvailableStatus.FALSE;
-        } else {
-            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-
+        if (bestSizeEstimation > 0) {
+            downloadLink.setFinalFileName(Encoding.htmlDecode(filename.trim()) + "_" + height + "p" + ".mp4");
+            downloadLink.setDownloadSize(bestSizeEstimation);
+            downloadLink.setProperty("f4vUrl", bestUrl);
+            return AvailableStatus.TRUE;
+        }
+        return AvailableStatus.FALSE;
     }
 
     private void getPage(final String url) throws IOException {
@@ -241,6 +224,8 @@ public class RuTubeRu extends PluginForHost {
 
     private Browser cloneBrowser(Browser br) {
         final Browser ajax = br.cloneBrowser();
+        // rv40.0 don't get "video_balancer".
+        ajax.getHeaders().put("User-Agent", "Mozilla/5.0 (Windows NT 6.3; WOW64; rv:50.0) Gecko/20100101 Firefox/50.0");
         ajax.getHeaders().put("Accept", "*/*");
         ajax.getHeaders().put("X-Requested-With", "ShockwaveFlash/22.0.0.209");
         return ajax;
@@ -270,10 +255,12 @@ public class RuTubeRu extends PluginForHost {
 
     @Override
     public void resetDownloadlink(final DownloadLink link) {
+        if (link != null) {
+            link.removeProperty(HDSDownloader.RESUME_FRAGMENT);
+        }
     }
 
     @Override
     public void resetPluginGlobals() {
     }
-
 }

@@ -2,20 +2,11 @@ package org.jdownloader.captcha.v2.challenge.recaptcha.v2;
 
 import java.util.ArrayList;
 
-import org.appwork.utils.StringUtils;
-import org.appwork.utils.logging2.LogSource;
-import org.jdownloader.captcha.blacklist.BlacklistEntry;
-import org.jdownloader.captcha.blacklist.BlockAllCrawlerCaptchasEntry;
-import org.jdownloader.captcha.blacklist.BlockCrawlerCaptchasByHost;
-import org.jdownloader.captcha.blacklist.BlockCrawlerCaptchasByPackage;
-import org.jdownloader.captcha.blacklist.CaptchaBlackList;
-import org.jdownloader.captcha.v2.AbstractResponse;
-import org.jdownloader.captcha.v2.ChallengeResponseController;
-import org.jdownloader.captcha.v2.solverjob.SolverJob;
-
 import jd.controlling.captcha.SkipException;
 import jd.controlling.downloadcontroller.SingleDownloadController;
 import jd.controlling.linkcollector.LinkCollector;
+import jd.controlling.linkcollector.LinkCollector.JobLinkCrawler;
+import jd.controlling.linkcrawler.LinkCrawler;
 import jd.controlling.linkcrawler.LinkCrawlerThread;
 import jd.http.Browser;
 import jd.plugins.CaptchaException;
@@ -24,13 +15,22 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForDecrypt;
 
+import org.appwork.utils.logging2.LogSource;
+import org.jdownloader.captcha.blacklist.BlacklistEntry;
+import org.jdownloader.captcha.blacklist.BlockAllCrawlerCaptchasEntry;
+import org.jdownloader.captcha.blacklist.BlockCrawlerCaptchasByHost;
+import org.jdownloader.captcha.blacklist.BlockCrawlerCaptchasByPackage;
+import org.jdownloader.captcha.blacklist.CaptchaBlackList;
+import org.jdownloader.captcha.v2.ChallengeResponseController;
+import org.jdownloader.captcha.v2.solverjob.SolverJob;
+
 public class CaptchaHelperCrawlerPluginRecaptchaV2 extends AbstractCaptchaHelperRecaptchaV2<PluginForDecrypt> {
-    public CaptchaHelperCrawlerPluginRecaptchaV2(final PluginForDecrypt plugin, final Browser br, final String siteKey, final String secureToken) {
-        super(plugin, br, siteKey, secureToken);
+    public CaptchaHelperCrawlerPluginRecaptchaV2(final PluginForDecrypt plugin, final Browser br, final String siteKey, final String secureToken, boolean boundToDomain) {
+        super(plugin, br, siteKey, secureToken, boundToDomain);
     }
 
     public CaptchaHelperCrawlerPluginRecaptchaV2(final PluginForDecrypt plugin, final Browser br, final String siteKey) {
-        this(plugin, br, siteKey, null);
+        this(plugin, br, siteKey, null, false);
     }
 
     public CaptchaHelperCrawlerPluginRecaptchaV2(final PluginForDecrypt plugin, final Browser br) {
@@ -53,8 +53,8 @@ public class CaptchaHelperCrawlerPluginRecaptchaV2 extends AbstractCaptchaHelper
             // non fatal if secureToken is null.
         }
         final PluginForDecrypt plugin = getPlugin();
-        final RecaptchaV2Challenge c = createChallenge(plugin);
-        c.setTimeout(plugin == null ? 60000 : plugin.getCaptchaTimeout());
+        final RecaptchaV2Challenge c = createChallenge();
+        c.setTimeout(plugin == null ? 60000 : plugin.getChallengeTimeout(c));
         if (plugin != null) {
             plugin.invalidateLastChallengeResponse();
         }
@@ -66,60 +66,14 @@ public class CaptchaHelperCrawlerPluginRecaptchaV2 extends AbstractCaptchaHelper
         ArrayList<SolverJob<String>> jobs = new ArrayList<SolverJob<String>>();
         try {
             jobs.add(ChallengeResponseController.getInstance().handle(c));
-            AbstractRecaptcha2FallbackChallenge rcFallback = null;
-            while (jobs.size() <= 20) {
-                if (rcFallback == null && c.getResult() != null) {
-                    for (AbstractResponse<String> r : c.getResult()) {
-                        if (r.getChallenge() != null && r.getChallenge() instanceof AbstractRecaptcha2FallbackChallenge) {
-                            rcFallback = (AbstractRecaptcha2FallbackChallenge) r.getChallenge();
-                            break;
-                        }
-                    }
-                }
-                if (rcFallback != null && StringUtils.isEmpty(rcFallback.getToken())) {
-                    // retry
-                    try {
-                        rcFallback.reload(jobs.size() + 1);
-                    } catch (Throwable e) {
-                        LogSource.exception(logger, e);
-                        throw new DecrypterException(DecrypterException.CAPTCHA);
-                    }
-                    if (rcFallback.doRunAntiDDosProtection()) {
-                        runDdosPrevention();
-                    }
-                    jobs.add(ChallengeResponseController.getInstance().handle(rcFallback));
-                    if (StringUtils.isNotEmpty(rcFallback.getToken())) {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
             if (!c.isSolved()) {
-                throw new DecrypterException(DecrypterException.CAPTCHA);
+                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+            } else if (!c.isCaptchaResponseValid()) {
+                final String value = c.getResult().getValue();
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "Captcha reponse value did not validate:" + value);
+            } else {
+                return c.getResult().getValue();
             }
-            if (c.getResult() != null) {
-                for (AbstractResponse<String> r : c.getResult()) {
-                    if (r.getChallenge() instanceof AbstractRecaptcha2FallbackChallenge) {
-                        String token = ((AbstractRecaptcha2FallbackChallenge) r.getChallenge()).getToken();
-                        if (!RecaptchaV2Challenge.isValidToken(token)) {
-                            for (int i = 0; i < jobs.size(); i++) {
-                                jobs.get(i).invalidate();
-                            }
-                            throw new DecrypterException(DecrypterException.CAPTCHA);
-                        } else {
-                            for (int i = 0; i < jobs.size(); i++) {
-                                jobs.get(i).validate();
-                            }
-                        }
-                        return token;
-                    }
-                }
-            }
-            if (!c.isCaptchaResponseValid()) {
-                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "Captcha reponse value did not validate!");
-            }
-            return c.getResult().getValue();
         } catch (PluginException e) {
             for (int i = 0; i < jobs.size(); i++) {
                 jobs.get(i).invalidate();
@@ -142,11 +96,23 @@ public class CaptchaHelperCrawlerPluginRecaptchaV2 extends AbstractCaptchaHelper
                 break;
             case REFRESH:
                 break;
+            case TIMEOUT:
+                plugin.onCaptchaTimeout(plugin.getCurrentLink(), c);
+                // TIMEOUT may fallthrough to SINGLE
+            case SINGLE:
+                break;
             case STOP_CURRENT_ACTION:
                 if (Thread.currentThread() instanceof LinkCrawlerThread) {
-                    LinkCollector.getInstance().abort();
-                    // Just to be sure
-                    CaptchaBlackList.getInstance().add(new BlockAllCrawlerCaptchasEntry(plugin.getCrawler()));
+                    final LinkCrawler linkCrawler = ((LinkCrawlerThread) Thread.currentThread()).getCurrentLinkCrawler();
+                    if (linkCrawler instanceof JobLinkCrawler) {
+                        final JobLinkCrawler jobLinkCrawler = ((JobLinkCrawler) linkCrawler);
+                        logger.info("Abort JobLinkCrawler:" + jobLinkCrawler.getUniqueAlltimeID().toString());
+                        jobLinkCrawler.abort();
+                    } else {
+                        logger.info("Abort global LinkCollector");
+                        LinkCollector.getInstance().abort();
+                    }
+                    CaptchaBlackList.getInstance().add(new BlockAllCrawlerCaptchasEntry(getPlugin().getCrawler()));
                 }
                 break;
             default:
@@ -158,7 +124,22 @@ public class CaptchaHelperCrawlerPluginRecaptchaV2 extends AbstractCaptchaHelper
         }
     }
 
-    protected RecaptchaV2Challenge createChallenge(final PluginForDecrypt plugin) {
-        return new RecaptchaV2Challenge(siteKey, secureToken, plugin, br, getSiteDomain(), getSiteUrl());
+    protected RecaptchaV2Challenge createChallenge() {
+        return new RecaptchaV2Challenge(getSiteKey(), getSecureToken(), getPlugin(), br, getSiteDomain()) {
+            @Override
+            public String getSiteUrl() {
+                return CaptchaHelperCrawlerPluginRecaptchaV2.this.getSiteUrl();
+            }
+
+            @Override
+            public String getType() {
+                final TYPE type = CaptchaHelperCrawlerPluginRecaptchaV2.this.getType();
+                if (type != null) {
+                    return type.name();
+                } else {
+                    return TYPE.NORMAL.name();
+                }
+            }
+        };
     }
 }

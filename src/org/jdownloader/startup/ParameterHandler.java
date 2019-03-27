@@ -5,10 +5,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 
-import jd.SecondLevelLaunch;
-
 import org.appwork.app.launcher.parameterparser.CommandSwitch;
-import org.appwork.app.launcher.parameterparser.CommandSwitchListener;
 import org.appwork.app.launcher.parameterparser.ParameterParser;
 import org.appwork.utils.Application;
 import org.appwork.utils.logging2.LogSource;
@@ -32,7 +29,9 @@ import org.jdownloader.startup.commands.SetConfigCommand;
 import org.jdownloader.startup.commands.ThreadDump;
 import org.jdownloader.updatev2.RestartController;
 
-public class ParameterHandler implements InstanceMessageListener, CommandSwitchListener {
+import jd.SecondLevelLaunch;
+
+public class ParameterHandler implements InstanceMessageListener {
     private HashMap<String, StartupCommand> commandMap;
     private LogSource                       logger;
     private ArrayList<StartupCommand>       commands;
@@ -58,9 +57,7 @@ public class ParameterHandler implements InstanceMessageListener, CommandSwitchL
         addCommand(new DisableSysErr());
         addCommand(new SetConfigCommand());
         addCommand(new ThreadDump());
-
         addCommand(new AbstractStartupCommand("n") {
-
             @Override
             public void run(String command, String... parameters) {
             }
@@ -69,21 +66,16 @@ public class ParameterHandler implements InstanceMessageListener, CommandSwitchL
             public String getDescription() {
                 return "Force a new Instance.";
             }
-
         });
-
         addCommand(new AbstractStartupCommand("console") {
-
             @Override
             public void run(String command, String... parameters) {
-
             }
 
             @Override
             public String getDescription() {
                 return "Write all Logs to STDOUt or STDERR";
             }
-
         });
     }
 
@@ -101,18 +93,18 @@ public class ParameterHandler implements InstanceMessageListener, CommandSwitchL
     public void parseMessage(String[] args) {
         logger.info("Sent: " + Arrays.toString(args));
         ParameterParser pp = new ParameterParser(args);
-        pp.getEventSender().addListener(this);
         pp.parse(null);
+        execute(pp, false);
     }
 
-    @Override
-    public void executeCommandSwitch(CommandSwitch event) {
-
-        StartupCommand command = commandMap.get(event.getSwitchCommand());
-        if (command != null && command.isRunningInstanceEnabled()) {
-            command.run(event.getSwitchCommand(), event.getParameters());
-        } else {
-            logger.warning("Invalid Command: " + event.getSwitchCommand() + " - " + Arrays.toString(event.getParameters()));
+    protected void execute(ParameterParser pp, boolean startup) {
+        for (CommandSwitch cmd : pp.getList()) {
+            StartupCommand command = commandMap.get(cmd.getSwitchCommand());
+            if (command != null && (command.isRunningInstanceEnabled() || startup)) {
+                command.run(cmd.getSwitchCommand(), cmd.getParameters());
+            } else {
+                logger.warning("Invalid Command: " + cmd.getSwitchCommand() + " - " + Arrays.toString(cmd.getParameters()));
+            }
         }
     }
 
@@ -123,32 +115,11 @@ public class ParameterHandler implements InstanceMessageListener, CommandSwitchL
     public void onStartup(String[] args) {
         logger.info("Startup: " + Arrays.toString(args));
         startupParameters = RestartController.getInstance().getParameterParser(args);
-
-        CommandSwitchListener list = new CommandSwitchListener() {
-
-            @Override
-            public void executeCommandSwitch(CommandSwitch event) {
-                StartupCommand command = commandMap.get(event.getSwitchCommand());
-                if (command != null) {
-                    command.run(event.getSwitchCommand(), event.getParameters());
-                } else {
-                    logger.warning("Invalid Command: " + event.getSwitchCommand() + " - " + Arrays.toString(event.getParameters()));
-                }
-            }
-
-        };
-        startupParameters.getEventSender().addListener(list);
-        try {
-            startupParameters.parse(null);
-        } finally {
-            startupParameters.getEventSender().removeListener(list);
-        }
-
+        startupParameters.parse(null);
+        execute(startupParameters, true);
         if (!startupParameters.hasCommandSwitch("console") && Application.isJared(SecondLevelLaunch.class)) {
             logger.info("Remove ConsoleHandler");
             LogController.getInstance().removeConsoleHandler();
         }
-
     }
-
 }

@@ -13,14 +13,11 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.Locale;
-import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -30,13 +27,11 @@ import java.util.regex.Pattern;
 import jd.PluginWrapper;
 import jd.config.Property;
 import jd.http.Browser;
-import jd.http.Cookie;
 import jd.http.Cookies;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.parser.html.Form;
-import jd.parser.html.HTMLParser;
 import jd.parser.html.InputField;
 import jd.plugins.Account;
 import jd.plugins.Account.AccountType;
@@ -49,9 +44,9 @@ import jd.plugins.Plugin;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.SiteType.SiteTemplate;
-import jd.utils.JDUtilities;
 import jd.utils.locale.JDL;
 
+import org.appwork.utils.StringUtils;
 import org.appwork.utils.formatter.SizeFormatter;
 import org.appwork.utils.formatter.TimeFormatter;
 import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
@@ -60,7 +55,6 @@ import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPlugin
 
 @HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "subyshare.com" }, urls = { "https?://(?:www\\.)?subyshare\\.com/(?:vidembed\\-)?[a-z0-9]{12}" })
 public class SubyShareCom extends PluginForHost {
-
     private String                         correctedBR                  = "";
     private String                         passCode                     = null;
     private static final String            PASSWORDTEXT                 = "<br><b>Passwor(d|t):</b> <input";
@@ -75,11 +69,11 @@ public class SubyShareCom extends PluginForHost {
     private static final String            ALLWAIT_SHORT                = JDL.L("hoster.xfilesharingprobasic.errors.waitingfordownloads", "Waiting till new downloads can be started");
     private static final String            PREMIUMONLY1                 = JDL.L("hoster.xfilesharingprobasic.errors.premiumonly1", "Max downloadable filesize for free users:");
     private static final String            PREMIUMONLY2                 = JDL.L("hoster.xfilesharingprobasic.errors.premiumonly2", "Only downloadable via premium or free account");
-    private static final boolean           VIDEOHOSTER                  = true;
+    // disabled for the moment because it causes high load on servers because they tried to fix instant load workaround bug
+    private static final boolean           VIDEOHOSTER                  = false;
     private static final boolean           VIDEOHOSTER_2                = false;
     private static final boolean           SUPPORTSHTTPS                = true;
     private static final boolean           ENFORCESHTTPS                = true;
-    private final boolean                  ENABLE_RANDOM_UA             = false;
     private static AtomicReference<String> agent                        = new AtomicReference<String>(null);
     /* Connection stuff */
     private static final boolean           FREE_RESUME                  = false;
@@ -89,7 +83,6 @@ public class SubyShareCom extends PluginForHost {
     private static AtomicInteger           totalMaxSimultanFreeDownload = new AtomicInteger(FREE_MAXDOWNLOADS);
     /* don't touch the following! */
     private static AtomicInteger           maxFree                      = new AtomicInteger(1);
-    private static Object                  LOCK                         = new Object();
     private String                         fuid                         = null;
 
     /* DEV NOTES */
@@ -98,8 +91,9 @@ public class SubyShareCom extends PluginForHost {
     // limit-info:
     // protocol: no https
     // captchatype: reCaptchaV2
-    // other:
-
+    // other: 2018-07-19: Changed name of captcha recognization-method to "xfilesharingprobasic_subysharecom_special"[original method = for
+    // 4 digits but they have 6 digits and another background & font color] as their captchas are
+    // a little bit different from what our method can handle
     @Override
     public void correctDownloadLink(final DownloadLink link) {
         /* link cleanup, but respect users protocol choosing */
@@ -122,12 +116,27 @@ public class SubyShareCom extends PluginForHost {
         this.enablePremium(COOKIE_HOST + "/premium.html");
     }
 
-    @Override
-    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
+    public AvailableStatus requestFileInformation(final DownloadLink link, final Account account, final boolean isDownload) throws Exception {
         br.setFollowRedirects(true);
         prepBrowser(br);
         setFUID(link);
         getPage(link.getDownloadURL());
+        if (antiddosEnforced()) {
+            if (!isDownload) {
+                link.getLinkStatus().setStatusText("Captcha event present within linkchecking");
+                return AvailableStatus.UNCHECKABLE;
+            }
+            // recaptchaV2 event!
+            logger.info("Detected captcha method \"reCaptchaV2\"");
+            final Form form = br.getFormbyProperty("id", "checkDDOS");
+            final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
+            form.put("g-recaptcha-response", Encoding.urlEncode(recaptchaV2Response));
+            sendForm(form);
+            getPage(link.getDownloadURL());
+            if (antiddosEnforced()) {
+                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+            }
+        }
         if (br.getRequest().getHttpConnection().getResponseCode() == 403) {
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "IP blocked by service");
         }
@@ -149,7 +158,15 @@ public class SubyShareCom extends PluginForHost {
                 logger.warning("Waittime detected, please reconnect to make the linkchecker work!");
                 return AvailableStatus.UNCHECKABLE;
             }
-            logger.warning("filename equals null, throwing \"plugin defect\"");
+            if (br.containsHTML("You need upgrade to premium account before download") || br.getURL().contains("/predownload")) {
+                if (!isDownload) {
+                    return AvailableStatus.UNCHECKABLE;
+                }
+                if (account != null) {
+                    return AvailableStatus.UNCHECKABLE;
+                }
+                throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
+            }
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         if (fileInfo[2] != null && !fileInfo[2].equals("")) {
@@ -161,6 +178,17 @@ public class SubyShareCom extends PluginForHost {
             link.setDownloadSize(SizeFormatter.getSize(fileInfo[1]));
         }
         return AvailableStatus.TRUE;
+    }
+
+    private boolean antiddosEnforced() {
+        final Form f = br.getFormbyProperty("id", "checkDDOS");
+        final boolean captchaEvent = br.containsHTML("<center><h1>Your browser is computing access to [\\w.]+</h1></center>");
+        return f != null && captchaEvent ? true : false;
+    }
+
+    @Override
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
+        return requestFileInformation(link, null, false);
     }
 
     private String[] scanInfo(final String[] fileInfo) {
@@ -206,12 +234,16 @@ public class SubyShareCom extends PluginForHost {
 
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception, PluginException {
-        requestFileInformation(downloadLink);
+        requestFileInformation(downloadLink, null, true);
         doFree(downloadLink, FREE_RESUME, FREE_MAXCHUNKS, "freelink");
     }
 
     @SuppressWarnings("unused")
     public void doFree(final DownloadLink downloadLink, final boolean resumable, final int maxchunks, final String directlinkproperty) throws Exception, PluginException {
+        if (checkShowFreeDialog(getHost())) {
+            showFreeDialog(getHost());
+        }
+        checkForPremiumonlyNew();
         br.setFollowRedirects(false);
         passCode = downloadLink.getStringProperty("pass");
         /* First, bring up saved final links */
@@ -267,10 +299,13 @@ public class SubyShareCom extends PluginForHost {
                 sendForm(download1);
                 checkErrors(downloadLink, false);
                 dllink = getDllink();
+                if (dllink == null) {
+                    checkErrors(downloadLink, false);
+                }
             }
         }
         if (dllink == null) {
-            Form dlForm = br.getFormbyProperty("name", "F1");
+            Form dlForm = findFormF1();
             if (dlForm == null) {
                 handlePluginBroken(downloadLink, "dlform_f1_null", 3);
             }
@@ -312,26 +347,19 @@ public class SubyShareCom extends PluginForHost {
                     dlForm.put("code", code.toString());
                     logger.info("Put captchacode " + code.toString() + " obtained by captcha metod \"plaintext captchas\" in the form.");
                 } else if (correctedBR.contains("/captchas/")) {
-                    logger.info("Detected captcha method \"Standard captcha\" for this host");
-                    final String[] sitelinks = HTMLParser.getHttpLinks(br.toString(), null);
-                    String captchaurl = null;
-                    if (sitelinks == null || sitelinks.length == 0) {
-                        logger.warning("Standard captcha captchahandling broken!");
-                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-                    }
-                    for (String link : sitelinks) {
-                        if (link.contains("/captchas/")) {
-                            captchaurl = link;
-                            break;
-                        }
-                    }
+                    final String captchaurl = br.getRegex("<img\\s*src\\s*=\\s*\"(/captchas/.*?)\"").getMatch(0);
                     if (captchaurl == null) {
                         logger.warning("Standard captcha captchahandling broken!");
                         throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                     }
-                    String code = getCaptchaCode("xfilesharingprobasic", captchaurl, downloadLink);
+                    final String code = getCaptchaCode("xfilesharingprobasic_subysharecom_special", captchaurl, downloadLink);
                     dlForm.put("code", code);
                     logger.info("Put captchacode " + code + " obtained by captcha metod \"Standard captcha\" in the form.");
+                } else if (correctedBR.contains("class=\"g-recaptcha\"")) {
+                    logger.info("Detected captcha method \"reCaptchaV2\" for this host");
+                    final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
+                    dlForm.put("g-recaptcha-response", Encoding.urlEncode(recaptchaV2Response));
+                    skipWaittime = true;
                 } else if (new Regex(correctedBR, "(api\\.recaptcha\\.net|google\\.com/recaptcha/api/)").matches()) {
                     logger.info("Detected captcha method \"Re Captcha\" for this host");
                     final Recaptcha rc = new Recaptcha(br, this);
@@ -346,7 +374,6 @@ public class SubyShareCom extends PluginForHost {
                     skipWaittime = true;
                 } else if (br.containsHTML("solvemedia\\.com/papi/")) {
                     logger.info("Detected captcha method \"solvemedia\" for this host");
-
                     final org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia sm = new org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia(br);
                     File cf = null;
                     try {
@@ -372,10 +399,6 @@ public class SubyShareCom extends PluginForHost {
                     }
                     dlForm.put("capcode", result);
                     skipWaittime = false;
-                } else if (br.containsHTML("class=\"g-recaptcha\"")) {
-                    final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
-                    dlForm.put("g-recaptcha-response", Encoding.urlEncode(recaptchaV2Response));
-                    skipWaittime = true;
                 }
                 /* Captcha END */
                 if (password) {
@@ -388,11 +411,15 @@ public class SubyShareCom extends PluginForHost {
                 logger.info("Submitted DLForm");
                 checkErrors(downloadLink, true);
                 dllink = getDllink();
-                if (dllink == null && (!br.containsHTML("<Form name=\"F1\" method=\"POST\" action=\"\"") || i == repeat)) {
+                if (dllink == null && (findFormF1() == null || i == repeat)) {
+                    if (correctedBR.contains("/captchas/")) {
+                        /* 2018-07-19: Special workaround for wrong captcha as website does not display an errormessage */
+                        throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                    }
                     logger.warning("Final downloadlink (String is \"dllink\") regex didn't match!");
                     throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-                } else if (dllink == null && br.containsHTML("<Form name=\"F1\" method=\"POST\" action=\"\"")) {
-                    dlForm = br.getFormbyProperty("name", "F1");
+                } else if (dllink == null && findFormF1() != null) {
+                    dlForm = findFormF1();
                     continue;
                 } else {
                     break;
@@ -401,8 +428,9 @@ public class SubyShareCom extends PluginForHost {
         }
         logger.info("Final downloadlink = " + dllink + " starting the download...");
         dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, resumable, maxchunks);
-        if (dl.getConnection().getContentType().contains("html")) {
+        if (!isValidDownloadConnection(dl.getConnection())) {
             if (dl.getConnection().getResponseCode() == 503) {
+                dl.getConnection();
                 throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "Connection limit reached, please contact our support!", 5 * 60 * 1000l);
             }
             logger.warning("The final dllink seems not to be a file!");
@@ -422,6 +450,25 @@ public class SubyShareCom extends PluginForHost {
             /* remove download slot */
             controlFree(-1);
         }
+    }
+
+    private Form findFormF1() {
+        Form dlForm = null;
+        /* First try to find Form for video hosts with multiple qualities. */
+        final Form[] forms = br.getForms();
+        for (final Form aForm : forms) {
+            final InputField op_field = aForm.getInputFieldByName("op");
+            /* 2018-07-19: Special - different from main XFS template! */
+            if (aForm.containsHTML("method_free") && op_field != null && (op_field.getValue().contains("download_") || op_field.getValue().equals("download1"))) {
+                dlForm = aForm;
+                break;
+            }
+        }
+        /* Nothing found? Fallback to standard download handling! */
+        if (dlForm == null) {
+            dlForm = br.getFormbyProperty("name", "F1");
+        }
+        return dlForm;
     }
 
     private String handleVideoembed1(String dllink) {
@@ -470,14 +517,7 @@ public class SubyShareCom extends PluginForHost {
         /* define custom browser headers and language settings */
         br.getHeaders().put("Accept-Language", "en-gb, en;q=0.9");
         br.setCookie(COOKIE_HOST, "lang", "english");
-        if (ENABLE_RANDOM_UA) {
-            if (agent.get() == null) {
-                /* we first have to load the plugin, before we can reference it */
-                JDUtilities.getPluginForHost("mediafire.com");
-                agent.set(jd.plugins.hoster.MediafireCom.stringUserAgent());
-            }
-            br.getHeaders().put("User-Agent", agent.get());
-        }
+        br.setCookie(COOKIE_HOST, "is_checkddos", "1");
     }
 
     /**
@@ -503,14 +543,11 @@ public class SubyShareCom extends PluginForHost {
     public void correctBR() throws NumberFormatException, PluginException {
         correctedBR = br.toString();
         ArrayList<String> regexStuff = new ArrayList<String>();
-
         // remove custom rules first!!! As html can change because of generic cleanup rules.
-
         /* generic cleanup */
         regexStuff.add("<\\!(--.*?--)>");
         regexStuff.add("(display: ?none;\">.*?</div>)");
         regexStuff.add("(visibility:hidden>.*?<)");
-
         for (String aRegex : regexStuff) {
             String results[] = new Regex(correctedBR, aRegex).getColumn(0);
             if (results != null) {
@@ -527,7 +564,10 @@ public class SubyShareCom extends PluginForHost {
             dllink = new Regex(correctedBR, "(\"|')(https?://(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|([\\w\\-\\.]+\\.)?" + DOMAINS + ")(:\\d{1,4})?/(files|d|cgi-bin/dl\\.cgi)/(\\d+/)?[a-z0-9]+/[^<>\"/]*?)\\1").getMatch(1);
             if (dllink == null) {
                 /* Special: Usually for premium mode */
-                dllink = new Regex(correctedBR, "Location: (https?://[^/]+/d/[A-Za-z0-9]+/[^/]+)").getMatch(1);
+                final String ret = new Regex(correctedBR, "Location: (https?://[^/]+/d/[A-Za-z0-9]+/[^/]+)").getMatch(1);
+                if (ret != null && !getSupportedLinks().matcher(ret).matches()) {
+                    dllink = ret;
+                }
             }
             if (dllink == null) {
                 final String cryptedScripts[] = new Regex(correctedBR, "p\\}\\((.*?)\\.split\\('\\|'\\)").getColumn(0);
@@ -546,26 +586,21 @@ public class SubyShareCom extends PluginForHost {
 
     private String decodeDownloadLink(final String s) {
         String decoded = null;
-
         try {
             Regex params = new Regex(s, "'(.*?[^\\\\])',(\\d+),(\\d+),'(.*?)'");
-
             String p = params.getMatch(0).replaceAll("\\\\", "");
             int a = Integer.parseInt(params.getMatch(1));
             int c = Integer.parseInt(params.getMatch(2));
             String[] k = params.getMatch(3).split("\\|");
-
             while (c != 0) {
                 c--;
                 if (k[c].length() != 0) {
                     p = p.replaceAll("\\b" + Integer.toString(c, a) + "\\b", k[c]);
                 }
             }
-
             decoded = p;
         } catch (Exception e) {
         }
-
         String finallink = null;
         if (decoded != null) {
             /* Open regex is possible because in the unpacked JS there are usually only 1 links */
@@ -575,23 +610,26 @@ public class SubyShareCom extends PluginForHost {
     }
 
     private String checkDirectLink(final DownloadLink downloadLink, final String property) {
-        String dllink = downloadLink.getStringProperty(property);
+        final String dllink = downloadLink.getStringProperty(property);
         if (dllink != null) {
+            URLConnectionAdapter con = null;
             try {
                 final Browser br2 = br.cloneBrowser();
                 br2.setFollowRedirects(true);
-                URLConnectionAdapter con = br2.openGetConnection(dllink);
-                if (con.getContentType().contains("html") || con.getLongContentLength() == -1) {
-                    downloadLink.setProperty(property, Property.NULL);
-                    dllink = null;
+                con = br2.openGetConnection(dllink);
+                if (isValidDownloadConnection(con)) {
+                    return dllink;
                 }
-                con.disconnect();
             } catch (final Exception e) {
-                downloadLink.setProperty(property, Property.NULL);
-                dllink = null;
+                logger.log(e);
+            } finally {
+                if (con != null) {
+                    con.disconnect();
+                }
             }
+            downloadLink.setProperty(property, Property.NULL);
         }
-        return dllink;
+        return null;
     }
 
     private void getPage(String page) throws Exception {
@@ -622,7 +660,11 @@ public class SubyShareCom extends PluginForHost {
     private void waitTime(long timeBefore, final DownloadLink downloadLink) throws PluginException {
         int passedTime = (int) ((System.currentTimeMillis() - timeBefore) / 1000) - 1;
         /** Ticket Time */
-        final String ttt = new Regex(correctedBR, "id=\"countdown\">[^<>\"]+<[^<>]+>(\\d+)<").getMatch(0);
+        String ttt = new Regex(correctedBR, "id=\"countdown\">[^<>\"]+<[^<>]+>(\\d+)<").getMatch(0);
+        if (ttt == null) {
+            /* 2018-07-19: Special */
+            ttt = new Regex(correctedBR, "class=\"seconds\"[^>]*?>\\s*?(\\d+)\\s*?<").getMatch(0);
+        }
         if (ttt == null) {
             logger.warning("Wait time regex failed.");
         } else {
@@ -817,7 +859,7 @@ public class SubyShareCom extends PluginForHost {
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error!", 10 * 60 * 1000l);
         }
         /** Error handling for only-premium links */
-        if (new Regex(correctedBR, "( can download files up to |Upgrade your account to download bigger files|>Upgrade your account to download larger files|>The file you requested reached max downloads limit for Free Users|Please Buy Premium To download this file<|This file reached max downloads limit|>Upgrade to premium account to download this file|>This file is available for Premium Users only\\.<)").matches()) {
+        if (new Regex(correctedBR, "( can download files up to |Upgrade your account to download bigger files|>Please Upgrade to premium account to download this file.|>Upgrade your account to download larger files|>The file you requested reached max downloads limit for Free Users|Please Buy Premium To download this file<|This file reached max downloads limit|>Upgrade to premium account to download this file|>This file is available for Premium Users only\\.<)").matches()) {
             String filesizelimit = new Regex(correctedBR, "You can download files up to(.*?)only").getMatch(0);
             if (filesizelimit != null) {
                 filesizelimit = filesizelimit.trim();
@@ -837,6 +879,16 @@ public class SubyShareCom extends PluginForHost {
         checkResponseCodeErrors(this.br.getHttpConnection());
     }
 
+    private void checkForPremiumonlyNew() throws PluginException {
+        if (isPremiumonlyNew()) {
+            throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
+        }
+    }
+
+    private boolean isPremiumonlyNew() {
+        return this.br.getURL().contains("/predownload.php");
+    }
+
     /** Handles all kinds of error-responsecodes! */
     private void checkResponseCodeErrors(final URLConnectionAdapter con) throws PluginException {
         if (con == null) {
@@ -844,6 +896,7 @@ public class SubyShareCom extends PluginForHost {
         }
         final long responsecode = con.getResponseCode();
         if (responsecode == 403) {
+            /* 2018-07-19: This may also happen when using a VPN! */
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 5 * 60 * 1000l);
         } else if (responsecode == 404) {
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 404#1", 5 * 60 * 1000l);
@@ -894,11 +947,9 @@ public class SubyShareCom extends PluginForHost {
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         final AccountInfo ai = new AccountInfo();
-        try {
-            login(account, true);
-        } catch (final PluginException e) {
-            account.setValid(false);
-            throw e;
+        login(account, true);
+        if (!br.getURL().contains("/?op=my_account")) {
+            getPage("/?op=my_account");
         }
         final String space[] = new Regex(correctedBR, ">Storage:</strong>\\s*([0-9\\.]+)\\s*(KB|MB|GB|TB)?\\s*of").getRow(0);
         if ((space != null && space.length != 0) && (space[0] != null && space[1] != null)) {
@@ -913,14 +964,24 @@ public class SubyShareCom extends PluginForHost {
         if (availabletraffic == null) {
             availabletraffic = new Regex(correctedBR, ">Traffic Available</label>.*?>([^<>\"]+) Daily</p>").getMatch(0);
         }
+        if (availabletraffic == null) {
+            /* 2018-08-01: Special RegEx */
+            availabletraffic = new Regex(correctedBR, ">Traffic</label>\\s*?<div class=\"[^\"]+\">\\s*?<p class=\"form\\-control\\-static\">([^<>\"]+) Daily</p>").getMatch(0);
+        }
         if (availabletraffic != null && !availabletraffic.contains("nlimited") && !availabletraffic.equalsIgnoreCase(" Mb")) {
             availabletraffic = availabletraffic.trim();
             /* need to set 0 traffic left, as getSize returns positive result, even when negative value supplied. */
+            long trafficLeft = 0;
             if (!availabletraffic.startsWith("-")) {
-                ai.setTrafficLeft(SizeFormatter.getSize(availabletraffic));
+                trafficLeft = (SizeFormatter.getSize(availabletraffic));
             } else {
-                ai.setTrafficLeft(0);
+                trafficLeft = 0;
             }
+            final String usableBandwidth = br.getRegex("Usable Bandwidth\\s*<span.*?>\\s*([0-9\\.]+\\s*[TGMKB]+)\\s*/\\s*[0-9\\.]+\\s*[TGMKB]+\\s*<").getMatch(0);
+            if (usableBandwidth != null) {
+                trafficLeft = Math.max(trafficLeft, SizeFormatter.getSize(usableBandwidth));
+            }
+            ai.setTrafficLeft(trafficLeft);
         } else {
             ai.setUnlimitedTraffic();
         }
@@ -931,7 +992,7 @@ public class SubyShareCom extends PluginForHost {
             expire_milliseconds = TimeFormatter.getMilliSeconds(expire, "dd MMMM yyyy", Locale.ENGLISH);
         }
         if (AccountType.FREE.equals(account.getType()) && (expire_milliseconds - System.currentTimeMillis()) <= 0) {
-            // I assume account.setMaxSimultanDownloads(1);
+            account.setMaxSimultanDownloads(1);
             account.setConcurrentUsePossible(false);
             ai.setStatus("Free Account");
         } else {
@@ -951,32 +1012,63 @@ public class SubyShareCom extends PluginForHost {
         return ai;
     }
 
-    @SuppressWarnings("unchecked")
     private void login(final Account account, final boolean force) throws Exception {
-        synchronized (LOCK) {
+        synchronized (account) {
+            final boolean ifr = br.isFollowingRedirects();
             try {
-                /* Load cookies */
                 br.setCookiesExclusive(true);
                 prepBrowser(br);
-                final Object ret = account.getProperty("cookies", null);
-                boolean acmatch = Encoding.urlEncode(account.getUser()).equals(account.getStringProperty("name", Encoding.urlEncode(account.getUser())));
-                if (acmatch) {
-                    acmatch = Encoding.urlEncode(account.getPass()).equals(account.getStringProperty("pass", Encoding.urlEncode(account.getPass())));
-                }
-                if (acmatch && ret != null && ret instanceof HashMap<?, ?> && !force) {
-                    final HashMap<String, String> cookies = (HashMap<String, String>) ret;
-                    if (account.isValid()) {
-                        for (final Map.Entry<String, String> cookieEntry : cookies.entrySet()) {
-                            final String key = cookieEntry.getKey();
-                            final String value = cookieEntry.getValue();
-                            this.br.setCookie(COOKIE_HOST, key, value);
+                br.setFollowRedirects(true);
+                final Cookies cookies = account.loadCookies("");
+                if (cookies != null) {
+                    /*
+                     * 2017-05-04: Seems like subyshare.com limits the amount of session to 1 which means we probably often play ping-pong
+                     * with the users' browser --> ALWAYS validate the cookies as they can become invalid at any time ...
+                     */
+                    this.br.setCookies(this.getHost(), cookies);
+                    getPage(COOKIE_HOST);
+                    if (correctedBR.contains("/account/logout")) {
+                        /*
+                         * Cookies valid --> All good --> Save cookies (because of the new timestamp which might be useful in the future).
+                         */
+                        if (br.getCookie(COOKIE_HOST, "login") == null || br.getCookie(COOKIE_HOST, "xfss") == null) {
+                            br.clearCookies(getHost());
+                        } else {
+                            if (!br.getURL().contains("/?op=my_account")) {
+                                getPage("/?op=my_account");
+                            }
+                            if (!new Regex(correctedBR, "(Premium(-| )Account expire|>Renew premium<|>\\s*PREMIUM User\\s*</span>)").matches() || new Regex(correctedBR, ">\\s*REGISTERED User\\s*</span").matches()) {
+                                account.setType(AccountType.FREE);
+                            } else {
+                                account.setType(AccountType.PREMIUM);
+                            }
+                            account.saveCookies(br.getCookies(br.getURL()), "");
+                            return;
                         }
-                        return;
+                    } else {
+                        br.clearCookies(getHost());
                     }
+                    /* Perform full login */
                 }
-                // they redirect from https to http.. leaks! set cookie is within the response so you don't need to hit redirect
-                br.setFollowRedirects(false);
-                getPage(COOKIE_HOST + "/account/login");
+                // lets load home page FIRST
+                getPage(COOKIE_HOST);
+                getPage("/account/login");
+                if (antiddosEnforced()) {
+                    // recaptchaV2 event!
+                    logger.info("Detected captcha method \"reCaptchaV2\"");
+                    final Form form = br.getFormbyProperty("id", "checkDDOS");
+                    if (this.getDownloadLink() == null) {
+                        // login wont contain downloadlink
+                        this.setDownloadLink(new DownloadLink(this, "antiDDoS captcha prompt!", this.getHost(), this.getHost(), true));
+                    }
+                    final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
+                    form.put("g-recaptcha-response", Encoding.urlEncode(recaptchaV2Response));
+                    sendForm(form);
+                    if (antiddosEnforced()) {
+                        throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                    }
+                    getPage("/account/login");
+                }
                 final String lang = System.getProperty("user.language");
                 final Form loginform = br.getFormbyProperty("name", "FL");
                 if (loginform == null) {
@@ -1004,42 +1096,61 @@ public class SubyShareCom extends PluginForHost {
                 } else {
                     account.setType(AccountType.PREMIUM);
                 }
-                /* Save cookies */
-                final HashMap<String, String> cookies = new HashMap<String, String>();
-                final Cookies add = this.br.getCookies(COOKIE_HOST);
-                for (final Cookie c : add.getCookies()) {
-                    cookies.put(c.getKey(), c.getValue());
-                }
-                account.setProperty("name", Encoding.urlEncode(account.getUser()));
-                account.setProperty("pass", Encoding.urlEncode(account.getPass()));
-                account.setProperty("cookies", cookies);
+                account.saveCookies(br.getCookies(br.getURL()), "");
             } catch (final PluginException e) {
-                account.setProperty("cookies", Property.NULL);
+                if (e.getLinkStatus() == LinkStatus.ERROR_PREMIUM) {
+                    account.clearCookies("");
+                }
                 throw e;
+            } finally {
+                br.setFollowRedirects(ifr);
             }
+        }
+    }
+
+    protected boolean isValidDownloadConnection(final URLConnectionAdapter con) {
+        final String contentType = con.getContentType();
+        if (StringUtils.contains(contentType, "text") || StringUtils.containsIgnoreCase(contentType, "html") || con.getCompleteContentLength() == -1 || con.getResponseCode() == 401 || con.getResponseCode() == 404 || con.getResponseCode() == 409 || con.getResponseCode() == 440) {
+            return false;
+        } else {
+            return con.getResponseCode() == 200 || con.getResponseCode() == 206 || con.isContentDisposition();
         }
     }
 
     @Override
     public void handlePremium(final DownloadLink downloadLink, final Account account) throws Exception {
         passCode = downloadLink.getStringProperty("pass");
-        requestFileInformation(downloadLink);
+        requestFileInformation(downloadLink, account, true);
         login(account, false);
         if (AccountType.FREE.equals(account.getType())) {
-            requestFileInformation(downloadLink);
+            requestFileInformation(downloadLink, account, true);
             doFree(downloadLink, false, 1, "freelink2");
         } else {
             String dllink = checkDirectLink(downloadLink, "premlink");
             if (dllink == null) {
                 br.setFollowRedirects(false);
                 getPage(downloadLink.getDownloadURL());
+                if (br.getRedirectLocation() != null && br.getRedirectLocation().matches(getSupportedLinks().pattern())) {
+                    // https <-> http redirect, should never happen
+                    br.followRedirect();
+                }
+                if (isPremiumonlyNew()) {
+                    if (downloadLink.getLinkStatus().getRetryCount() < 2) {
+                        logger.info("Possible cookie failure");
+                        this.login(account, true);
+                        throw new PluginException(LinkStatus.ERROR_RETRY, "Possible cookie failure");
+                    } else {
+                        logger.info("Website failure or account is not premium anymore");
+                        throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
+                    }
+                }
                 /* Special: vidembed will also work for non-videos and via premium mode! */
                 dllink = handleVideoembed1(dllink);
                 if (dllink == null) {
                     dllink = getDllink();
                 }
                 if (dllink == null) {
-                    Form dlform = br.getFormbyProperty("name", "F1");
+                    final Form dlform = br.getFormbyProperty("name", "F1");
                     if (dlform != null && new Regex(correctedBR, PASSWORDTEXT).matches()) {
                         passCode = handlePassword(dlform, downloadLink);
                     }
@@ -1057,9 +1168,11 @@ public class SubyShareCom extends PluginForHost {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
             logger.info("Final downloadlink = " + dllink + " starting the download...");
+            br.setFollowRedirects(true);
             dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, -2);
-            if (dl.getConnection().getContentType().contains("html")) {
+            if (!isValidDownloadConnection(dl.getConnection())) {
                 if (dl.getConnection().getResponseCode() == 503) {
+                    dl.getConnection().disconnect();
                     throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "Connection limit reached, please contact our support!", 5 * 60 * 1000l);
                 }
                 logger.warning("The final dllink seems not to be a file!");
@@ -1086,5 +1199,4 @@ public class SubyShareCom extends PluginForHost {
     public SiteTemplate siteTemplateType() {
         return SiteTemplate.SibSoft_XFileShare;
     }
-
 }

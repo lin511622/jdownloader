@@ -1,5 +1,7 @@
 package jd.gui.swing.jdgui.views.settings.panels.packagizer.test;
 
+import java.util.Arrays;
+
 import javax.swing.Icon;
 
 import jd.controlling.linkcrawler.CrawledLink;
@@ -10,7 +12,6 @@ import org.appwork.swing.components.CheckBoxIcon;
 import org.appwork.swing.exttable.ExtTableModel;
 import org.appwork.swing.exttable.columns.ExtFileSizeColumn;
 import org.appwork.swing.exttable.columns.ExtTextColumn;
-import org.appwork.utils.Files;
 import org.jdownloader.DomainInfo;
 import org.jdownloader.controlling.packagizer.PackagizerController;
 import org.jdownloader.controlling.packagizer.PackagizerController.REPLACEVARIABLE;
@@ -20,7 +21,6 @@ import org.jdownloader.gui.translate._GUI;
 import org.jdownloader.images.AbstractIcon;
 
 public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
-
     /**
      *
      */
@@ -35,19 +35,16 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
     @Override
     protected void initColumns() {
         addColumn(new ExtTextColumn<CrawledLink>(_GUI.T.PackagizerSingleTestTableModel_initColumns_matches_()) {
-
             /**
              *
              */
             private static final long serialVersionUID = -8023575216919771671L;
 
             public int getDefaultWidth() {
-
                 return 60;
             }
 
             protected boolean isDefaultResizable() {
-
                 return false;
             }
 
@@ -65,13 +62,11 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
                 return null;
             }
         });
-
         addColumn(new ExtTextColumn<CrawledLink>(_GUI.T.ResultTableModel_initColumns_link_()) {
             /**
              *
              */
             private static final long serialVersionUID = -4783542565565393138L;
-
             {
                 editorField.setEditable(false);
             }
@@ -87,7 +82,6 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
 
             @Override
             public String getStringValue(CrawledLink value) {
-
                 return value.getURL();
             }
         });
@@ -102,13 +96,11 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
             }
 
             protected boolean isDefaultResizable() {
-
                 return true;
             }
 
             @Override
             public String getStringValue(CrawledLink value) {
-
                 return value.getName();
             }
         });
@@ -120,7 +112,6 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
 
             @Override
             protected String getTooltipText(final CrawledLink value) {
-
                 switch (value.getLinkState()) {
                 case OFFLINE:
                     return _GUI.T.ConditionDialog_layoutDialogContent_offline_();
@@ -128,24 +119,20 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
                     return _GUI.T.ConditionDialog_layoutDialogContent_online_();
                 case TEMP_UNKNOWN:
                     return _GUI.T.ConditionDialog_layoutDialogContent_uncheckable_();
-
                 }
                 return null;
             }
 
             public int getDefaultWidth() {
-
                 return 100;
             }
 
             protected boolean isDefaultResizable() {
-
                 return false;
             }
 
             @Override
             protected Icon getIcon(CrawledLink value) {
-
                 switch (value.getLinkState()) {
                 case OFFLINE:
                     return CheckBoxIcon.FALSE;
@@ -153,10 +140,8 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
                     return CheckBoxIcon.TRUE;
                 case TEMP_UNKNOWN:
                     return CheckBoxIcon.UNDEFINED;
-
                 }
                 return null;
-
             }
 
             @Override
@@ -164,7 +149,6 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
                 return null;
             }
         });
-
         addColumn(new ExtFileSizeColumn<CrawledLink>(_GUI.T.ResultTableModel_initColumns_size_()) {
             /**
              *
@@ -176,7 +160,6 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
             }
 
             protected boolean isDefaultResizable() {
-
                 return false;
             }
 
@@ -200,14 +183,12 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
             }
 
             protected boolean isDefaultResizable() {
-
                 return false;
             }
 
             @Override
             public String getStringValue(CrawledLink value) {
-
-                return Files.getExtension(value.getName());
+                return value.getLinkInfo().getExtension().name();
             }
         });
         addColumn(new ExtTextColumn<CrawledLink>(_GUI.T.ResultTableModel_initColumns_hoster()) {
@@ -221,7 +202,6 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
             }
 
             protected boolean isDefaultResizable() {
-
                 return false;
             }
 
@@ -229,9 +209,9 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
                 DomainInfo domain = value.getDomainInfo();
                 if (domain == null) {
                     domain = DomainInfo.getInstance(Browser.getHost(value.getURL()));
-                }
-                if (domain == null) {
-                    return null;
+                    if (domain == null) {
+                        return null;
+                    }
                 }
                 return domain.getFavIcon();
             }
@@ -241,20 +221,18 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
                 DomainInfo domain = value.getDomainInfo();
                 if (domain == null) {
                     domain = DomainInfo.getInstance(Browser.getHost(value.getURL()));
-                }
-                if (domain == null) {
-                    return null;
+                    if (domain == null) {
+                        return null;
+                    }
                 }
                 return domain.getTld();
             }
         });
-
         addColumn(new ExtTextColumn<CrawledLink>(_GUI.T.ResultTableModel_initColumns_source()) {
             /**
              *
              */
             private static final long serialVersionUID = -6866522293823735808L;
-
             {
                 editorField.setEditable(false);
             }
@@ -274,24 +252,15 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
 
             @Override
             public String getStringValue(CrawledLink value) {
-                StringBuilder sb = new StringBuilder();
-
-                CrawledLink p = value;
-                String last = p.getURL();
-                while ((p = p.getSourceLink()) != null) {
-                    if (last != null && last.equals(p.getURL())) {
-                        continue;
-                    }
-                    sb.append("∟");
-                    sb.append(p.getURL());
-                    sb.append("\r\n");
+                final String[] source = value.getSourceUrls();
+                if (source != null) {
+                    return Arrays.toString(source);
+                } else {
+                    return "";
                 }
-                return sb.toString().trim();
             }
         });
-
         addColumn(new ExtTextColumn<CrawledLink>(_GUI.T.PackagizerSingleTestTableModel_initColumns_downloadfolder_()) {
-
             /**
              *
              */
@@ -314,7 +283,6 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
                 return value.getDesiredPackageInfo().getDestinationFolder();
             }
         });
-
         addColumn(new ExtTextColumn<CrawledLink>(_GUI.T.PackagizerSingleTestTableModel_initColumns_packagename_()) {
             /**
              *
@@ -346,7 +314,6 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
             @Override
             public String getStringValue(CrawledLink value) {
                 return PackagizerController.getInstance().replaceVariables(REPLACEVARIABLE.FILENAME, rule.getRule().getFilename(), value, new PackagizerRuleWrapper(rule.getRule())) + "(" + rule.getRule().getFilename() + ")";
-                // return rule.getFilenameFilter().getRegex()
             }
         });
         addColumn(new ExtTextColumn<CrawledLink>(_GUI.T.PackagizerFilterRuleDialog_layoutDialogContent_comment()) {
@@ -361,10 +328,8 @@ public class PackagizerSingleTestTableModel extends ExtTableModel<CrawledLink> {
 
             @Override
             public String getStringValue(CrawledLink value) {
-                return PackagizerController.getInstance().replaceVariables(REPLACEVARIABLE.DIRECTORY, rule.getRule().getComment(), value, new PackagizerRuleWrapper(rule.getRule())) + "(" + rule.getRule().getComment() + ")";
-                // return rule.getFilenameFilter().getRegex()
+                return PackagizerController.getInstance().replaceVariables(REPLACEVARIABLE.COMMENT, rule.getRule().getComment(), value, new PackagizerRuleWrapper(rule.getRule())) + "(" + rule.getRule().getComment() + ")";
             }
         });
-
     }
 }

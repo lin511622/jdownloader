@@ -49,6 +49,12 @@ public class Zip4J extends IExtraction {
         return false;
     }
 
+    private final ExtractionExtension extension;
+
+    public Zip4J(ExtractionExtension extension) {
+        this.extension = extension;
+    }
+
     public File getExtractFilePath(final FileHeader item, final ExtractionController ctrl, final AtomicBoolean skipped) throws MultiSevenZipException, ZipException {
         final Archive archive = getExtractionController().getArchive();
         String itemPath = item.getFileName();
@@ -203,7 +209,7 @@ public class Zip4J extends IExtraction {
                 final File extractTo = getExtractFilePath(item, ctrl, skippedFlag);
                 if (skippedFlag.get()) {
                     if (size != null && size >= 0) {
-                        ctrl.addAndGetProcessedBytes(size);
+                        ctrl.addProcessedBytesAndPauseIfNeeded(size);
                     }
                     continue;
                 } else if (extractTo == null) {
@@ -220,7 +226,7 @@ public class Zip4J extends IExtraction {
                                 throw new MultiSevenZipException("Extraction has been aborted", ExtractionControllerConstants.EXIT_CODE_USER_BREAK);
                             }
                             final int ret = super.write(data, length);
-                            ctrl.addAndGetProcessedBytes(ret);
+                            ctrl.addProcessedBytesAndPauseIfNeeded(ret);
                             return ret;
                         }
                     };
@@ -301,7 +307,6 @@ public class Zip4J extends IExtraction {
                     break;
                 }
             }
-            initFilters();
             updateContentView(zipFile);
         } catch (Throwable e) {
             logger.log(e);
@@ -314,6 +319,7 @@ public class Zip4J extends IExtraction {
         final Archive archive = getExtractionController().getArchive();
         try {
             if (archive != null) {
+                initFilters();
                 final ContentView newView = new ContentView();
                 final List<Object> fileHeaders = zipFile.getFileHeaders();
                 for (int index = 0; index < fileHeaders.size(); index++) {
@@ -360,7 +366,7 @@ public class Zip4J extends IExtraction {
     public DummyArchive checkComplete(Archive archive) throws CheckException {
         if (archive.getArchiveType() != null) {
             try {
-                final DummyArchive ret = new DummyArchive(archive, archive.getArchiveType().name());
+                final DummyArchive ret = new DummyArchive(archive, archive.getArchiveType());
                 boolean hasMissingArchiveFiles = false;
                 for (ArchiveFile archiveFile : archive.getArchiveFiles()) {
                     if (archiveFile instanceof MissingArchiveFile) {

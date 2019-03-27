@@ -19,6 +19,8 @@ package org.jdownloader.extensions.antistandby;
 import java.awt.Dialog.ModalityType;
 import java.util.concurrent.atomic.AtomicReference;
 
+import jd.controlling.downloadcontroller.DownloadWatchDog;
+import jd.controlling.linkcollector.LinkCollector;
 import jd.plugins.AddonPanel;
 
 import org.appwork.shutdown.ShutdownController;
@@ -89,12 +91,28 @@ public class AntiStandbyExtension extends AbstractExtension<AntiStandbyConfig, A
         } else {
             ShutdownController.getInstance().removeShutdownVetoListener(this);
         }
-        final Thread old = currentThread.getAndSet(thread);
+        currentThread.getAndSet(thread);
         if (thread != null) {
             thread.start();
         }
-        if (old != null) {
-            old.interrupt();
+    }
+
+    protected boolean requiresAntiStandby() {
+        return requiresAntiStandby(getSettings().getMode());
+    }
+
+    protected boolean requiresAntiStandby(final Mode mode) {
+        switch (mode) {
+        case RUNNING:
+            return true;
+        case CRAWLING:
+            return LinkCollector.getInstance().isCollecting();
+        case DOWNLOADING:
+            return DownloadWatchDog.getInstance().getStateMachine().isState(DownloadWatchDog.RUNNING_STATE, DownloadWatchDog.PAUSE_STATE, DownloadWatchDog.STOPPING_STATE);
+        case DOWNLOADINGDORCRAWLING:
+            return requiresAntiStandby(Mode.CRAWLING) || requiresAntiStandby(Mode.DOWNLOADING);
+        default:
+            return false;
         }
     }
 

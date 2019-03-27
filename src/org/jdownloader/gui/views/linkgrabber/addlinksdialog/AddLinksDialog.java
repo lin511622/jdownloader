@@ -4,14 +4,14 @@ import java.awt.Component;
 import java.awt.Dialog.ModalityType;
 import java.awt.Point;
 import java.awt.event.ActionEvent;
-import java.awt.event.FocusEvent;
-import java.awt.event.FocusListener;
 import java.awt.event.HierarchyEvent;
 import java.awt.event.HierarchyListener;
 import java.awt.event.WindowEvent;
 import java.awt.event.WindowListener;
 import java.io.File;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -30,7 +30,6 @@ import javax.swing.JScrollPane;
 import javax.swing.ListCellRenderer;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
-import javax.swing.TransferHandler.TransferSupport;
 
 import jd.controlling.ClipboardMonitoring;
 import jd.controlling.ClipboardMonitoring.ClipboardContent;
@@ -38,8 +37,11 @@ import jd.controlling.linkcollector.LinkCollectingJob;
 import jd.controlling.linkcollector.LinkOrigin;
 import jd.controlling.linkcrawler.CrawledLink;
 import jd.controlling.linkcrawler.CrawledLinkModifier;
+import jd.controlling.linkcrawler.CrawledLinkModifiers;
 import jd.controlling.linkcrawler.LinkCrawler;
-import jd.controlling.linkcrawler.PackageInfo;
+import jd.controlling.linkcrawler.modifier.CommentModifier;
+import jd.controlling.linkcrawler.modifier.DownloadFolderModifier;
+import jd.controlling.linkcrawler.modifier.PackageNameModifier;
 import jd.gui.swing.jdgui.JDGui;
 import jd.gui.swing.jdgui.views.settings.panels.packagizer.VariableAction;
 import jd.gui.swing.laf.LookAndFeelController;
@@ -61,7 +63,6 @@ import org.appwork.swing.components.ExtTextField;
 import org.appwork.swing.components.pathchooser.PathChooser;
 import org.appwork.swing.components.searchcombo.SearchComboBox;
 import org.appwork.uio.UIOManager;
-import org.appwork.utils.Application;
 import org.appwork.utils.StringUtils;
 import org.appwork.utils.swing.EDTHelper;
 import org.appwork.utils.swing.EDTRunner;
@@ -92,35 +93,20 @@ import org.jdownloader.settings.staticreferences.CFG_LINKGRABBER;
 import org.jdownloader.updatev2.gui.LAFOptions;
 
 public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
-
     private ExtTextArea                         input;
-
     private PathChooser                         destination;
-
     private SearchComboBox<PackageHistoryEntry> packagename;
-
     private JScrollPane                         sp;
-
     private LinkgrabberSettings                 config;
-
     private ExtTextField                        password;
-
     private ExtCheckBox                         extractToggle;
-
     private JButton                             confirmOptions;
-
     private boolean                             deepAnalyse   = false;
-
     private DelayedRunnable                     delayedValidate;
-
     private ExtTextField                        downloadPassword;
-
     private JComboBox                           priority;
-
     private final HashSet<String>               autoPasswords = new HashSet<String>();
-
     private ExtTextField                        comment;
-
     private JCheckBox                           overwritePackagizer;                   ;
 
     public boolean isDeepAnalyse() {
@@ -135,7 +121,6 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
         super(UIOManager.BUTTONS_HIDE_OK, _GUI.T.AddLinksDialog_AddLinksDialog_(), null, _GUI.T.AddLinksDialog_AddLinksDialog_confirm(), null);
         config = JsonConfig.create(LinkgrabberSettings.class);
         delayedValidate = new DelayedRunnable(500l, 10000l) {
-
             @Override
             public String getID() {
                 return "AddLinksDialog";
@@ -145,14 +130,12 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
             public void delayedrun() {
                 validateForm();
             }
-
         };
         setLocator(new RememberRelativeDialogLocator("AddLinksDialog", JDGui.getInstance().getMainFrame()));
     }
 
     @Override
     public ModalityType getModalityType() {
-
         return ModalityType.MODELESS;
     }
 
@@ -166,7 +149,6 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
     //
     // return null;
     // }
-
     @Override
     protected MigPanel createBottomPanel() {
         MigPanel ret = new MigPanel("ins 0", "[][][][]20[grow,fill][]", "[]");
@@ -194,13 +176,11 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
     @Override
     protected DefaultButtonPanel getDefaultButtonPanel() {
         final DefaultButtonPanel ret = new DefaultButtonPanel("ins 0 0 0 0", "[grow,fill]0[][]", "0[fill]0");
-
         confirmOptions = new JButton(new ConfirmOptionsAction(okButton, this)) {
             public void setBounds(int x, int y, int width, int height) {
                 super.setBounds(x - 1, y, width + 1, height);
             }
         };
-
         // Set OK as defaultbutton
         this.getDialog().getRootPane().setDefaultButton(this.okButton);
         this.okButton.addHierarchyListener(new HierarchyListener() {
@@ -214,7 +194,6 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
                 }
             }
         });
-
         ret.add(this.okButton, "alignx right,sizegroup confirms,growx,pushx");
         ret.add(confirmOptions, "width 12!");
         return ret;
@@ -236,97 +215,109 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
 
     @Override
     protected LinkCollectingJob createReturnValue() {
-        final LinkCollectingJob ret = new LinkCollectingJob(LinkOrigin.ADD_LINKS_DIALOG.getLinkOriginDetails(), input.getText());
+        final LinkCollectingJob job = new LinkCollectingJob(LinkOrigin.ADD_LINKS_DIALOG.getLinkOriginDetails(), input.getText());
+        job.setDeepAnalyse(isDeepAnalyse());
+        final List<CrawledLinkModifier> modifiers = new ArrayList<CrawledLinkModifier>();
+        final List<CrawledLinkModifier> requiredPreModifiers = new ArrayList<CrawledLinkModifier>();
         final boolean overwritePackagizerRules = isOverwritePackagizerEnabled();
         final String finalPackageName = packagename.getText().trim();
-        final String finalComment = getComment().trim();
-        final String finalDownloadPassword = downloadPassword.getText();
-        final String finalDestination = destination.getFile() != null ? destination.getFile().getAbsolutePath() : null;
         if (StringUtils.isNotEmpty(finalPackageName)) {
             PackageHistoryManager.getInstance().add(finalPackageName);
+            final PackageNameModifier mod = new PackageNameModifier(finalPackageName, overwritePackagizerRules);
+            modifiers.add(mod);
+            requiredPreModifiers.add(mod);
         }
+        final String finalComment = getComment().trim();
+        if (StringUtils.isNotEmpty(finalComment)) {
+            modifiers.add(new CommentModifier(finalComment));
+        }
+        final String finalDestination = destination.getFile() != null ? destination.getFile().getAbsolutePath() : null;
+        if (StringUtils.isNotEmpty(finalDestination)) {
+            modifiers.add(new DownloadFolderModifier(finalDestination, overwritePackagizerRules));
+        }
+        final String finalDownloadPassword = downloadPassword.getText();
         if (StringUtils.isNotEmpty(finalDownloadPassword)) {
-            ret.setCrawlerPassword(finalDownloadPassword);
+            job.setCrawlerPassword(finalDownloadPassword);
+            modifiers.add(new CrawledLinkModifier() {
+                @Override
+                public List<CrawledLinkModifier> getSubCrawledLinkModifier(CrawledLink link) {
+                    return null;
+                }
+
+                @Override
+                public boolean modifyCrawledLink(CrawledLink link) {
+                    final DownloadLink dlLink = link.getDownloadLink();
+                    if (dlLink != null) {
+                        if (overwritePackagizerRules || StringUtils.isEmpty(dlLink.getDownloadPassword())) {
+                            dlLink.setDownloadPassword(finalDownloadPassword);
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            });
         }
-        String passwordTxt = password.getText();
-        HashSet<String> passwords = null;
-        if (!StringUtils.isEmpty(passwordTxt)) {
-            /* avoid empty hashsets */
-            passwords = JSonStorage.restoreFromString(passwordTxt, new TypeRef<HashSet<String>>() {
+        final Priority finalPriority = (Priority) priority.getSelectedItem();
+        if (finalPriority != null && (!Priority.DEFAULT.equals(finalPriority) || overwritePackagizerRules)) {
+            modifiers.add(new CrawledLinkModifier() {
+                @Override
+                public List<CrawledLinkModifier> getSubCrawledLinkModifier(CrawledLink link) {
+                    return null;
+                }
+
+                @Override
+                public boolean modifyCrawledLink(CrawledLink link) {
+                    link.setPriority(finalPriority);
+                    return true;
+                }
+            });
+        }
+        final String passwordTxt = password.getText();
+        if (StringUtils.isNotEmpty(passwordTxt)) {
+            HashSet<String> passwords = JSonStorage.restoreFromString(passwordTxt, new TypeRef<HashSet<String>>() {
             }, new HashSet<String>());
             if (passwords == null || passwords.size() == 0) {
                 passwords = new HashSet<String>();
-                passwords.add(password.getText().trim());
+                passwords.add(passwordTxt.trim());
             }
-        }
-        final HashSet<String> finalPasswords = passwords;
-
-        final Priority finalPriority = (Priority) priority.getSelectedItem();
-        ret.setDeepAnalyse(isDeepAnalyse());
-        final BooleanStatus finalExtractStatus = this.extractToggle.isSelected() ? BooleanStatus.TRUE : BooleanStatus.FALSE;
-        final CrawledLinkModifier modifier = new CrawledLinkModifier() {
-
-            @Override
-            public void modifyCrawledLink(CrawledLink link) {
-                if (StringUtils.isNotEmpty(finalPackageName)) {
-                    PackageInfo existing = link.getDesiredPackageInfo();
-                    if (overwritePackagizerRules || existing == null || StringUtils.isEmpty(existing.getName())) {
-                        if (existing == null) {
-                            existing = new PackageInfo();
-                        }
-                        existing.setName(finalPackageName);
-                        existing.setUniqueId(null);
-                        link.setDesiredPackageInfo(existing);
-                    }
+            final HashSet<String> finalPasswords = passwords;
+            modifiers.add(new CrawledLinkModifier() {
+                @Override
+                public List<CrawledLinkModifier> getSubCrawledLinkModifier(CrawledLink link) {
+                    return null;
                 }
 
-                if (!BooleanStatus.UNSET.equals(finalExtractStatus)) {
-                    BooleanStatus existing = BooleanStatus.UNSET;
-                    if (link.hasArchiveInfo()) {
-                        existing = link.getArchiveInfo().getAutoExtract();
-                    }
-                    if (overwritePackagizerRules || existing == null || BooleanStatus.UNSET.equals(existing)) {
-                        link.getArchiveInfo().setAutoExtract(finalExtractStatus);
-                    }
-                }
-                if (finalPriority != null && overwritePackagizerRules) {
-                    link.setPriority(finalPriority);
-                }
-                DownloadLink dlLink = link.getDownloadLink();
-                if (dlLink != null) {
-                    if (StringUtils.isNotEmpty(finalComment)) {
-                        if (overwritePackagizerRules || StringUtils.isEmpty(dlLink.getComment())) {
-                            dlLink.setComment(finalComment);
-                        }
-                    }
-                    if (StringUtils.isNotEmpty(finalDownloadPassword)) {
-                        if (overwritePackagizerRules || StringUtils.isEmpty(dlLink.getDownloadPassword())) {
-                            dlLink.setDownloadPassword(finalDownloadPassword);
-                        }
-                    }
-                }
-                if (StringUtils.isNotEmpty(finalDestination)) {
-                    PackageInfo existing = link.getDesiredPackageInfo();
-                    if (overwritePackagizerRules || existing == null || StringUtils.isEmpty(existing.getDestinationFolder())) {
-                        if (existing == null) {
-                            existing = new PackageInfo();
-                        }
-                        existing.setDestinationFolder(finalDestination);
-                        existing.setUniqueId(null);
-                        link.setDesiredPackageInfo(existing);
-                    }
-                }
-                if (finalPasswords != null && finalPasswords.size() > 0) {
+                @Override
+                public boolean modifyCrawledLink(CrawledLink link) {
                     link.getArchiveInfo().getExtractionPasswords().addAll(finalPasswords);
+                    return true;
                 }
-            }
-        };
-        ret.setCrawledLinkModifierPrePackagizer(modifier);
-        if (overwritePackagizerRules) {
-            ret.setCrawledLinkModifierPostPackagizer(modifier);
+            });
         }
-        return ret;
+        final BooleanStatus extractAfterDownload = this.extractToggle.isSelected() ? BooleanStatus.TRUE : BooleanStatus.FALSE;
+        if (BooleanStatus.isSet(extractAfterDownload)) {
+            modifiers.add(new CrawledLinkModifier() {
+                @Override
+                public List<CrawledLinkModifier> getSubCrawledLinkModifier(CrawledLink link) {
+                    return null;
+                }
 
+                @Override
+                public boolean modifyCrawledLink(CrawledLink link) {
+                    link.getArchiveInfo().setAutoExtract(extractAfterDownload);
+                    return true;
+                }
+            });
+        }
+        if (modifiers.size() > 0) {
+            if (overwritePackagizerRules) {
+                job.addPrePackagizerModifier(new CrawledLinkModifiers(requiredPreModifiers));
+                job.addPostPackagizerModifier(new CrawledLinkModifiers(modifiers));
+            } else {
+                job.addPrePackagizerModifier(new CrawledLinkModifiers(modifiers));
+            }
+        }
+        return job;
     }
 
     public void actionPerformed(final ActionEvent e) {
@@ -337,7 +328,6 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
 
     public String getComment() {
         return new EDTHelper<String>() {
-
             @Override
             public String edtRun() {
                 return comment.getText();
@@ -347,7 +337,6 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
 
     @Override
     public JComponent layoutDialogContent() {
-
         destination = new PathChooser("ADDLinks", true) {
             protected void onChanged(ExtTextField txt2) {
                 delayedValidate.run();
@@ -370,16 +359,18 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
                     e.printStackTrace();
                 }
                 return null;
+            }
 
+            @Override
+            protected String getProtoType(SearchComboBox<String> comboBox, List<String> model) {
+                return "";
             }
 
             protected String getHelpText() {
                 return _GUI.T.AddLinksDialog_layoutDialogContent_help_destination();
             }
         };
-
         packagename = new SearchComboBox<PackageHistoryEntry>() {
-
             @Override
             protected boolean isSearchCaseSensitive() {
                 return true;
@@ -391,61 +382,49 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
             }
 
             @Override
+            public PackageHistoryEntry getProtoType(List<PackageHistoryEntry> model) {
+                final PackageHistoryEntry ret = new PackageHistoryEntry("");
+                return ret;
+            }
+
+            @Override
             protected String getTextForValue(PackageHistoryEntry value) {
                 return value == null ? null : value.getName();
             }
         };
         packagename.setBadColor(null);
-
         packagename.setList(PackageHistoryManager.getInstance().list());
         packagename.setUnkownTextInputAllowed(true);
         packagename.setHelpText(_GUI.T.AddLinksDialog_layoutDialogContent_packagename_help());
         packagename.setSelectedItem(null);
-
         comment = new ExtTextField();
         comment.setHelpText(_GUI.T.AddLinksDialog_layoutDialogContent_comment_help());
         comment.setBorder(BorderFactory.createCompoundBorder(comment.getBorder(), BorderFactory.createEmptyBorder(2, 6, 1, 6)));
         final String defaultFolder = org.appwork.storage.config.JsonConfig.create(GeneralSettings.class).getDefaultDownloadFolder();
         destination.setQuickSelectionList(DownloadPathHistoryManager.getInstance().listPaths(defaultFolder));
-
         final String latest = config.getLatestDownloadDestinationFolder();
         if (!config.isUseLastDownloadDestinationAsDefault() || StringUtils.isEmpty(latest)) {
             destination.setFile(new File(defaultFolder));
         } else {
             destination.setFile(new File(latest));
         }
-
         input = new ExtTextArea() {
             @Override
             public void onChanged() {
                 delayedValidate.run();
             }
         };
-        input.addFocusListener(new FocusListener() {
-
-            @Override
-            public void focusLost(FocusEvent e) {
-            }
-
-            @Override
-            public void focusGained(FocusEvent e) {
-                input.selectAll();
-            }
-        });
         // input.setLineWrap(true);
         input.setWrapStyleWord(true);
         input.setHelpText(_GUI.T.AddLinksDialog_layoutDialogContent_input_help());
         sp = new JScrollPane(input);
         sp.setViewportBorder(BorderFactory.createEmptyBorder(2, 6, 1, 6));
-
         password = new ExtTextField();
         password.setHelpText(_GUI.T.AddLinksDialog_createExtracOptionsPanel_password());
         password.setBorder(BorderFactory.createCompoundBorder(password.getBorder(), BorderFactory.createEmptyBorder(2, 6, 1, 6)));
-
         priority = new JComboBox(Priority.values());
         final ListCellRenderer org = priority.getRenderer();
         priority.setRenderer(new ListCellRenderer() {
-
             public Component getListCellRendererComponent(JList list, Object value, int index, boolean isSelected, boolean cellHasFocus) {
                 JLabel r = (JLabel) org.getListCellRendererComponent(list, ((Priority) value).T(), index, isSelected, cellHasFocus);
                 r.setIcon(((Priority) value).loadIcon(20));
@@ -456,57 +435,36 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
         downloadPassword = new ExtTextField();
         downloadPassword.setHelpText(_GUI.T.AddLinksDialog_createExtracOptionsPanel_downloadpassword());
         downloadPassword.setBorder(BorderFactory.createCompoundBorder(downloadPassword.getBorder(), BorderFactory.createEmptyBorder(2, 6, 1, 6)));
-
         extractToggle = new ExtCheckBox();
-
         extractToggle.setSelected(config.isAutoExtractionEnabled());
         // extractToggle.setBorderPainted(false);
-
         extractToggle.setToolTipText(_GUI.T.AddLinksDialog_layoutDialogContent_autoextract_tooltip());
         int height = Math.max(24, (int) (comment.getPreferredSize().height * 0.9));
         MigPanel p = new MigPanel("ins 0 0 3 0,wrap 3", "[][grow,fill][]", "[fill,grow][grow," + height + "!][grow," + height + "!][grow," + height + "!][grow," + height + "!]");
-
         p.add(new JLabel(new AbstractIcon(IconKey.ICON_LINKGRABBER, 32)), "aligny top,height 32!,width 32!");
-
         p.add(sp, "height 30:100:n,spanx");
         p.add(createIconLabel(IconKey.ICON_SAVE, _GUI.T.AddLinksDialog_layoutDialogContent_save_tt()), "aligny center,width 32!,height " + height + "!");
-
         p.add(destination.getDestination(), "height " + height + "!");
         p.add(destination.getButton(), "sg right,height " + height + "!");
-
         p.add(createIconLabel(IconKey.ICON_PACKAGE_OPEN, _GUI.T.AddLinksDialog_layoutDialogContent_package_tt()), "aligny center,width 32!");
         p.add(packagename, "spanx,height " + height + "!");
         p.add(createIconLabel(IconKey.ICON_DOCUMENT, _GUI.T.AddLinksDialog_layoutDialogContent_comment_tt()), "aligny center,width 32!");
         p.add(comment, "spanx,height " + height + "!");
-
         p.add(createIconLabel(new ExtMergedIcon(new AbstractIcon(IconKey.ICON_EXTRACT, 24)).add(new AbstractIcon(IconKey.ICON_LOCK, 18), 6, 6), _GUI.T.AddLinksDialog_layoutDialogContent_downloadpassword_tt()), "aligny center,height " + height + "!,width 32!");
-
         p.add(password, "pushx,growx,height " + height + "!");
         MigPanel subpanel = new MigPanel("ins 0", "[grow,fill][]", "[" + height + "!,grow]");
-
         p.add(subpanel, "sg right");
         JLabel lbl;
         subpanel.add(lbl = new JLabel(_GUI.T.AddLinksDialog_layoutDialogContent_autoextract_lbl()));
         lbl.setHorizontalAlignment(SwingConstants.RIGHT);
         subpanel.add(extractToggle, "aligny center");
-
         p.add(createIconLabel(new BadgeIcon(IconKey.ICON_PASSWORD, IconKey.ICON_DOWNLOAD, 24), _GUI.T.AddLinksDialog_layoutDialogContent_downloadpassword_tt()), "aligny center,width 32!");
-
         p.add(downloadPassword);
         p.add(priority, "sg right");
-
-        if (Application.getJavaVersion() >= Application.JAVA17) {
-            J17DragAndDropDelegater dnd = new J17DragAndDropDelegater(this, input);
-            input.setTransferHandler(dnd);
-        } else {
-            DragAndDropDelegater dnd = new DragAndDropDelegater(this, input);
-            input.setTransferHandler(dnd);
-        }
-
+        input.setTransferHandler(new DragAndDropDelegater(input));
         this.getDialog().addWindowListener(new WindowListener() {
             public void windowOpened(WindowEvent e) {
                 new Thread() {
-
                     {
                         setDaemon(true);
                         setName(getClass().getName());
@@ -616,7 +574,6 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
             }
         }
         new EDTRunner() {
-
             @Override
             protected void runInEDT() {
                 if (fastContainsLinksFlag.get()) {
@@ -630,7 +587,8 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
                     okButton.setEnabled(false);
                     confirmOptions.setEnabled(false);
                 }
-                if (!validateFolder(destination.getFile().getAbsolutePath())) {
+                final File dest = destination.getFile();
+                if (dest == null || !validateFolder(dest.getAbsolutePath())) {
                     final String toolTip = okButton.getToolTipText();
                     if (toolTip == null || toolTip.length() == 0) {
                         okButton.setToolTipText(_GUI.T.AddLinksDialog_validateForm_folder_invalid_missing());
@@ -660,7 +618,19 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
         if (file.isDirectory() && file.exists()) {
             return true;
         }
-        return file.getParentFile() != null && file.getParentFile().exists();
+        int threshold = config.getMissingParentDirectoryThreshold();
+        while (threshold > 0) {
+            final File parent = file.getParentFile();
+            if (parent == null) {
+                return false;
+            } else if (parent.exists()) {
+                return true;
+            } else {
+                file = parent;
+                threshold--;
+            }
+        }
+        return false;
     }
 
     private void inform() {
@@ -688,7 +658,6 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
                 };
             }
         }.start();
-
     }
 
     public void pack() {
@@ -726,7 +695,6 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
     protected void asyncAnalyse(final String toAnalyse, final String base) {
         final Thread thread = new Thread() {
             private Thread thisThread = null;
-
             {
                 setDaemon(true);
                 setName(getClass().getName());
@@ -758,7 +726,6 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
                             }
                         }
                         new EDTRunner() {
-
                             @Override
                             protected void runInEDT() {
                                 synchronized (autoPasswords) {
@@ -806,7 +773,6 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
                         resultText = "";
                     }
                     new EDTRunner() {
-
                         @Override
                         protected void runInEDT() {
                             if (thisThread == asyncImportThread.get()) {
@@ -828,37 +794,6 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
         thread.start();
     }
 
-    protected void asyncImportData(TransferSupport support) {
-        try {
-            final String base = ClipboardMonitoring.getCurrentBrowserURL(support.getTransferable());
-            final String old = input.getText();
-            final int start = input.getSelectionStart();
-            final int end = input.getSelectionEnd();
-            final StringBuilder sb = new StringBuilder();
-            sb.append(old.substring(0, Math.min(old.length(), start)));
-            if (ClipboardMonitoring.isHtmlFlavorAllowed()) {
-                final String html = ClipboardMonitoring.getHTMLTransferData(support.getTransferable());
-                if (StringUtils.isNotEmpty(html)) {
-                    sb.append(html);
-                }
-            }
-            final String text = ClipboardMonitoring.getStringTransferData(support.getTransferable());
-            if (!StringUtils.isEmpty(text)) {
-                if (sb.length() > 0 && (text.startsWith("http") || text.startsWith("ftp://"))) {
-                    sb.append("\r\n");
-                }
-                sb.append(text);
-            }
-            if (old.length() > end) {
-                sb.append(old.substring(end));
-            }
-            final String toAnalyse = sb.toString();
-            asyncAnalyse(toAnalyse, base);
-        } catch (Throwable e) {
-            LogController.CL().log(e);
-        }
-    }
-
     private Component createIconLabel(String iconKey, String tooltip) {
         JLabel ret = new JLabel(new AbstractIcon(iconKey, 24));
         ret.setToolTipText(tooltip);
@@ -871,5 +806,4 @@ public class AddLinksDialog extends AbstractDialog<LinkCollectingJob> {
         }
         return text;
     }
-
 }

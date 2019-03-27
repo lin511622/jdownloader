@@ -8,46 +8,49 @@ import java.util.Map.Entry;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.appwork.storage.config.JsonConfig;
+import jd.controlling.captcha.SkipException;
+import jd.controlling.captcha.SkipRequest;
+
 import org.appwork.timetracker.TimeTracker;
 import org.appwork.timetracker.TimeTrackerController;
 import org.appwork.timetracker.TrackerRule;
 import org.appwork.utils.Application;
-import org.appwork.utils.StringUtils;
 import org.appwork.utils.formatter.TimeFormatter;
+import org.appwork.utils.logging2.LogInterface;
 import org.appwork.utils.logging2.LogSource;
 import org.jdownloader.api.captcha.CaptchaAPISolver;
+import org.jdownloader.captcha.blacklist.BlacklistEntry;
+import org.jdownloader.captcha.blacklist.CaptchaBlackList;
 import org.jdownloader.captcha.event.ChallengeResponseEvent;
 import org.jdownloader.captcha.event.ChallengeResponseEventSender;
 import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptchaDialogSolver;
 import org.jdownloader.captcha.v2.challenge.keycaptcha.jac.KeyCaptchaJACSolver;
 import org.jdownloader.captcha.v2.challenge.oauth.AccountOAuthSolver;
 import org.jdownloader.captcha.v2.challenge.oauth.OAuthDialogSolver;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v1.RecaptchaV1CaptchaChallenge;
 import org.jdownloader.captcha.v2.challenge.recaptcha.v2.RecaptchaV2Challenge;
+import org.jdownloader.captcha.v2.solver.antiCaptchaCom.AntiCaptchaComSolver;
 import org.jdownloader.captcha.v2.solver.browser.BrowserSolver;
-import org.jdownloader.captcha.v2.solver.captchasolutions.CaptchaSolutionsConfigInterface;
 import org.jdownloader.captcha.v2.solver.captchasolutions.CaptchaSolutionsSolver;
 import org.jdownloader.captcha.v2.solver.cheapcaptcha.CheapCaptchaSolver;
 import org.jdownloader.captcha.v2.solver.dbc.DeathByCaptchaSolver;
 import org.jdownloader.captcha.v2.solver.endcaptcha.EndCaptchaSolver;
 import org.jdownloader.captcha.v2.solver.gui.DialogBasicCaptchaSolver;
 import org.jdownloader.captcha.v2.solver.gui.DialogClickCaptchaSolver;
-import org.jdownloader.captcha.v2.solver.gui.RecaptchaChooseFrom3x3Solver;
+import org.jdownloader.captcha.v2.solver.gui.DialogMultiClickCaptchaSolver;
 import org.jdownloader.captcha.v2.solver.imagetyperz.ImageTyperzCaptchaSolver;
 import org.jdownloader.captcha.v2.solver.jac.JACSolver;
 import org.jdownloader.captcha.v2.solver.myjd.CaptchaMyJDSolver;
 import org.jdownloader.captcha.v2.solver.solver9kw.Captcha9kwSolver;
 import org.jdownloader.captcha.v2.solver.solver9kw.Captcha9kwSolverClick;
 import org.jdownloader.captcha.v2.solver.solver9kw.Captcha9kwSolverPuzzle;
+import org.jdownloader.captcha.v2.solver.twocaptcha.TwoCaptchaSolver;
 import org.jdownloader.captcha.v2.solverjob.ResponseList;
 import org.jdownloader.captcha.v2.solverjob.SolverJob;
 import org.jdownloader.controlling.UniqueAlltimeID;
 import org.jdownloader.logging.LogController;
 import org.jdownloader.settings.staticreferences.CFG_CAPTCHA;
 import org.jdownloader.settings.staticreferences.CFG_GENERAL;
-
-import jd.controlling.captcha.SkipException;
-import jd.controlling.captcha.SkipRequest;
 
 public class ChallengeResponseController {
     private static final ChallengeResponseController INSTANCE = new ChallengeResponseController();
@@ -122,11 +125,10 @@ public class ChallengeResponseController {
             addSolver(DeathByCaptchaSolver.getInstance());
             addSolver(ImageTyperzCaptchaSolver.getInstance());
             addSolver(CheapCaptchaSolver.getInstance());
-            if (StringUtils.isNotEmpty(JsonConfig.create(CaptchaSolutionsConfigInterface.class).getAPISecret())) {
-                addSolver(CaptchaSolutionsSolver.getInstance());
-            }
+            addSolver(CaptchaSolutionsSolver.getInstance());
+            addSolver(TwoCaptchaSolver.getInstance());
+            addSolver(AntiCaptchaComSolver.getInstance());
             addSolver(EndCaptchaSolver.getInstance());
-            // addSolver(CBSolver.getInstance());
             addSolver(Captcha9kwSolver.getInstance());
             addSolver(Captcha9kwSolverClick.getInstance());
             addSolver(Captcha9kwSolverPuzzle.getInstance());
@@ -135,13 +137,11 @@ public class ChallengeResponseController {
             }
             if (!Application.isHeadless()) {
                 addSolver(DialogClickCaptchaSolver.getInstance());
+                addSolver(DialogMultiClickCaptchaSolver.getInstance());
             }
             if (!Application.isHeadless()) {
                 addSolver(BrowserSolver.getInstance());
                 addSolver(OAuthDialogSolver.getInstance());
-            }
-            if (!Application.isHeadless()) {
-                addSolver(RecaptchaChooseFrom3x3Solver.getInstance());
             }
             addSolver(AccountOAuthSolver.getInstance());
             addSolver(KeyCaptchaJACSolver.getInstance());
@@ -202,9 +202,9 @@ public class ChallengeResponseController {
         eventSender.fireEvent(new ChallengeResponseEvent(this, ChallengeResponseEvent.Type.JOB_DONE, job));
     }
 
-    private final List<ChallengeSolver<?>>               solverList = new CopyOnWriteArrayList<ChallengeSolver<?>>();
-    private final List<SolverJob<?>>                     activeJobs = new ArrayList<SolverJob<?>>();
-    private final HashMap<UniqueAlltimeID, SolverJob<?>> idToJobMap = new HashMap<UniqueAlltimeID, SolverJob<?>>();
+    private final List<ChallengeSolver<?>>               solverList          = new CopyOnWriteArrayList<ChallengeSolver<?>>();
+    private final List<SolverJob<?>>                     activeJobs          = new ArrayList<SolverJob<?>>();
+    private final HashMap<UniqueAlltimeID, SolverJob<?>> challengeIDToJobMap = new HashMap<UniqueAlltimeID, SolverJob<?>>();
 
     /**
      * When one job gets a skiprequest, we have to check all pending jobs if this skiprequest affects them as well. if so, we have to skip
@@ -214,7 +214,7 @@ public class ChallengeResponseController {
      * @param solver
      * @param challenge
      */
-    public <T> void setSkipRequest(SkipRequest skipRequest, ChallengeSolver<T> solver, Challenge<T> sourceChallenge) {
+    public void setSkipRequest(SkipRequest skipRequest, ChallengeSolver<?> solver, Challenge<?> sourceChallenge) {
         synchronized (activeJobs) {
             for (SolverJob<?> job : activeJobs) {
                 if (job.getChallenge() == sourceChallenge) {
@@ -223,6 +223,12 @@ public class ChallengeResponseController {
                     job.setSkipRequest(skipRequest);
                 }
             }
+        }
+    }
+
+    public void keepAlivePendingChallenges(Challenge<?> c) {
+        for (final SolverJob<?> job : activeJobs) {
+            job.getChallenge().keepAlive();
         }
     }
 
@@ -242,10 +248,26 @@ public class ChallengeResponseController {
         final SolverJob<T> job = new SolverJob<T>(this, c, solver);
         job.setLogger(logger);
         c.initController(job);
-        final UniqueAlltimeID jobID = c.getId();
+        if (c instanceof RecaptchaV1CaptchaChallenge) {
+            final LogInterface log = c.getPlugin() != null ? c.getPlugin().getLogger() : logger;
+            if (log != null) {
+                log.info("Apply RecaptchaV1 dummy response workaround!");
+            }
+            /* rc1 is shut down since 01.04.2018 */
+            /* dummy answer */
+            final AbstractResponse<T> dummyResponse = new AbstractResponse<T>(c, null, 100, null) {
+                @Override
+                public T getValue() {
+                    return (T) "Test Test";
+                }
+            };
+            job.addAnswer(dummyResponse);
+            return job;
+        }
+        final UniqueAlltimeID challengeID = c.getId();
         synchronized (activeJobs) {
             activeJobs.add(job);
-            idToJobMap.put(jobID, job);
+            challengeIDToJobMap.put(challengeID, job);
         }
         try {
             for (final ChallengeSolver<T> cs : solver) {
@@ -257,18 +279,21 @@ public class ChallengeResponseController {
             logger.info("Wait");
             boolean timeout = false;
             while (!job.isSolved() && !job.isDone()) {
+                final BlacklistEntry<?> blackListEntry = CaptchaBlackList.getInstance().matches(c);
                 synchronized (job) {
                     final Challenge<T> challenge = job.getChallenge();
                     challenge.poll(job);
                     if (!job.isSolved() && !job.isDone()) {
-                        final long expired = System.currentTimeMillis() - challenge.getCreated();
-                        final int jobTimeout = challenge.getTimeout();
-                        if (jobTimeout != -1 && expired > jobTimeout) {
+                        final long validUntil = challenge.getValidUntil();
+                        if (validUntil != -1 && System.currentTimeMillis() > validUntil) {
                             timeout = true;
                             break;
                         }
                         job.wait(1000);
                     } else {
+                        break;
+                    }
+                    if (blackListEntry != null && job.setSkipRequest(SkipRequest.SINGLE)) {
                         break;
                     }
                 }
@@ -278,6 +303,9 @@ public class ChallengeResponseController {
                 final long expired = System.currentTimeMillis() - challenge.getCreated();
                 final int jobTimeout = challenge.getTimeout();
                 logger.info("Challenge Timeout detected|Job:" + job + "|Expired:" + expired + "|Timeout:" + jobTimeout);
+            }
+            if (!SkipRequest.TIMEOUT.equals(job.getSkipRequest())) {
+                keepAlivePendingChallenges(c);
             }
             if (job.getSkipRequest() != null) {
                 throw new SkipException(c, job.getSkipRequest());
@@ -293,7 +321,7 @@ public class ChallengeResponseController {
             try {
                 synchronized (activeJobs) {
                     activeJobs.remove(job);
-                    idToJobMap.remove(jobID);
+                    challengeIDToJobMap.remove(challengeID);
                 }
             } finally {
                 fireJobDone(job);
@@ -317,9 +345,9 @@ public class ChallengeResponseController {
         return ret;
     }
 
-    public SolverJob<?> getJobById(long id) {
-        synchronized (idToJobMap) {
-            return idToJobMap.get(new UniqueAlltimeID(id));
+    public SolverJob<?> getJobByChallengeId(long id) {
+        synchronized (challengeIDToJobMap) {
+            return challengeIDToJobMap.get(new UniqueAlltimeID(id));
         }
     }
 

@@ -4,11 +4,12 @@ import java.awt.Color;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.UnsupportedEncodingException;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.regex.Pattern;
 import java.util.zip.CRC32;
 import java.util.zip.CheckedInputStream;
 
@@ -21,7 +22,6 @@ import jd.controlling.downloadcontroller.ManagedThrottledConnectionHandler;
 import jd.controlling.downloadcontroller.SingleDownloadController;
 import jd.http.Browser;
 import jd.http.URLConnectionAdapter;
-import jd.nutils.encoding.Encoding;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.DownloadLinkDatabindingInterface;
@@ -33,9 +33,12 @@ import jd.plugins.download.HashInfo.TYPE;
 
 import org.appwork.utils.IO;
 import org.appwork.utils.Regex;
+import org.appwork.utils.StringUtils;
+import org.appwork.utils.encoding.URLEncode;
 import org.appwork.utils.formatter.HexFormatter;
 import org.appwork.utils.logging2.LogInterface;
 import org.appwork.utils.logging2.LogSource;
+import org.appwork.utils.net.httpconnection.HTTPConnectionUtils.DispositionHeader;
 import org.jdownloader.controlling.FileCreationManager;
 import org.jdownloader.plugins.FinalLinkState;
 import org.jdownloader.plugins.HashCheckPluginProgress;
@@ -43,16 +46,20 @@ import org.jdownloader.plugins.SkipReason;
 import org.jdownloader.plugins.SkipReasonException;
 
 public class DownloadLinkDownloadable implements Downloadable {
+    private static volatile boolean crcHashingInProgress = false;
     /**
      *
      */
-
-    private final DownloadLink downloadLink;
-    private PluginForHost      plugin;
+    private final DownloadLink      downloadLink;
+    private final PluginForHost     plugin;
 
     public DownloadLinkDownloadable(DownloadLink downloadLink) {
         this.downloadLink = downloadLink;
         plugin = downloadLink.getLivePlugin();
+    }
+
+    public DownloadLink getDownloadLink() {
+        return downloadLink;
     }
 
     @Override
@@ -63,7 +70,6 @@ public class DownloadLinkDownloadable implements Downloadable {
     @Override
     public Browser getContextBrowser() {
         return plugin.getBrowser().cloneBrowser();
-
     }
 
     @Override
@@ -157,7 +163,6 @@ public class DownloadLinkDownloadable implements Downloadable {
         final SingleDownloadController dlc = getDownloadLinkController();
         final AtomicBoolean atomicBoolean = new AtomicBoolean(false);
         DownloadWatchDog.getInstance().localFileCheck(dlc, new ExceptionRunnable() {
-
             @Override
             public void run() throws Exception {
                 runOkay.run();
@@ -173,7 +178,6 @@ public class DownloadLinkDownloadable implements Downloadable {
         for (File f : files) {
             dlc.lockFile(f);
         }
-
     }
 
     @Override
@@ -224,41 +228,16 @@ public class DownloadLinkDownloadable implements Downloadable {
         downloadLink.addPluginProgress(progress);
     }
 
-    @Override
-    public String getMD5Hash() {
-        return downloadLink.getMD5Hash();
-    }
-
-    @Override
-    public String getSha1Hash() {
-        return downloadLink.getSha1Hash();
-    }
-
-    @Override
-    public String getSha256Hash() {
-        return downloadLink.getSha256Hash();
-    }
-
-    @Override
-    public long[] getChunksProgress() {
-        return downloadLink.getView().getChunksProgress();
-    }
-
-    @Override
-    public void setChunksProgress(long[] ls) {
-        downloadLink.setChunksProgress(ls);
-    }
-
     public HashResult getHashResult(HashInfo hashInfo, File outputPartFile) {
         if (hashInfo == null) {
             return null;
         }
-        TYPE type = hashInfo.getType();
+        final TYPE type = hashInfo.getType();
         final PluginProgress hashProgress = new HashCheckPluginProgress(outputPartFile, Color.YELLOW.darker(), type);
         hashProgress.setProgressSource(this);
         try {
             addPluginProgress(hashProgress);
-            final byte[] b = new byte[32767];
+            final byte[] b = new byte[128 * 1024];
             String hashFile = null;
             FileInputStream fis = null;
             int n = 0;
@@ -270,6 +249,7 @@ public class DownloadLinkDownloadable implements Downloadable {
             case SHA512:
                 DigestInputStream is = null;
                 try {
+                    crcHashingInProgress = true;
                     is = new DigestInputStream(fis = new FileInputStream(outputPartFile), MessageDigest.getInstance(type.getDigest()));
                     while ((n = is.read(b)) >= 0) {
                         cur += n;
@@ -279,6 +259,7 @@ public class DownloadLinkDownloadable implements Downloadable {
                 } catch (final Throwable e) {
                     LogSource.exception(getLogger(), e);
                 } finally {
+                    crcHashingInProgress = false;
                     try {
                         is.close();
                     } catch (final Throwable e) {
@@ -292,6 +273,7 @@ public class DownloadLinkDownloadable implements Downloadable {
             case CRC32:
                 CheckedInputStream cis = null;
                 try {
+                    crcHashingInProgress = true;
                     fis = new FileInputStream(outputPartFile);
                     cis = new CheckedInputStream(fis, new CRC32());
                     while ((n = cis.read(b)) >= 0) {
@@ -304,6 +286,7 @@ public class DownloadLinkDownloadable implements Downloadable {
                 } catch (final Throwable e) {
                     LogSource.exception(getLogger(), e);
                 } finally {
+                    crcHashingInProgress = false;
                     try {
                         cis.close();
                     } catch (final Throwable e) {
@@ -323,54 +306,91 @@ public class DownloadLinkDownloadable implements Downloadable {
 
     @Override
     public HashInfo getHashInfo() {
-        // StatsManager
         final HashInfo hashInfo = downloadLink.getHashInfo();
         if (hashInfo != null) {
             return hashInfo;
         }
         final String name = getName();
-        String hash = null;
-        if ((hash = new Regex(name, ".*?\\[([A-Fa-f0-9]{8})\\]").getMatch(0)) != null) {
-            return new HashInfo(hash, HashInfo.TYPE.CRC32, false);
-        } else {
-            FilePackage filePackage = downloadLink.getFilePackage();
-            if (!FilePackage.isDefaultFilePackage(filePackage)) {
-                ArrayList<DownloadLink> SFVs = new ArrayList<DownloadLink>();
-                boolean readL = filePackage.getModifyLock().readLock();
-                try {
-                    for (DownloadLink dl : filePackage.getChildren()) {
-                        if (dl != downloadLink && FinalLinkState.CheckFinished(dl.getFinalLinkState()) && dl.getFileOutput().toLowerCase().endsWith(".sfv")) {
-                            SFVs.add(dl);
-                        }
-                    }
-                } finally {
-                    filePackage.getModifyLock().readUnlock(readL);
-                }
-                /* SFV File Available, lets use it */
-                for (DownloadLink SFV : SFVs) {
-                    File file = getFileOutput(SFV, false);
-                    if (file.exists()) {
-                        String sfvText;
-                        try {
-                            sfvText = IO.readFileToString(file);
-                            if (sfvText != null) {
-                                /* Delete comments */
-                                sfvText = sfvText.replaceAll(";(.*?)[\r\n]{1,2}", "");
-                                if (sfvText != null && sfvText.contains(name)) {
-                                    hash = new Regex(sfvText, Pattern.quote(name) + "\\s*([A-Fa-f0-9]{8})").getMatch(0);
-                                    if (hash != null) {
-                                        return new HashInfo(hash, HashInfo.TYPE.CRC32);
-                                    }
-                                }
-                            }
-                        } catch (IOException e) {
-                            e.printStackTrace();
-                        }
-                    }
+        final List<HashInfo> hashInfos = new ArrayList<HashInfo>();
+        for (final HashInfo.TYPE type : HashInfo.TYPE.values()) {
+            if (!HashInfo.TYPE.NONE.equals(type)) {
+                final String hash = new Regex(name, ".*?\\[([A-Fa-f0-9]{" + type.getSize() + "})\\]").getMatch(0);
+                if (hash != null) {
+                    hashInfos.add(new HashInfo(hash, type, false));
                 }
             }
         }
-        return null;
+        final FilePackage filePackage = downloadLink.getFilePackage();
+        if (!FilePackage.isDefaultFilePackage(filePackage)) {
+            final ArrayList<File> checkSumFiles = new ArrayList<File>();
+            final boolean readL = filePackage.getModifyLock().readLock();
+            try {
+                for (final DownloadLink dl : filePackage.getChildren()) {
+                    if (dl != downloadLink && FinalLinkState.CheckFinished(dl.getFinalLinkState())) {
+                        final File checkSumFile = getFileOutput(dl, false);
+                        final String fileName = checkSumFile.getName();
+                        if (fileName.matches(".*\\.(sfv|md5|sha1|sha256|sha512)$") && checkSumFile.exists() && !checkSumFiles.contains(checkSumFile)) {
+                            checkSumFiles.add(checkSumFile);
+                        }
+                    }
+                }
+            } finally {
+                filePackage.getModifyLock().readUnlock(readL);
+            }
+            final File[] files = new File(filePackage.getDownloadDirectory()).listFiles();
+            if (files != null) {
+                for (final File file : files) {
+                    final String fileName = file.getName();
+                    if (fileName.matches(".*\\.(sfv|md5|sha1|sha256|sha512)$") && file.isFile() && !checkSumFiles.contains(file)) {
+                        checkSumFiles.add(file);
+                    }
+                }
+            }
+            for (final File checkSumFile : checkSumFiles) {
+                try {
+                    if (checkSumFile.length() < 1024 * 512) {
+                        // Avoid OOM
+                        // TODO: instead of checking file size, better use line reader with limited inputstream and check line by line
+                        final String content = IO.readFileToString(checkSumFile);
+                        if (StringUtils.isNotEmpty(content)) {
+                            final String lines[] = Regex.getLines(content);
+                            for (final String line : lines) {
+                                if (line.startsWith(";") || !line.contains(name)) {
+                                    continue;
+                                }
+                                for (final HashInfo.TYPE type : HashInfo.TYPE.values()) {
+                                    if (!HashInfo.TYPE.NONE.equals(type)) {
+                                        final String hash = new Regex(line, "(?:^|\\s+)([A-Fa-f0-9]{" + type.getSize() + "})(\\s+|$)").getMatch(0);
+                                        if (hash != null) {
+                                            hashInfos.add(new HashInfo(hash, type));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (IOException e) {
+                    getLogger().log(e);
+                }
+            }
+        }
+        if (hashInfos.size() == 1) {
+            return hashInfos.get(0);
+        } else if (hashInfos.size() > 1) {
+            HashInfo best = null;
+            for (final HashInfo info : hashInfos) {
+                if (best == null) {
+                    best = info;
+                } else if (info.isStrongerThan(best) && (info.isTrustworthy() || !best.isTrustworthy())) {
+                    best = info;
+                } else if (info.isTrustworthy() && !best.isTrustworthy()) {
+                    best = info;
+                }
+            }
+            return best;
+        } else {
+            return null;
+        }
     }
 
     private File getFileOutput(DownloadLink link, boolean ignoreCustom) {
@@ -380,7 +400,40 @@ public class DownloadLinkDownloadable implements Downloadable {
         } else {
             return controller.getFileOutput(false, ignoreCustom);
         }
+    }
 
+    @Override
+    @Deprecated
+    public String getMD5Hash() {
+        return downloadLink.getMD5Hash();
+    }
+
+    @Override
+    @Deprecated
+    public String getSha1Hash() {
+        return downloadLink.getSha1Hash();
+    }
+
+    @Override
+    @Deprecated
+    public String getSha256Hash() {
+        return downloadLink.getSha256Hash();
+    }
+
+    @Override
+    @Deprecated
+    public long[] getChunksProgress() {
+        return downloadLink.getView().getChunksProgress();
+    }
+
+    @Override
+    @Deprecated
+    public void setChunksProgress(long[] ls) {
+        downloadLink.setChunksProgress(ls);
+    }
+
+    public PluginForHost getPlugin() {
+        return plugin;
     }
 
     @Override
@@ -408,7 +461,6 @@ public class DownloadLinkDownloadable implements Downloadable {
             getLogger().severe("Could not rename file " + outputPartFile + " to " + outputCompleteFile);
             getLogger().severe("Try copy workaround!");
             DiskSpaceReservation reservation = new DiskSpaceReservation() {
-
                 @Override
                 public long getSize() {
                     return outputPartFile.length() - outputCompleteFile.length();
@@ -446,7 +498,6 @@ public class DownloadLinkDownloadable implements Downloadable {
                 getLogger().severe("Copy workaround: :)");
             }
         }
-
         return renameOkay;
     }
 
@@ -489,7 +540,6 @@ public class DownloadLinkDownloadable implements Downloadable {
     @Override
     public DiskSpaceReservation createDiskSpaceReservation() {
         return new DiskSpaceReservation() {
-
             @Override
             public long getSize() {
                 final File partFile = new File(getFileOutputPart());
@@ -538,24 +588,47 @@ public class DownloadLinkDownloadable implements Downloadable {
     @Override
     public void updateFinalFileName() {
         if (getFinalFileName() == null) {
-            LogInterface logger = getLogger();
-            DownloadInterface dl = getDownloadInterface();
-            URLConnectionAdapter connection = getDownloadInterface().getConnection();
+            final LogInterface logger = getLogger();
+            final DownloadInterface dl = getDownloadInterface();
+            final URLConnectionAdapter connection = getDownloadInterface().getConnection();
             logger.info("FinalFileName is not set yet!");
-            if (connection.isContentDisposition() || dl.allowFilenameFromURL) {
-                String name = Plugin.getFileNameFromHeader(connection);
-                logger.info("FinalFileName: set to " + name + "(from connection)");
+            final DispositionHeader dispositonHeader = Plugin.parseDispositionHeader(connection);
+            String name = null;
+            if (dispositonHeader != null && StringUtils.isNotEmpty(dispositonHeader.getFilename())) {
+                name = dispositonHeader.getFilename();
+                if (dl.fixWrongContentDispositionHeader && dispositonHeader.getEncoding() == null) {
+                    name = decodeURIComponent(name, null);
+                }
+                logger.info("FinalFileName: set to '" + name + "' from connection:" + dispositonHeader + "|fix:" + dl.fixWrongContentDispositionHeader);
+                setFinalFileName(name);
+            } else if (StringUtils.isNotEmpty(name = Plugin.getFileNameFromURL(connection.getURL()))) {
                 if (dl.fixWrongContentDispositionHeader) {
-                    setFinalFileName(Encoding.htmlDecode(name));
-                } else {
+                    name = decodeURIComponent(name, null);
+                }
+                logger.info("FinalFileName: set to '" + name + "' from url:" + connection.getURL().toString() + "|fix:" + dl.fixWrongContentDispositionHeader);
+                setFinalFileName(name);
+            } else {
+                name = getName();
+                if (StringUtils.isNotEmpty(name)) {
+                    logger.info("FinalFileName: set to '" + name + "' from plugin");
                     setFinalFileName(name);
                 }
-            } else {
-                String name = getName();
-                logger.info("FinalFileName: set to " + name + "(from plugin)");
-                setFinalFileName(name);
             }
         }
+    }
+
+    protected String decodeURIComponent(final String name, String charSet) {
+        try {
+            if (StringUtils.isEmpty(charSet)) {
+                charSet = "UTF-8";
+            }
+            return URLEncode.decodeURIComponent(name, charSet, true);
+        } catch (final IllegalArgumentException ignore) {
+            getLogger().log(ignore);
+        } catch (final UnsupportedEncodingException ignore) {
+            getLogger().log(ignore);
+        }
+        return name;
     }
 
     @Override
@@ -572,5 +645,9 @@ public class DownloadLinkDownloadable implements Downloadable {
     @Override
     public int getChunks() {
         return downloadLink.getChunks();
+    }
+
+    public static boolean isCrcHashingInProgress() {
+        return crcHashingInProgress;
     }
 }

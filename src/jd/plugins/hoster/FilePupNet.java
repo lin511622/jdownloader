@@ -13,11 +13,13 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
 import java.util.Locale;
+
+import org.appwork.utils.formatter.SizeFormatter;
+import org.appwork.utils.formatter.TimeFormatter;
 
 import jd.PluginWrapper;
 import jd.http.Browser;
@@ -34,12 +36,8 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-import org.appwork.utils.formatter.SizeFormatter;
-import org.appwork.utils.formatter.TimeFormatter;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "filepup.net" }, urls = { "https?://(?:www\\.|sp\\d+\\.)?filepup\\.net/(?:files|get)/[A-Za-z0-9]+/.+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "filepup.net" }, urls = { "https?://(?:www\\.|sp\\d+\\.)?filepup\\.net/(?:files|get)/[A-Za-z0-9]+\\.html" })
 public class FilePupNet extends PluginForHost {
-
     public FilePupNet(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium("http://www.filepup.net/get-premium.php");
@@ -52,7 +50,6 @@ public class FilePupNet extends PluginForHost {
 
     private static final String MAINPAGE                     = "http://www.filepup.net";
     private static final String APIKEY                       = "vwUhhGH6lPH3auk6SM144PBg3PRQg";
-
     /* Connection stuff */
     private final boolean       FREE_RESUME                  = false;
     private final int           FREE_MAXCHUNKS               = 1;
@@ -161,7 +158,10 @@ public class FilePupNet extends PluginForHost {
                 }
                 // br.getPage("");
                 br.postPage("http://www." + this.getHost() + "/loginaa.php", "task=dologin&return=.%2Fmembers%2Fmyfiles.php&submit=Sign+In&user=" + Encoding.urlEncode(account.getUser()) + "&pass=" + Encoding.urlEncode(account.getPass()));
-                if (!isLoggedIn()) {
+                if (this.br.containsHTML("You are already logged in on another device")) {
+                    /* E.g. "<p class="description">You are already logged in on another device. Please log out first!</p> " */
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, "You are already logged in on another device. Please log out first!", PluginException.VALUE_ID_PREMIUM_TEMP_DISABLE);
+                } else if (!isLoggedIn()) {
                     if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     } else {
@@ -236,6 +236,8 @@ public class FilePupNet extends PluginForHost {
         br.followConnection();
         if (br.containsHTML(">You have reached the limit of")) {
             throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, 60 * 60 * 1001l);
+        } else if (br.containsHTML(">\\s*This file does not exist\\.\\s*<")) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         final String unknownError = br.getRegex("class=\"error\">(.*?)\"").getMatch(0);
         if (unknownError != null) {
@@ -255,5 +257,4 @@ public class FilePupNet extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

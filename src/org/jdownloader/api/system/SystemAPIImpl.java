@@ -6,13 +6,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import jd.controlling.downloadcontroller.DownloadWatchDog;
-import jd.controlling.linkcollector.LinkCollector;
-
+import org.appwork.exceptions.WTFException;
 import org.appwork.shutdown.ShutdownController;
 import org.appwork.shutdown.ShutdownEvent;
 import org.appwork.shutdown.ShutdownRequest;
 import org.appwork.utils.Application;
+import org.appwork.utils.ProcMounts;
 import org.appwork.utils.StringUtils;
 import org.appwork.utils.logging2.extmanager.LoggerFactory;
 import org.appwork.utils.os.CrossSystem;
@@ -26,8 +25,10 @@ import org.jdownloader.updatev2.RestartController;
 import org.jdownloader.updatev2.SmartRlyExitRequest;
 import org.jdownloader.updatev2.SmartRlyRestartRequest;
 
-public class SystemAPIImpl implements SystemAPI {
+import jd.controlling.downloadcontroller.DownloadWatchDog;
+import jd.controlling.linkcollector.LinkCollector;
 
+public class SystemAPIImpl implements SystemAPI {
     private final long startupTimeStamp = System.currentTimeMillis();
 
     public SystemAPIImpl() {
@@ -35,10 +36,9 @@ public class SystemAPIImpl implements SystemAPI {
     }
 
     @Override
-    public void shutdownOS(final boolean force) {
+    public void shutdownOS(final boolean force) throws InterruptedException {
         stopJD();
         ShutdownController.getInstance().addShutdownEvent(new ShutdownEvent() {
-
             @Override
             public int getHookPriority() {
                 return Integer.MIN_VALUE;
@@ -46,53 +46,52 @@ public class SystemAPIImpl implements SystemAPI {
 
             @Override
             public void onShutdown(ShutdownRequest shutdownRequest) {
-                CrossSystem.shutdownSystem(force);
+                try {
+                    CrossSystem.shutdownSystem(force);
+                } catch (InterruptedException e) {
+                    throw new WTFException(e);
+                }
             }
         });
         RestartController.getInstance().exitAsynch(new ForcedShutdown());
     }
 
     @Override
-    public void standbyOS() {
+    public void standbyOS() throws InterruptedException {
         stopJD();
         CrossSystem.standbySystem();
     }
 
     @Override
-    public void hibernateOS() {
+    public void hibernateOS() throws InterruptedException {
         stopJD();
         CrossSystem.hibernateSystem();
     }
 
-    private void stopJD() {
+    private void stopJD() throws InterruptedException {
         DownloadWatchDog.getInstance().stopDownloads();
         LinkCollector.getInstance().abort();
         int maxWait = 5 * 1000;
         while (DownloadWatchDog.getInstance().isIdle() == false && maxWait >= 0) {
-            try {
-                maxWait -= 500;
-                Thread.sleep(500);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-                break;
-            }
+            maxWait -= 500;
+            Thread.sleep(500);
         }
     }
 
     @Override
-    public void restartJD() {
+    public void restartJD() throws InterruptedException {
         stopJD();
         RestartController.getInstance().asyncRestart(new SmartRlyRestartRequest());
     }
 
     @Override
-    public void exitJD() {
+    public void exitJD() throws InterruptedException {
         stopJD();
         RestartController.getInstance().exitAsynch(new SmartRlyExitRequest());
     }
 
     public List<StorageInformationStorable> getStorageInfos(final String path) {
-        if (Application.getJavaVersion() >= Application.JAVA17 && DownloadWatchDog.getInstance().getSession().getDiskSpaceManager().isSupported()) {
+        if (Application.getJavaVersion() >= Application.JAVA17 && Application.getJavaVersion() < Application.JAVA19 && DownloadWatchDog.getInstance().getSession().getDiskSpaceManager().isSupported()) {
             return SystemAPIImpl17.getStorageInfos(path);
         } else {
             final List<StorageInformationStorable> ret = new ArrayList<StorageInformationStorable>();
@@ -142,10 +141,8 @@ public class SystemAPIImpl implements SystemAPI {
         ret.setOperatingSystem(os.name());
         ret.setOsFamily(os.getFamily().name());
         ret.setOsString(CrossSystem.getOSString());
-
         ret.setArchFamily(CrossSystem.getARCHFamily().name());
         ret.setArchString(CrossSystem.getARCHString());
-
         ret.setJavaVersion(Application.getJavaVersion());
         ret.setJavaVersionString(Application.getJVMVersion());
         ret.setJvm64Bit(Application.is64BitJvm());
@@ -157,20 +154,15 @@ public class SystemAPIImpl implements SystemAPI {
             }
         }
         ret.setJavaVendor(javaVendor);
-
         String javaName = System.getProperty("java.vm.name");
         if (javaName == null) {
             javaName = System.getProperty("java.runtime.name");
         }
         ret.setJavaName(javaName);
-
         ret.setHeadless(Application.isHeadless());
-
         ret.setOs64Bit(CrossSystem.is64BitOperatingSystem());
         ret.setArch64Bit(CrossSystem.is64BitArch());
-
         ret.setStartupTimeStamp(startupTimeStamp);
-
         try {
             final java.lang.management.MemoryUsage memory = java.lang.management.ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
             if (memory != null) {
@@ -181,8 +173,6 @@ public class SystemAPIImpl implements SystemAPI {
         } catch (final Throwable e) {
             LoggerFactory.getDefaultLogger().log(e);
         }
-
         return ret;
     }
-
 }

@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import jd.PluginWrapper;
 import jd.controlling.proxy.ProxyController;
+import jd.http.Browser;
 import jd.http.BrowserSettingsThread;
 import jd.http.NoGateWayException;
 import jd.http.ProxySelectorInterface;
@@ -33,6 +34,7 @@ import org.appwork.utils.net.usenet.SimpleUseNet;
 import org.appwork.utils.net.usenet.UUInputStream;
 import org.appwork.utils.net.usenet.UnrecognizedCommandException;
 import org.appwork.utils.net.usenet.YEncInputStream;
+import org.jdownloader.plugins.components.antiDDoSForHost;
 import org.jdownloader.plugins.components.usenet.SimpleUseNetDownloadInterface;
 import org.jdownloader.plugins.components.usenet.UsenetAccountConfigInterface;
 import org.jdownloader.plugins.components.usenet.UsenetConfigPanel;
@@ -42,8 +44,8 @@ import org.jdownloader.plugins.components.usenet.UsenetServer;
 import org.jdownloader.plugins.config.AccountConfigInterface;
 import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
 
-@HostPlugin(revision = "$Revision: 31032 $", interfaceVersion = 2, names = { "usenet" }, urls = { "usenet://.+" })
-public class UseNet extends PluginForHost {
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "usenet" }, urls = { "usenet://.+" })
+public class UseNet extends antiDDoSForHost {
     public UseNet(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -57,26 +59,23 @@ public class UseNet extends PluginForHost {
         return (UsenetAccountConfigInterface) super.getAccountJsonConfig(acc);
     }
 
-    // @Override
-    // public PluginConfigPanelNG createConfigPanel() {r
-    // if (!"usenet".equals(getHost())) {
-    // UsenetConfigPanel<?> panel = this.configPanel;
-    // if (panel == null) {
-    // panel = new UsenetConfigPanel(getHost(), getAvailableUsenetServer().toArray(new UsenetServer[0]), getUsenetConfig());
-    // this.configPanel = panel;
-    // }
-    // return panel;
-    // }
-    // return null;
-    // }
     @Override
     protected PluginConfigPanelNG createConfigPanel() {
         return new UsenetConfigPanel() {
+            /**
+             *
+             */
+            private static final long serialVersionUID = 1L;
+
             @Override
             protected void initAccountConfig(PluginForHost plgh, Account acc, Class<? extends AccountConfigInterface> cf) {
                 extend(this, getHost(), getAvailableUsenetServer(), getAccountJsonConfig(acc));
             }
         };
+    }
+
+    protected int getAutoRetryMessageNotFound() {
+        return 2;
     }
 
     protected void verifyUseNetLogins(Account account) throws Exception, InvalidAuthException {
@@ -85,6 +84,16 @@ public class UseNet extends PluginForHost {
         final List<HTTPProxy> proxies = selectProxies(url);
         final HTTPProxy proxy = proxies.get(0);
         final SimpleUseNet client = new SimpleUseNet(proxy, getLogger()) {
+            @Override
+            public int getConnectTimeout() {
+                return Browser.getGlobalConnectTimeout();
+            }
+
+            @Override
+            public int getReadTimeout() {
+                return Browser.getGlobalReadTimeout();
+            }
+
             @Override
             protected Socket createSocket() {
                 return SocketConnectionFactory.createSocket(getProxy());
@@ -134,11 +143,22 @@ public class UseNet extends PluginForHost {
     }
 
     @Override
+    public String buildContainerDownloadURL(DownloadLink downloadLink, PluginForHost buildForThisPlugin) {
+        if (buildForThisPlugin != null && StringUtils.equals(getHost(), buildForThisPlugin.getHost())) {
+            /* TODO: finish me */
+            return null;
+        } else {
+            return null;
+        }
+    }
+
+    @Override
     public AvailableStatus requestFileInformation(DownloadLink parameter) throws Exception {
         if (isIncomplete(parameter)) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        } else {
+            return AvailableStatus.UNCHECKABLE;
         }
-        return AvailableStatus.UNCHECKABLE;
     }
 
     protected ProxySelectorInterface getProxySelector() {
@@ -150,7 +170,11 @@ public class UseNet extends PluginForHost {
     }
 
     protected void setIncomplete(DownloadLink link, boolean b) {
-        link.setProperty("incomplete", Boolean.valueOf(b));
+        if (b) {
+            link.setProperty("incomplete", Boolean.valueOf(b));
+        } else {
+            link.removeProperty("incomplete");
+        }
     }
 
     @Override
@@ -173,19 +197,36 @@ public class UseNet extends PluginForHost {
         return new ArrayList<UsenetServer>();
     }
 
-    private final AtomicReference<SimpleUseNet> client        = new AtomicReference<SimpleUseNet>(null);
-    private final String                        PRECHECK_DONE = "PRECHECK_DONE";
+    private final AtomicReference<SimpleUseNet> client                  = new AtomicReference<SimpleUseNet>(null);
+    private final String                        PRECHECK_DONE           = "PRECHECK_DONE";
+    private final String                        LAST_MESSAGE_NOT_FOUND  = "LAST_MESSAGE_NOT_FOUND";
+    private final String                        MESSAGE_NOT_FOUND_COUNT = "MESSAGE_NOT_FOUND_COUNT";
+    private UsenetServer                        lastUsedUsenetServer    = null;
+
+    protected UsenetServer getLastUsedUsenetServer() {
+        return lastUsedUsenetServer;
+    }
 
     protected UsenetServer getUsenetServer(Account account) throws Exception {
-        final UsenetAccountConfigInterface config = getAccountJsonConfig(account);
-        UsenetServer server = new UsenetServer(config.getHost(), config.getPort(), config.isSSLEnabled());
-        if (server == null || !getAvailableUsenetServer().contains(server)) {
-            server = getAvailableUsenetServer().get(0);
-            config.setHost(server.getHost());
-            config.setPort(server.getPort());
-            config.setSSLEnabled(server.isSSL());
+        synchronized (account) {
+            final UsenetAccountConfigInterface config = getAccountJsonConfig(account);
+            UsenetServer server = new UsenetServer(config.getHost(), config.getPort(), config.isSSLEnabled());
+            if (server == null || !server.validate() || !getAvailableUsenetServer().contains(server)) {
+                server = getAvailableUsenetServer().get(0);
+                config.setHost(server.getHost());
+                config.setPort(server.getPort());
+                config.setSSLEnabled(server.isSSL());
+            }
+            return server;
         }
-        return server;
+    }
+
+    @Override
+    public boolean isResumeable(DownloadLink link, Account account) {
+        if (isUsenetLink(link)) {
+            return true;
+        }
+        return super.isResumeable(link, account);
     }
 
     @Override
@@ -209,11 +250,22 @@ public class UseNet extends PluginForHost {
         final HTTPProxy proxy = proxies.get(0);
         final SimpleUseNet client = new SimpleUseNet(proxy, getLogger()) {
             @Override
+            public int getConnectTimeout() {
+                return Browser.getGlobalConnectTimeout();
+            }
+
+            @Override
+            public int getReadTimeout() {
+                return Browser.getGlobalReadTimeout();
+            }
+
+            @Override
             protected Socket createSocket() {
                 return SocketConnectionFactory.createSocket(getProxy());
             }
         };
         try {
+            lastUsedUsenetServer = server;
             this.client.set(client);
             client.connect(server.getHost(), server.getPort(), server.isSSL(), username, password);
             if (downloadLink.getBooleanProperty(PRECHECK_DONE, false) == false) {
@@ -280,11 +332,25 @@ public class UseNet extends PluginForHost {
             try {
                 dl.startDownload();
             } catch (MessageBodyNotFoundException e) {
-                setIncomplete(downloadLink, true);
-                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+                logger.log(e);
+                final String messageID = e.getMessageID();
+                final int count;
+                if (StringUtils.equals(messageID, downloadLink.getStringProperty(LAST_MESSAGE_NOT_FOUND, messageID))) {
+                    count = downloadLink.getIntegerProperty(MESSAGE_NOT_FOUND_COUNT, 0);
+                } else {
+                    count = 0;
+                }
+                if (count < getAutoRetryMessageNotFound()) {
+                    downloadLink.setProperty(MESSAGE_NOT_FOUND_COUNT, count + 1);
+                    downloadLink.setProperty(LAST_MESSAGE_NOT_FOUND, messageID);
+                    throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Segment not found!", 1 * 60 * 1000l);
+                } else {
+                    setIncomplete(downloadLink, true);
+                    throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND, null, e);
+                }
             }
         } catch (InvalidAuthException e) {
-            throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
+            throw new PluginException(LinkStatus.ERROR_PREMIUM, null, PluginException.VALUE_ID_PREMIUM_DISABLE, e);
         } catch (HTTPProxyException e) {
             ProxyController.getInstance().reportHTTPProxyException(proxy, url, e);
             throw e;
@@ -342,6 +408,7 @@ public class UseNet extends PluginForHost {
                 }
                 status = AvailableStatus.TRUE;
             } catch (final UnrecognizedCommandException e) {
+                logger.log(e);
                 status = AvailableStatus.UNCHECKABLE;
             } finally {
                 link.setAvailableStatus(status);
@@ -396,6 +463,9 @@ public class UseNet extends PluginForHost {
     public void resetDownloadlink(final DownloadLink link) {
         if (link != null) {
             link.removeProperty(PRECHECK_DONE);
+            link.removeProperty(LAST_MESSAGE_NOT_FOUND);
+            link.removeProperty(MESSAGE_NOT_FOUND_COUNT);
+            setIncomplete(link, false);
         }
     }
 

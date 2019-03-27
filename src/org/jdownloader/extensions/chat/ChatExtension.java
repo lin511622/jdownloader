@@ -13,11 +13,11 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package org.jdownloader.extensions.chat;
 
 import java.awt.Color;
 import java.awt.Dimension;
+import java.awt.Font;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.awt.event.FocusEvent;
@@ -100,22 +100,16 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
     private static final Pattern                CMD_TOPIC            = Pattern.compile("(topic|title)", Pattern.CASE_INSENSITIVE);
     private static final Pattern                CMD_TRANSLATE        = Pattern.compile("(translate)", Pattern.CASE_INSENSITIVE);
     private static final Pattern                CMD_VERSION          = Pattern.compile("(version|jdversion)", Pattern.CASE_INSENSITIVE);
-
     private static final java.util.List<String> COMMANDS             = new ArrayList<String>();
-
     public static String                        STYLE;
-
     static {
         try {
-
             STYLE = IO.readURLToString(ChatExtension.class.getResource("styles.css"));
         } catch (IOException e) {
             STYLE = "";
             e.printStackTrace();
-
         }
     }
-
     public static final String                  STYLE_ACTION         = "action";
     public static final String                  STYLE_ERROR          = "error";
     public static final String                  STYLE_HIGHLIGHT      = "highlight";
@@ -123,21 +117,16 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
     public static final String                  STYLE_PM             = "pm";
     public static final String                  STYLE_SELF           = "self";
     public static final String                  STYLE_SYSTEM_MESSAGE = "system";
-
     public static String                        USERLIST_STYLE;
-
     static {
         try {
             USERLIST_STYLE = IO.readURLToString(ChatExtension.class.getResource("userliststyles.css"));
         } catch (IOException e) {
             USERLIST_STYLE = "";
             e.printStackTrace();
-
         }
     }
-
     private JTextField                          top;
-
     private IRCConnection                       conn;
     private long                                lastAction;
     private String                              lastCommand;
@@ -152,11 +141,8 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
     private JScrollPane                         scrollPane;
     private JTextPane                           textArea;
     private JTextField                          textField;
-
     private JDChatView                          view;
-
     private JTabbedPane                         tabbedPane;
-
     private ChatConfigPanel                     configPanel;
     private String                              currentChannel;
     private Thread                              awayChecker;
@@ -178,7 +164,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
     public ChatExtension() throws StartException {
         super();
         setTitle(T.jd_plugins_optional_jdchat_jdchat());
-
     }
 
     public void addPMS(final String user2) {
@@ -201,11 +186,9 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
     }
 
     public void addToText(final User user, String style, final String msg, final JTextPane targetpane, final StringBuilder sb) {
-
         final String msg2 = msg;
         final boolean color = !getSettings().isUserColorEnabled();
         final Date dt = new Date();
-
         final SimpleDateFormat df = new SimpleDateFormat("HH:mm:ss");
         sb.append("<!---->");
         sb.append("<li>");
@@ -217,7 +200,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
             }
         } else {
             sb.append("<span class='time'>[").append(df.format(dt)).append("] </span>");
-
         }
         if (this.conn != null && msg.contains(this.conn.getNick())) {
             style = ChatExtension.STYLE_HIGHLIGHT;
@@ -227,28 +209,19 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
         } else {
             sb.append("<span>").append(msg).append("</span>");
         }
-
         new EDTHelper<Object>() {
-
             @Override
             public Object edtRun() {
-
                 if (!JDGui.getInstance().getMainFrame().isActive() && ChatExtension.this.conn != null && msg2.contains(ChatExtension.this.conn.getNick())) {
                     // JDSounds.PT("sound.gui.selectPackage");
                     JDGui.getInstance().getMainFrame().toFront();
                 }
-
                 targetpane.setText(ChatExtension.STYLE + "<ul>" + sb.toString() + "</ul>");
-
                 final int max = ChatExtension.this.scrollPane.getVerticalScrollBar().getMaximum();
-
                 ChatExtension.this.scrollPane.getVerticalScrollBar().setValue(max);
-
                 return null;
             }
-
         }.start();
-
     }
 
     public void addUser(final String name) {
@@ -275,7 +248,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
 
     public void delPMS(final String user) {
         new EDTHelper<Object>() {
-
             @Override
             public Object edtRun() {
                 ChatExtension.this.pms.remove(user.toLowerCase());
@@ -288,7 +260,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
                 return null;
             }
         }.start(true);
-
     }
 
     protected void doAction(final String type, final String name) {
@@ -296,7 +267,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
             if (this.conn == null) {
                 this.initIRC();
             }
-
             return;
         }
         final User usr = this.getUser(name);
@@ -347,16 +317,13 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
     }
 
     public String getNickname() {
-
         String loc = null;
-
         Browser br = new Browser();
         try {
             loc = JSonStorage.restoreFromString(br.getPage("http://update3.jdownloader.org/jdserv/GeoDBInterface/getCountryCode"), TypeRef.STRING);
         } catch (Throwable e) {
             e.printStackTrace();
         }
-
         if (loc == null) {
             loc = System.getProperty("user.country");
         } else {
@@ -373,7 +340,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
                 nick = nick.trim();
             }
             getSettings().setNick(nick);
-
         }
         if (nick == null) {
             nick = def;
@@ -403,7 +369,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
     }
 
     private void switchChannel(String newChannel) {
-
         if (newChannel.equalsIgnoreCase(currentChannel) && this.isLoggedIn()) {
             if (this.conn != null && this.conn.isConnected()) {
                 this.addToText(null, ChatExtension.STYLE_NOTICE, "You are in channel: " + newChannel);
@@ -420,9 +385,7 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
         setCurrentChannel(newChannel);
         if (this.conn != null && this.conn.isConnected()) {
             this.conn.doJoin(getCurrentChannel(), null);
-
             new EDTRunner() {
-
                 @Override
                 protected void runInEDT() {
                     tabbedPane.setTitleAt(0, T.gui_tab_title(getCurrentChannel()));
@@ -430,7 +393,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
             };
             getSettings().setChannelLanguage(newChannel);
         }
-
     }
 
     public String getCurrentChannel() {
@@ -439,7 +401,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
 
     private void setCurrentChannel(String newChannel) {
         this.currentChannel = newChannel;
-
     }
 
     @SuppressWarnings("unchecked")
@@ -447,7 +408,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
         final int userlistposition = getSettings().getUserListPosition();
         this.textArea = new JTextPane();
         final HyperlinkListener hyp = new HyperlinkListener() {
-
             public void hyperlinkUpdate(final HyperlinkEvent e) {
                 if (e.getEventType() == HyperlinkEvent.EventType.ACTIVATED) {
                     if (e.getDescription().startsWith("intern")) {
@@ -460,13 +420,12 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
                         CrossSystem.openURL(e.getURL());
                     }
                 }
-
             }
-
         };
-
         this.right = new JTextPane();
+        final Font font = right.getFont();
         this.right.setContentType("text/html");
+        right.setFont(font);
         this.right.setEditable(false);
         this.textArea.addHyperlinkListener(hyp);
         this.right.addHyperlinkListener(hyp);
@@ -475,11 +434,9 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
         this.tabbedPane = new JTabbedPane(SwingConstants.TOP, JTabbedPane.SCROLL_TAB_LAYOUT);
         this.tabbedPane.add("JDChat", this.scrollPane);
         this.tabbedPane.addChangeListener(new ChangeListener() {
-
             public void stateChanged(final ChangeEvent e) {
                 ChatExtension.this.tabbedPane.setForegroundAt(ChatExtension.this.tabbedPane.getSelectedIndex(), Color.black);
             }
-
         });
         this.textField = new JTextField() {
             @Override
@@ -491,36 +448,26 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
         // this.textField.setFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS, Collections.EMPTY_SET);
         // this.textField.setFocusTraversalKeys(KeyboardFocusManager.BACKWARD_TRAVERSAL_KEYS, Collections.EMPTY_SET);
         this.textField.addFocusListener(new FocusListener() {
-
             public void focusGained(final FocusEvent e) {
-
                 if (e.getOppositeComponent() == null) {
-
                 }
                 ChatExtension.this.tabbedPane.setForegroundAt(ChatExtension.this.tabbedPane.getSelectedIndex(), Color.black);
             }
 
             public void focusLost(final FocusEvent e) {
-
                 ChatExtension.this.tabbedPane.setForegroundAt(ChatExtension.this.tabbedPane.getSelectedIndex(), Color.black);
-
             }
-
         });
         this.textField.addKeyListener(new KeyListener() {
-
             private int    counter = 0;
             private String last    = null;
 
             public void keyPressed(final KeyEvent e) {
                 final int sel = ChatExtension.this.tabbedPane.getSelectedIndex();
                 ChatExtension.this.tabbedPane.setForegroundAt(sel, Color.black);
-
                 // it's important to have this code here instead of the released callback.
                 // this solves this bug: http://svn.jdownloader.org/issues/58941
-
                 if (e.getKeyCode() == KeyEvent.VK_ENTER) {
-
                     if (ChatExtension.this.textField.getText().length() == 0) {
                         return;
                     }
@@ -529,18 +476,14 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
                     } else {
                         ChatExtension.this.sendMessage(getCurrentChannel(), "/msg " + ChatExtension.this.tabbedPane.getTitleAt(ChatExtension.this.tabbedPane.getSelectedIndex()) + " " + ChatExtension.this.textField.getText());
                     }
-
                 }
             }
 
             public void keyReleased(final KeyEvent e) {
-
                 final int sel = ChatExtension.this.tabbedPane.getSelectedIndex();
                 ChatExtension.this.tabbedPane.setForegroundAt(sel, Color.black);
-
                 // it's important to have this code here instead of the released callback.
                 // this solves this bug: http://svn.jdownloader.org/issues/58941
-
                 if (e.getKeyCode() == KeyEvent.VK_TAB) {
                     if (ChatExtension.this.textField.getText().length() == 0) {
                         if (ChatExtension.this.lastCommand != null) {
@@ -553,18 +496,15 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
                     if (this.last != null && txt.toLowerCase().startsWith(this.last.toLowerCase())) {
                         txt = this.last;
                     }
-
                     final String org = txt;
                     final int last = Math.max(0, txt.lastIndexOf(" "));
                     txt = txt.substring(last).trim();
                     final java.util.List<String> users = new ArrayList<String>();
-
                     final java.util.List<String> strings = new ArrayList<String>();
                     strings.addAll(ChatExtension.COMMANDS);
                     for (final User user : ChatExtension.this.NAMES) {
                         strings.add(user.name);
                     }
-
                     for (final String user : strings) {
                         if (user.length() >= txt.length() && user.toLowerCase().startsWith(txt.toLowerCase())) {
                             users.add(user);
@@ -573,7 +513,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
                     if (users.size() == 0) {
                         return;
                     }
-
                     this.counter++;
                     if (this.counter > users.size() - 1) {
                         this.counter = 0;
@@ -582,7 +521,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
                     this.last = org;
                     ChatExtension.this.textField.setText((ChatExtension.this.textField.getText().substring(0, last) + " " + user).trim());
                     ChatExtension.this.textField.requestFocus();
-
                 } else if (e.getKeyCode() == KeyEvent.VK_UP) {
                     if (ChatExtension.this.textField.getText().length() == 0) {
                         if (ChatExtension.this.lastCommand != null) {
@@ -591,22 +529,17 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
                         }
                         return;
                     }
-
                 } else {
                     this.last = null;
                 }
-
             }
 
             public void keyTyped(final KeyEvent e) {
-
             }
-
         });
-
         this.textArea.setContentType("text/html");
+        textArea.setFont(font);
         this.textArea.setEditable(false);
-
         SwitchPanel frame = new SwitchPanel() {
             private static final long serialVersionUID = 2138710083573682339L;
 
@@ -641,13 +574,10 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
             frame.add(this.tabbedPane);
             break;
         }
-
         frame.add(this.textField, "growx, split 2");
         frame.add(closeTab, "w pref!");
-
         this.lastAction = System.currentTimeMillis();
         final MouseMotionListener ml = new MouseMotionListener() {
-
             public void mouseDragged(final MouseEvent e) {
             }
 
@@ -655,7 +585,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
                 ChatExtension.this.lastAction = System.currentTimeMillis();
                 ChatExtension.this.setNickAway(false);
             }
-
         };
         frame.addMouseMotionListener(ml);
         this.textArea.addMouseMotionListener(ml);
@@ -663,9 +592,7 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
         this.right.addMouseMotionListener(ml);
         frame.setSize(new Dimension(800, 600));
         frame.setVisible(true);
-
         this.view = new JDChatView(this) {
-
             private static final long serialVersionUID = 3966113588850405974L;
 
             @Override
@@ -674,9 +601,7 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
                 menubar.add(top);
                 ChatExtension.this.top.setToolTipText(T.jd_plugins_optional_jdchat_JDChat_topic_tooltip());
             }
-
         };
-
         this.view.setContent(frame);
     }
 
@@ -685,30 +610,31 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
     }
 
     void initIRC() {
-
         this.NAMES.clear();
         for (int i = 0; i < 20; i++) {
             final String host = getSettings().getIrcServer();
             final int port = getSettings().getIrcPort();
             final String pass = null;
             final String nick = this.getNickname();
-            String user = "jdchat1";
-            String name = "jdchat1";
-
-            String uid;
+            final long ts = System.currentTimeMillis();
+            String user = "jdchat" + ts;
+            String name = "jdchat" + ts;
             try {
-                uid = IO.readFileToString(Application.getResource("cfg/uid"));
-                if (!StringUtils.isEmpty(uid)) {
-                    user = "jd" + uid.substring(uid.length() - 7);
-                    name = user;
+                final String uid = IO.readFileToString(Application.getResource("cfg/uid"));
+                if (!StringUtils.isEmpty(uid) && uid.length() > 7) {
+                    user = "jd" + uid.substring(uid.length() - 7).replaceAll("\\W+", "");
+                    if (StringUtils.isNotEmpty(user)) {
+                        name = user;
+                    } else {
+                        user = name = "jdchat" + ts;
+                    }
                 }
-            } catch (Exception e2) {
-                e2.printStackTrace();
+            } catch (Throwable e) {
+                getLogger().log(e);
             }
             this.addToText(null, ChatExtension.STYLE_SYSTEM_MESSAGE, "Connecting to JDChat...");
             this.conn = new IRCConnection(host, new int[] { port }, pass, nick, user, name);
             this.conn.setTimeout(1000 * 60 * 60);
-
             this.conn.addIRCEventListener(new IRCListener(this));
             this.conn.setEncoding("UTF-8");
             this.conn.setPong(true);
@@ -726,11 +652,9 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
                 } catch (final InterruptedException e1) {
                     LogController.CL().log(e1);
                 }
-                this.initIRC();
+                this.NAMES.clear();
             }
-
         }
-
     }
 
     public boolean isLoggedIn() {
@@ -744,7 +668,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
                 for (int x = 0; x < ChatExtension.this.tabbedPane.getTabCount(); x++) {
                     if (ChatExtension.this.tabbedPane.getTitleAt(x).equals(user)) {
                         final int t = x;
-
                         String text = text2;
                         ChatExtension.this.tabbedPane.setForegroundAt(t, Color.RED);
                         if (text.length() > 40) {
@@ -762,7 +685,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
         this.switchChannel(getSettings().getChannel());
         this.setLoggedIn(true);
         this.perform();
-
     }
 
     public void onMode(final char op, final char mod, final String arg) {
@@ -786,7 +708,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
             }
             break;
         }
-
     }
 
     /**
@@ -850,7 +771,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
 
     public void renamePMS(final String userOld, final String userNew) {
         new EDTHelper<Object>() {
-
             @Override
             public Object edtRun() {
                 ChatExtension.this.pms.put(userNew.trim().toLowerCase(), ChatExtension.this.pms.get(userOld.trim().toLowerCase()));
@@ -902,7 +822,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
             final String rest = text.substring(end).trim();
             if (org.appwork.utils.Regex.matches(cmd, ChatExtension.CMD_PM)) {
                 new EDTHelper<Object>() {
-
                     @Override
                     public Object edtRun() {
                         ChatExtension.this.textField.setText("");
@@ -922,15 +841,12 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
             } else if (org.appwork.utils.Regex.matches(cmd, ChatExtension.CMD_SLAP)) {
                 this.conn.doPrivmsg(channel2, new String(new byte[] { 1 }) + "ACTION  slaps " + rest + " with the whole Javadocs" + new String(new byte[] { 1 }));
                 this.addToText(null, ChatExtension.STYLE_ACTION, this.conn.getNick() + " slaps " + rest + " with the whole Javadocs");
-
                 this.lastCommand = "/slap ";
             } else if (org.appwork.utils.Regex.matches(cmd, ChatExtension.CMD_ACTION)) {
                 this.lastCommand = "/me ";
                 this.conn.doPrivmsg(channel2, new String(new byte[] { 1 }) + "ACTION " + this.prepareToSend(rest.trim()) + new String(new byte[] { 1 }));
                 this.addToText(null, ChatExtension.STYLE_ACTION, this.conn.getNick() + " " + Utils.prepareMsg(rest.trim()));
-
             } else if (org.appwork.utils.Regex.matches(cmd, ChatExtension.CMD_VERSION)) {
-
                 final String msg = " is using " + JDUtilities.getJDTitle(0) + " with Java " + Application.getJavaVersion() + " on a " + CrossSystem.getOSString() + " system";
                 this.conn.doPrivmsg(channel2, new String(new byte[] { 1 }) + "ACTION " + this.prepareToSend(msg) + new String(new byte[] { 1 }));
                 this.addToText(null, ChatExtension.STYLE_ACTION, this.conn.getNick() + " " + Utils.prepareMsg(msg));
@@ -955,7 +871,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
                 t = JDL.translate(tofrom[0], tofrom[1], Utils.prepareMsg(rest.substring(end).trim()));
                 this.lastCommand = "/translate " + rest.substring(0, end).trim() + " ";
                 new EDTHelper<Object>() {
-
                     @Override
                     public Object edtRun() {
                         ChatExtension.this.textField.setText(t);
@@ -967,9 +882,7 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
                 this.lastCommand = "/topic ";
             } else if (org.appwork.utils.Regex.matches(cmd, ChatExtension.CMD_JOIN)) {
                 this.NAMES.clear();
-
                 switchChannel(rest);
-
                 this.lastCommand = "/join " + rest;
                 this.setLoggedIn(true);
                 this.perform();
@@ -977,7 +890,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
                 this.conn.doNick(rest.trim());
                 this.lastCommand = "/nick ";
                 getSettings().setNick(rest.trim());
-
             } else if (org.appwork.utils.Regex.matches(cmd, ChatExtension.CMD_CONNECT)) {
                 if (this.conn == null || !this.conn.isConnected()) {
                     this.initIRC();
@@ -991,13 +903,13 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
             } else {
                 this.addToText(null, ChatExtension.STYLE_ERROR, "Command /" + cmd + " is not available");
             }
-
         } else {
-            this.conn.doPrivmsg(channel2, this.prepareToSend(text));
-            this.addToText(this.getUser(this.conn.getNick()), ChatExtension.STYLE_SELF, Utils.prepareMsg(text));
+            if (conn != null) {
+                this.conn.doPrivmsg(channel2, this.prepareToSend(text));
+                this.addToText(this.getUser(this.conn.getNick()), ChatExtension.STYLE_SELF, Utils.prepareMsg(text));
+            }
         }
         new EDTHelper<Object>() {
-
             @Override
             public Object edtRun() {
                 ChatExtension.this.textField.setText("");
@@ -1016,7 +928,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
             return;
         }
         this.addToText(null, ChatExtension.STYLE_SYSTEM_MESSAGE, "Rename to " + nickname);
-
         this.conn.doNick(nickname);
     }
 
@@ -1031,7 +942,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
         } else {
             this.setNick(this.orgNick);
         }
-
     }
 
     public void setNickCount(final int nickCount) {
@@ -1041,13 +951,11 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
     public void setTopic(final String msg) {
         this.addToText(null, ChatExtension.STYLE_SYSTEM_MESSAGE, "<b>Topic is: " + msg + "</b>");
         new EDTHelper<Object>() {
-
             @Override
             public Object edtRun() {
                 ChatExtension.this.top.setText(msg);
                 return null;
             }
-
         }.start();
     }
 
@@ -1074,19 +982,18 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
                     }
                 }
             }
-
         };
         // awayChecker.setDaemon(true);
         awayChecker.start();
-
     }
 
     public void updateNamesPanel() {
         final StringBuilder sb = new StringBuilder();
-        Collections.sort(this.NAMES);
-        final boolean color = !getSettings().isUserColorEnabled();
         sb.append("<ul>");
-        for (final User name : this.NAMES) {
+        final List<User> names = new ArrayList<User>(NAMES);
+        Collections.sort(names);
+        final boolean color = !getSettings().isUserColorEnabled();
+        for (final User name : names) {
             sb.append("<li>");
             if (!color) {
                 sb.append("<span style='color:#").append(name.getColor()).append(name.name.equals(this.conn.getNick()) ? ";font-weight:bold;" : "").append("'>");
@@ -1097,16 +1004,13 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
             sb.append("</span></li>");
         }
         sb.append("</ul>");
-
         if (this.right != null) {
             new EDTHelper<Object>() {
-
                 @Override
                 public Object edtRun() {
                     ChatExtension.this.right.setText(ChatExtension.USERLIST_STYLE + sb);
                     return null;
                 }
-
             }.start();
         }
     }
@@ -1118,7 +1022,6 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
         this.pms.clear();
         this.setLoggedIn(false);
         this.updateNamesPanel();
-
         if (awayChecker != null) {
             awayChecker.interrupt();
             awayChecker = null;
@@ -1185,10 +1088,8 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
 
     @Override
     protected void initExtension() throws StartException {
-
         this.NAMES = new CopyOnWriteArrayList<User>();
         this.sb = new StringBuilder();
-
         ChatExtension.COMMANDS.add("/msg ");
         ChatExtension.COMMANDS.add("/topic ");
         ChatExtension.COMMANDS.add("/op ");
@@ -1198,16 +1099,13 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
         ChatExtension.COMMANDS.add("/mode ");
         ChatExtension.COMMANDS.add("/join ");
         configPanel = new ChatConfigPanel(this, getSettings());
-
         new EDTHelper<Object>() {
-
             @Override
             public Object edtRun() {
                 initGUI();
                 return null;
             }
         }.getReturnValue();
-
     }
 
     @Override
@@ -1222,14 +1120,10 @@ public class ChatExtension extends AbstractExtension<ChatConfig, ChatTranslation
     }
 
     private MenuItemData updateMainToolbar(MenuContainerRoot mr) {
-
         return null;
-
     }
 
     private MenuItemData updateMainMenu(MenuContainerRoot mr) {
-
         return null;
-
     }
 }

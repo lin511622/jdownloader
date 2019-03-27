@@ -1,5 +1,6 @@
 package jd.plugins.hoster;
 
+import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -8,9 +9,12 @@ import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
+import java.security.DigestInputStream;
+import java.security.DigestOutputStream;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
 import java.security.KeyFactory;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.spec.RSAPrivateKeySpec;
@@ -28,7 +32,9 @@ import javax.crypto.Cipher;
 import javax.crypto.CipherOutputStream;
 import javax.crypto.IllegalBlockSizeException;
 import javax.crypto.NoSuchPaddingException;
+import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 
 import jd.PluginWrapper;
@@ -37,7 +43,9 @@ import jd.config.ConfigEntry;
 import jd.config.Property;
 import jd.controlling.downloadcontroller.DiskSpaceReservation;
 import jd.controlling.downloadcontroller.ManagedThrottledConnectionHandler;
+import jd.controlling.downloadcontroller.SingleDownloadController;
 import jd.http.Browser;
+import jd.http.Browser.BrowserException;
 import jd.http.URLConnectionAdapter;
 import jd.http.requests.PostRequest;
 import jd.nutils.encoding.Base64;
@@ -45,6 +53,8 @@ import jd.parser.Regex;
 import jd.plugins.Account;
 import jd.plugins.Account.AccountType;
 import jd.plugins.AccountInfo;
+import jd.plugins.AccountRequiredException;
+import jd.plugins.AccountUnavailableException;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
@@ -60,23 +70,36 @@ import jd.utils.locale.JDL;
 
 import org.appwork.storage.JSonStorage;
 import org.appwork.storage.TypeRef;
+import org.appwork.utils.JVMVersion;
 import org.appwork.utils.StringUtils;
 import org.appwork.utils.formatter.HexFormatter;
+import org.appwork.utils.net.HTTPHeader;
 import org.appwork.utils.parser.UrlQuery;
+import org.bouncycastle.crypto.PBEParametersGenerator;
+import org.bouncycastle.crypto.digests.SHA512Digest;
+import org.bouncycastle.crypto.generators.PKCS5S2ParametersGenerator;
+import org.bouncycastle.crypto.params.KeyParameter;
 import org.jdownloader.controlling.FileStateManager;
 import org.jdownloader.controlling.FileStateManager.FILESTATE;
+import org.jdownloader.controlling.UniqueAlltimeID;
 import org.jdownloader.gui.IconKey;
 import org.jdownloader.images.AbstractIcon;
 import org.jdownloader.plugins.PluginTaskID;
+import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
 import org.jdownloader.translate._JDT;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "mega.co.nz" }, urls = { "(https?://(www\\.)?mega\\.(co\\.)?nz/(#N?|\\$)|chrome://mega/content/secure\\.html#)(!|%21)[a-zA-Z0-9]+(!|%21)[a-zA-Z0-9_,\\-]{16,}((=###n=|!)[a-zA-Z0-9]+)?|mega:///#(?:!|%21)[a-zA-Z0-9]+(?:!|%21)[a-zA-Z0-9]{16,}" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "mega.co.nz" }, urls = { "(https?://(www\\.)?mega\\.(co\\.)?nz/.*?(#!?N?|\\$)|chrome://mega/content/secure\\.html#)(!|%21|\\?)[a-zA-Z0-9]+(!|%21)[a-zA-Z0-9_,\\-%]{16,}((=###n=|!)[a-zA-Z0-9]+)?|mega:/*#(?:!|%21)[a-zA-Z0-9]+(?:!|%21)[a-zA-Z0-9_,\\-%]{16,}" })
 public class MegaConz extends PluginForHost {
-    private static AtomicLong CS        = new AtomicLong(System.currentTimeMillis());
-    private final String      USE_SSL   = "USE_SSL_V2";
-    private final String      USE_TMP   = "USE_TMP_V2";
-    private final String      encrypted = ".encrypted";
-    private final String      API_URL   = "https://eu.api.mega.co.nz";
+    private final String USE_SSL        = "USE_SSL_V3";
+    private final String CHECK_RESERVED = "CHECK_RESERVED";
+    private final String USE_TMP        = "USE_TMP_V2";
+    private final String HIDE_APP       = "HIDE_APP_V2";
+    private final String encrypted      = ".encrypted";
+
+    @Override
+    public String[] siteSupportedNames() {
+        return new String[] { "mega.co.nz", "mega.nz" };
+    }
 
     public MegaConz(PluginWrapper wrapper) {
         super(wrapper);
@@ -151,11 +174,17 @@ public class MegaConz extends PluginForHost {
                 }
                 if (isPro) {
                     if (uq.containsKey("mxfer") && uq.containsKey("csxfer")) {
-                        final long max = (getNumber(uq, "mxfer")).longValue();
-                        final long used = (getNumber(uq, "caxfer")).longValue();
-                        final long reserved = (getNumber(uq, "rua")).longValue();
-                        ai.setTrafficMax(max);
-                        ai.setTrafficLeft(max - (used + reserved));
+                        final Number max = (getNumber(uq, "mxfer")).longValue();
+                        final Number used = (getNumber(uq, "caxfer")).longValue();
+                        final long reserved;
+                        if (getPluginConfig().getBooleanProperty(CHECK_RESERVED, true)) {
+                            final Number rua = getNumber(uq, "rua");
+                            reserved = rua != null ? rua.longValue() : 0;
+                        } else {
+                            reserved = 0;
+                        }
+                        ai.setTrafficMax(max.longValue());
+                        ai.setTrafficLeft(max.longValue() - (used.longValue() + reserved));
                     }
                     ai.setStatus(status);
                     account.setType(AccountType.PREMIUM);
@@ -190,10 +219,16 @@ public class MegaConz extends PluginForHost {
             try {
                 apiRequest(account, sid, null, "sml"/* logOut */);
             } catch (final PluginException ignore) {
+                logger.log(ignore);
             }
         }
     }
 
+    // // unfinished
+    // private boolean queryBandwidthQuota(final Account account, final long fileSize) throws Exception {
+    // apiRequest(account, getSID(account), null, "qbq"/* queryBandwidthQuota */, new Object[] { "s", fileSize });
+    // return true;
+    // }
     private String apiLogin(Account account) throws Exception {
         synchronized (account) {
             try {
@@ -213,17 +248,58 @@ public class MegaConz extends PluginForHost {
                         return sid;
                     }
                 }
-                final long[] password_aes_aLong = prepare_key_aLong(String_to_aLong(password));
+                long[] password_aes_aLong = null;
                 if (response == null || !response.containsKey("privk")) {
                     /* fresh login */
                     final String lowerCaseEmail = email.toLowerCase(Locale.ENGLISH);
-                    final String uh = calcuate_login_hash_uh(lowerCaseEmail, password_aes_aLong);
+                    response = apiRequest(null, null, null, "us0"/* preLogIn */, new Object[] { "user"/* email */, lowerCaseEmail });
+                    final Number v = (Number) response.get("v");
+                    final String uh;
+                    if (v.intValue() == 1) {
+                        password_aes_aLong = prepare_key_aLong(new long[] { 0x93C467E3, 0x7DB0C7A4, 0xD1BE3F81, 0x0152CB56 }, String_to_aLong(password));
+                        uh = calcuate_login_hash_uh(lowerCaseEmail, password_aes_aLong);
+                    } else if (v.intValue() == 2) {
+                        final String saltString = (String) response.get("s");
+                        if (StringUtils.isEmpty(saltString)) {
+                            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                        }
+                        byte[] pbkdf2Data = null;
+                        final byte[] saltBytes = aLong_to_aByte(Base64_to_aLong(saltString));
+                        if (JVMVersion.isMinimum(JVMVersion.JAVA18)) {
+                            // java >=1.8
+                            try {
+                                final SecretKeyFactory skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512");
+                                final PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), saltBytes, 100000, 256);
+                                pbkdf2Data = skf.generateSecret(spec).getEncoded();
+                            } catch (NoSuchAlgorithmException e) {
+                                getLogger().log(e);
+                            }
+                        }
+                        if (pbkdf2Data == null) {
+                            // bouncy castle
+                            final PBEParametersGenerator generator = new PKCS5S2ParametersGenerator(new SHA512Digest());
+                            generator.init(PBEParametersGenerator.PKCS5PasswordToUTF8Bytes(password.toCharArray()), saltBytes, 100000);
+                            KeyParameter params = (KeyParameter) generator.generateDerivedParameters(256);
+                            pbkdf2Data = params.getKey();
+                        }
+                        final byte[] uhBytes = new byte[16];
+                        System.arraycopy(pbkdf2Data, 16, uhBytes, 0, 16);
+                        uh = aLong_to_Base64(aByte_to_aLong(uhBytes));
+                        final byte[] passwordBytes = new byte[16];
+                        System.arraycopy(pbkdf2Data, 0, passwordBytes, 0, 16);
+                        password_aes_aLong = aByte_to_aLong(passwordBytes);
+                    } else {
+                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                    }
                     response = apiRequest(null, null, null, "us"/* logIn */, new Object[] { "user"/* email */, lowerCaseEmail }, new Object[] { "uh"/* emailHash */, uh });
                 }
                 if (response != null && (response.containsKey("k") && response.containsKey("privk") && response.containsKey("csid"))) {
                     try {
                         final String k = (String) response.get("k");
                         final String privk = (String) response.get("privk");
+                        if (password_aes_aLong == null) {
+                            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                        }
                         final long[] masterKey_aLong = decrypt_aLong(password_aes_aLong, Base64_to_aLong(k));
                         final long[] rsa_private_key_aLong = decrypt_aLong(masterKey_aLong, Base64_to_aLong(privk));
                         byte[] rsa_private_key_aBytes = aLong_to_aByte(rsa_private_key_aLong);
@@ -251,25 +327,41 @@ public class MegaConz extends PluginForHost {
                     }
                 }
                 throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
-            } catch (Exception e) {
-                apiLogoff(account);
+            } catch (BrowserException e) {
+                throw e;
+            } catch (PluginException e) {
+                if (e.getLinkStatus() == LinkStatus.ERROR_PREMIUM) {
+                    apiLogoff(account);
+                }
                 throw e;
             }
         }
     }
 
+    private boolean isHideApplication() {
+        return getPluginConfig().getBooleanProperty(HIDE_APP, true);
+    }
+
     private Map<String, Object> apiRequest(Account account, final String sid, final UrlQuery additionalUrlQuery, final String action, final Object[]... postParams) throws Exception {
         final UrlQuery query = new UrlQuery();
-        query.add("id", String.valueOf(CS.incrementAndGet()));
+        query.add("id", UniqueAlltimeID.create());
         if (StringUtils.isNotEmpty(sid)) {
             query.add("sid", sid);
         }
         if (additionalUrlQuery != null) {
             query.addAll(additionalUrlQuery.list());
         }
-        final PostRequest request = new PostRequest(API_URL + "/cs?" + query);
-        request.getHeaders().put("APPID", "JDownloader");
-        request.setContentType("text/plain; charset=UTF-8");
+        final PostRequest request = new PostRequest(getAPI() + "/cs?" + query);
+        if (!isHideApplication()) {
+            request.getHeaders().put("APPID", "JDownloader");
+        } else {
+            request.getHeaders().put(new HTTPHeader("User-Agent", null, false));
+            request.getHeaders().put(new HTTPHeader("Accept", null, false));
+            request.getHeaders().put(new HTTPHeader("Accept-Language", null, false));
+            request.getHeaders().put(new HTTPHeader("Accept-Encoding", null, false));
+            request.getHeaders().put(new HTTPHeader("Cache-Control", null, false));
+        }
+        request.setContentType("text/plain;charset=UTF-8");
         if (postParams != null) {
             final HashMap<String, Object> sendParams = new HashMap<String, Object>();
             sendParams.put("a", action);
@@ -294,12 +386,12 @@ public class MegaConz extends PluginForHost {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
         }
-        if (request.getHtmlCode().contains("-16")) {
+        if (request.getHtmlCode().contains("-16") && "us".equalsIgnoreCase(action)) {
             // API_EBLOCKED (-16): User blocked
-            throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
+            throw new PluginException(LinkStatus.ERROR_PREMIUM, "User blocked", PluginException.VALUE_ID_PREMIUM_DISABLE);
         } else if (request.getHtmlCode().contains("-9") && "us".equalsIgnoreCase(action)) {
             // API_EOENT (-9): Object (typically, node or user) not found
-            throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
+            throw new PluginException(LinkStatus.ERROR_PREMIUM, "User not found", PluginException.VALUE_ID_PREMIUM_DISABLE);
         } else if (request.getHtmlCode().contains("-15")) {
             // API_ESID (-15): Invalid or expired user session, please relogin
             if (sid != null && account != null) {
@@ -311,7 +403,7 @@ public class MegaConz extends PluginForHost {
                 if ("us".equalsIgnoreCase(action)) {
                     return null;
                 } else {
-                    throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, "Invalid or expired user session,please relogin", PluginException.VALUE_ID_PREMIUM_DISABLE);
                 }
             } else {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -338,7 +430,6 @@ public class MegaConz extends PluginForHost {
                 } else {
                     throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "You have exceeded your command weight per time quota. Retry again later", 5 * 60 * 1000l);
                 }
-
             }
         }
         return null;
@@ -361,8 +452,8 @@ public class MegaConz extends PluginForHost {
         return aLong;
     }
 
-    public static long[] prepare_key_aLong(long[] aLong) throws Exception {
-        long[] result_aLong = { 0x93C467E3, 0x7DB0C7A4, 0xD1BE3F81, 0x0152CB56 };
+    public static long[] prepare_key_aLong(long[] salt, long[] aLong) throws Exception {
+        long[] result_aLong = salt.clone();
         for (int round = 0; round < 0x10000; round++) {
             for (int j = 0; j < aLong.length; j += 4) {
                 final long[] loop_aLong = { 0, 0, 0, 0 };
@@ -542,7 +633,16 @@ public class MegaConz extends PluginForHost {
         Map<String, Object> response = null;
         try {
             final String parentNode = getParentNodeID(link);
-            response = apiRequest(null, null, parentNode != null ? (UrlQuery.parse("n=" + parentNode)) : null, "g", new Object[] { "ssl", useSSL() }, new Object[] { isPublic(link) ? "p" : "n", fileID });
+            if (Thread.currentThread() instanceof SingleDownloadController) {
+                final Account account = ((SingleDownloadController) (Thread.currentThread())).getAccount();
+                if (account != null && getHost().equals(account.getHosterByPlugin())) {
+                    response = apiRequest(account, getSID(account), parentNode != null ? (UrlQuery.parse("n=" + parentNode)) : null, "g", new Object[] { isPublic(link) ? "p" : "n", fileID });
+                } else {
+                    response = apiRequest(null, null, parentNode != null ? (UrlQuery.parse("n=" + parentNode)) : null, "g", new Object[] { isPublic(link) ? "p" : "n", fileID });
+                }
+            } else {
+                response = apiRequest(null, null, parentNode != null ? (UrlQuery.parse("n=" + parentNode)) : null, "g", new Object[] { isPublic(link) ? "p" : "n", fileID });
+            }
         } catch (IOException e) {
             logger.log(e);
             checkServerBusy();
@@ -552,14 +652,18 @@ public class MegaConz extends PluginForHost {
             final String error = getError(br);
             if ("-6".equals(error)) {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-                // throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Retry again later", 5 * 60 * 1000l);
             }
             if ("-9".equals(error)) {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
+            if ("-11".equals(error)) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
+            if ("-16".equals(error)) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
             checkServerBusy();
-            logger.info("Unhandled error code: " + error);
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "Unhandled error code: " + error);
         }
         final String fileSize = valueOf(response.get("s"));
         if (fileSize == null) {
@@ -594,7 +698,6 @@ public class MegaConz extends PluginForHost {
         } catch (final Throwable e) {
         }
         return AvailableStatus.TRUE;
-
     }
 
     @Override
@@ -608,6 +711,21 @@ public class MegaConz extends PluginForHost {
         apiDownload(link, account);
     }
 
+    private final String getSID(final Account account) throws Exception {
+        if (account != null) {
+            synchronized (account) {
+                final String storedSid = account.restoreObject("", TypeRef.STRING);
+                if (storedSid != null) {
+                    return storedSid;
+                } else {
+                    return apiLogin(account);
+                }
+            }
+        } else {
+            return null;
+        }
+    }
+
     private void apiDownload(DownloadLink link, Account account) throws Exception {
         final AvailableStatus available = requestFileInformation(link);
         if (AvailableStatus.FALSE == available) {
@@ -616,19 +734,7 @@ public class MegaConz extends PluginForHost {
         if (AvailableStatus.TRUE != available) {
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server is Busy", 1 * 60 * 1000l);
         }
-        final String sid;
-        if (account != null) {
-            synchronized (account) {
-                final String storedSid = account.restoreObject("", TypeRef.STRING);
-                if (storedSid != null) {
-                    sid = storedSid;
-                } else {
-                    sid = apiLogin(account);
-                }
-            }
-        } else {
-            sid = null;
-        }
+        final String sid = getSID(account);
         String fileID = getPublicFileID(link);
         String keyString = getPublicFileKey(link);
         if (fileID == null) {
@@ -640,7 +746,6 @@ public class MegaConz extends PluginForHost {
         final File src = new File(path);
         final AtomicLong encryptionDone = new AtomicLong(link.getVerifiedFileSize());
         final DiskSpaceReservation reservation = new DiskSpaceReservation() {
-
             @Override
             public long getSize() {
                 return Math.max(0, encryptionDone.get());
@@ -688,6 +793,9 @@ public class MegaConz extends PluginForHost {
                     if ("-11".equals(error)) {
                         throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Access violation", 5 * 60 * 1000l);
                     }
+                    if ("-16".equals(error)) {
+                        throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND, "User blocked");
+                    }
                     if ("-17".equals(error)) {
                         throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, "Request over quota", 60 * 60 * 1000l);
                     }
@@ -696,7 +804,15 @@ public class MegaConz extends PluginForHost {
                     }
                     checkServerBusy();
                     logger.info("Unhandled error code: " + error);
-                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "Unhandled error code: " + error);
+                }
+                if (isHideApplication()) {
+                    br.setRequest(null);
+                    br.getHeaders().put(new HTTPHeader("User-Agent", null, false));
+                    br.getHeaders().put(new HTTPHeader("Accept", null, false));
+                    br.getHeaders().put(new HTTPHeader("Accept-Language", null, false));
+                    br.getHeaders().put(new HTTPHeader("Accept-Encoding", null, false));
+                    br.getHeaders().put(new HTTPHeader("Cache-Control", null, false));
                 }
                 /* mega does not like much connections! */
                 dl = jd.plugins.BrowserAdapter.openDownload(br, link, downloadURL, true, -10);
@@ -707,22 +823,30 @@ public class MegaConz extends PluginForHost {
                 if (dl.getConnection().getResponseCode() == 509 || StringUtils.containsIgnoreCase(dl.getConnection().getResponseMessage(), "Bandwidth Limit Exceeded")) {
                     dl.getConnection().disconnect();
                     final String timeLeftString = dl.getConnection().getHeaderField("X-MEGA-Time-Left");
+                    final long minTimeLeft = 30 * 60 * 1000l;
                     final long timeLeft;
                     if (timeLeftString != null && timeLeftString.matches("^\\d+$")) {
-                        timeLeft = Math.max(60 * 1000l, Long.parseLong(timeLeftString) * 1000l);
+                        timeLeft = Long.parseLong(timeLeftString) * 1000l;
                     } else {
                         timeLeft = 60 * 60 * 1000l;
                     }
-                    if (account != null) {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "Bandwidth Limit Exceeded", PluginException.VALUE_ID_PREMIUM_TEMP_DISABLE);
+                    if (timeLeft == 0) {
+                        // I guess that 0 means not possible even after waiting. For example filesize larger than available/possible quota
+                        if (account != null && Account.AccountType.PREMIUM.equals(account.getType())) {
+                            throw new AccountUnavailableException("Bandwidth Limit Exceeded", 24 * 60 * 60 * 1000l);
+                        } else {
+                            throw new AccountRequiredException("File larger than available quota");
+                        }
+                    } else if (account != null) {
+                        throw new AccountUnavailableException("Bandwidth Limit Exceeded", Math.max(minTimeLeft, timeLeft));
+                    } else {
+                        throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, "Bandwidth Limit Exceeded", Math.max(minTimeLeft, timeLeft));
                     }
-                    throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, "Bandwidth Limit Exceeded", timeLeft);
                 }
                 if (StringUtils.containsIgnoreCase(dl.getConnection().getContentType(), "html")) {
                     br.followConnection();
                     throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
-                link.setProperty("usedPlugin", getHost());
                 if (dl.startDownload()) {
                     if (link.getLinkStatus().hasStatus(LinkStatus.FINISHED) && link.getDownloadCurrent() > 0) {
                         decrypt(path, encryptionDone, link, keyString);
@@ -734,26 +858,38 @@ public class MegaConz extends PluginForHost {
                     throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server is Busy", 1 * 60 * 1000l);
                 }
                 throw e;
+            } finally {
+                if (link.getDownloadCurrent() > 0) {
+                    link.setProperty("usedPlugin", getHost());
+                }
             }
         } finally {
             free(link, reservation);
         }
     }
 
+    public class MegaDownloadLinkDownloadable extends DownloadLinkDownloadable {
+        final private Browser br;
+
+        public MegaDownloadLinkDownloadable(DownloadLink downloadLink, final Browser br) {
+            super(downloadLink);
+            this.br = br;
+        }
+
+        @Override
+        public Browser getContextBrowser() {
+            return br.cloneBrowser();
+        }
+
+        @Override
+        public boolean isHashCheckEnabled() {
+            return false;
+        }
+    }
+
     @Override
     public Downloadable newDownloadable(final DownloadLink downloadLink, final Browser br) {
-        return new DownloadLinkDownloadable(downloadLink) {
-            @Override
-            public Browser getContextBrowser() {
-                return br.cloneBrowser();
-            }
-
-            @Override
-            public boolean isHashCheckEnabled() {
-                return false;
-            }
-
-        };
+        return new MegaDownloadLinkDownloadable(downloadLink, br);
     }
 
     @Override
@@ -820,9 +956,22 @@ public class MegaConz extends PluginForHost {
         return ret;
     }
 
+    private final static String USE_GLOBAL_CDN = "USE_GLOBAL_CDN";
+
+    private final String getAPI() {
+        if (getPluginConfig().getBooleanProperty(USE_GLOBAL_CDN, true)) {
+            return "https://g.api.mega.co.nz";
+        } else {
+            return "https://eu.api.mega.co.nz";
+        }
+    }
+
     private void setConfigElements() {
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), USE_SSL, JDL.L("plugins.hoster.megaconz.usessl", "Use SSL?")).setDefaultValue(false));
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), CHECK_RESERVED, JDL.L("plugins.hoster.megaconz.checkreserved", "Check reserved traffic?")).setDefaultValue(true));
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), USE_SSL, JDL.L("plugins.hoster.megaconz.usessl", "Use SSL?")).setDefaultValue(true));
         getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), USE_TMP, JDL.L("plugins.hoster.megaconz.usetmp", "Use tmp decrypting file?")).setDefaultValue(false));
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), HIDE_APP, JDL.L("plugins.hoster.megaconz.hideapp", "Use minimal set of http headers?")).setDefaultValue(true));
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), USE_GLOBAL_CDN, JDL.L("plugins.hoster.megaconz.globalcdn", "Use global CDN?")).setDefaultValue(true));
     }
 
     private static Object DECRYPTLOCK = new Object();
@@ -851,14 +1000,11 @@ public class MegaConz extends PluginForHost {
             tmp = new File(path + ".decrypted");
             dst = new File(path);
         }
-        if (tmp != null) {
-            if (tmp.exists() && tmp.delete() == false) {
-                throw new IOException("Could not delete " + tmp);
-            }
-        } else {
-            if (dst.exists() && dst.delete() == false) {
-                throw new IOException("Could not delete " + dst);
-            }
+        if (tmp != null && tmp.exists() && tmp.delete() == false) {
+            throw new IOException("Could not delete temp:" + tmp);
+        }
+        if (dst.exists() && dst.delete() == false) {
+            throw new IOException("Could not delete dest:" + dst);
         }
         FileInputStream fis = null;
         FileOutputStream fos = null;
@@ -898,7 +1044,6 @@ public class MegaConz extends PluginForHost {
                 long eta = ((total - current) * 10000) / speed;
                 this.setETA(eta);
             }
-
         };
         progress.setProgressSource(this);
         progress.setIcon(new AbstractIcon(IconKey.ICON_LOCK, 16));
@@ -915,53 +1060,53 @@ public class MegaConz extends PluginForHost {
                 synchronized (DECRYPTLOCK) {
                     message.set("Decrypting");
                     fis = new FileInputStream(src);
-                    FileStateManager.getInstance().requestFileState(outputFile, FILESTATE.WRITE_EXCLUSIVE, this);
-                    fos = new FileOutputStream(outputFile);
-                    final Cipher cipher = Cipher.getInstance("AES/CTR/nopadding");
-                    cipher.init(Cipher.ENCRYPT_MODE, skeySpec, ivSpec);
-                    final CipherOutputStream cos = new CipherOutputStream(fos, cipher);
-                    int read = 0;
-                    final byte[] buffer = new byte[32767];
-                    while ((read = fis.read(buffer)) != -1) {
-                        if (read > 0) {
-                            progress.updateValues(progress.getCurrent() + read, total);
-                            cos.write(buffer, 0, read);
-                            encryptionDone.addAndGet(-read);
+                    try {
+                        FileStateManager.getInstance().requestFileState(outputFile, FILESTATE.WRITE_EXCLUSIVE, this);
+                        fos = new FileOutputStream(outputFile);
+                        final DigestInputStream dis = new DigestInputStream(fis, MessageDigest.getInstance("SHA-256"));
+                        final DigestOutputStream dos = new DigestOutputStream(fos, MessageDigest.getInstance("SHA-256"));
+                        try {
+                            final Cipher cipher = Cipher.getInstance("AES/CTR/nopadding");
+                            cipher.init(Cipher.ENCRYPT_MODE, skeySpec, ivSpec);
+                            final CipherOutputStream cos = new CipherOutputStream(new BufferedOutputStream(dos, 1024 * 1024), cipher);
+                            int read = 0;
+                            final byte[] buffer = new byte[512 * 1024];
+                            while ((read = dis.read(buffer)) != -1) {
+                                if (read > 0) {
+                                    progress.updateValues(progress.getCurrent() + read, total);
+                                    cos.write(buffer, 0, read);
+                                    encryptionDone.addAndGet(-read);
+                                }
+                            }
+                            cos.close();
+                            logger.info("Decryption-Input-SHA256:" + HexFormatter.byteArrayToHex(dis.getMessageDigest().digest()));
+                            logger.info("Decryption-Output-SHA256:" + HexFormatter.byteArrayToHex(dos.getMessageDigest().digest()));
+                        } finally {
+                            fos.close();
                         }
-                    }
-                    cos.close();
-                    try {
-                        fos.close();
-                    } catch (final Throwable e) {
-                    }
-                    try {
+                    } finally {
                         fis.close();
-                    } catch (final Throwable e) {
+                    }
+                    if (tmp == null) {
+                        src.delete();
+                    } else {
+                        if (tmp.renameTo(dst)) {
+                            src.delete();
+                        } else {
+                            throw new IOException("Could not rename:" + tmp + "->" + dst);
+                        }
                     }
                     deleteDst = false;
                     link.getLinkStatus().setStatusText("Finished");
+                    link.removeProperty("usedPlugin");
                     try {
                         link.setInternalTmpFilenameAppend(null);
                         link.setInternalTmpFilename(null);
                     } catch (final Throwable e) {
                     }
-                    if (tmp == null) {
-                        src.delete();
-                    } else {
-                        src.delete();
-                        tmp.renameTo(dst);
-                    }
                     new MegaHashCheck(link, dst).finalHashResult();
                 }
             } finally {
-                try {
-                    fis.close();
-                } catch (final Throwable e) {
-                }
-                try {
-                    fos.close();
-                } catch (final Throwable e) {
-                }
                 link.removePluginProgress(progress);
                 if (deleteDst) {
                     if (tmp != null) {
@@ -977,7 +1122,6 @@ public class MegaConz extends PluginForHost {
     }
 
     private class MegaHashCheck extends DownloadInterface {
-
         private final DownloadLinkDownloadable downloadable;
         private final File                     finalFile;
 
@@ -1058,7 +1202,6 @@ public class MegaConz extends PluginForHost {
         public boolean isResumedDownload() {
             return false;
         }
-
     }
 
     private String getPublicFileID(DownloadLink link) {
@@ -1066,11 +1209,15 @@ public class MegaConz extends PluginForHost {
     }
 
     private String getPublicFileKey(DownloadLink link) {
-        return new Regex(link.getDownloadURL(), "#(!|%21)[a-zA-Z0-9]+(!|%21)([a-zA-Z0-9_,\\-]+)").getMatch(2);
+        String ret = new Regex(link.getDownloadURL(), "#(!|%21)[a-zA-Z0-9]+(!|%21)([a-zA-Z0-9_,\\-%]+)").getMatch(2);
+        if (ret != null && ret.contains("%20")) {
+            ret = ret.replace("%20", "");
+        }
+        return ret;
     }
 
     private String getNodeFileID(DownloadLink link) {
-        return new Regex(link.getDownloadURL(), "#N(!|%21)([a-zA-Z0-9]+)(!|%21)").getMatch(1);
+        return new Regex(link.getDownloadURL(), "#!?N(!|%21|\\?)([a-zA-Z0-9]+)(!|%21)").getMatch(1);
     }
 
     private String getParentNodeID(DownloadLink link) {
@@ -1084,7 +1231,11 @@ public class MegaConz extends PluginForHost {
     }
 
     private String getNodeFileKey(DownloadLink link) {
-        return new Regex(link.getDownloadURL(), "#N(!|%21)[a-zA-Z0-9]+(!|%21)([a-zA-Z0-9_,\\-]+)").getMatch(2);
+        String ret = new Regex(link.getDownloadURL(), "#!?N(!|%21|\\?)[a-zA-Z0-9]+(!|%21)([a-zA-Z0-9_,\\-%]+)").getMatch(2);
+        if (ret != null && ret.contains("%20")) {
+            ret = ret.replace("%20", "");
+        }
+        return ret;
     }
 
     public static byte[] b64decode(String data) {
@@ -1117,19 +1268,19 @@ public class MegaConz extends PluginForHost {
     }
 
     private String useSSL() {
-        if (getPluginConfig().getBooleanProperty(USE_SSL, false)) {
-            return "1";
+        if (getPluginConfig().getBooleanProperty(USE_SSL, true)) {
+            if (isHideApplication()) {
+                return "2";// can also be 2, see meganz/webclient/blob/master/js/crypto.js
+            } else {
+                return "1";
+            }
         } else {
             return "0";
         }
     }
 
     private boolean useTMP() {
-        if (getPluginConfig().getBooleanProperty(USE_TMP, false)) {
-            return true;
-        } else {
-            return false;
-        }
+        return getPluginConfig().getBooleanProperty(USE_TMP, false);
     }
 
     @Override
@@ -1142,6 +1293,17 @@ public class MegaConz extends PluginForHost {
         return false;
     }
 
+    private boolean isMULTIHOST(PluginForHost plugin) {
+        if (plugin != null) {
+            for (FEATURE feature : plugin.getFeatures()) {
+                if (FEATURE.MULTIHOST.equals(feature)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     @Override
     public String buildExternalDownloadURL(DownloadLink downloadLink, PluginForHost buildForThisPlugin) {
         if (isPublic(downloadLink)) {
@@ -1149,26 +1311,30 @@ public class MegaConz extends PluginForHost {
         } else {
             if (StringUtils.equals(getHost(), buildForThisPlugin.getHost())) {
                 return super.buildExternalDownloadURL(downloadLink, buildForThisPlugin);
-            } else if (StringUtils.equals("real-debrid.com", buildForThisPlugin.getHost())) {
+            } else if (isMULTIHOST(buildForThisPlugin)) {
                 String fileID = getPublicFileID(downloadLink);
                 String keyString = getPublicFileKey(downloadLink);
                 if (fileID == null) {
                     fileID = getNodeFileID(downloadLink);
                     keyString = getNodeFileKey(downloadLink);
                 }
-                return "https://mega.co.nz/#!" + fileID + "!" + keyString + "!" + getParentNodeID(downloadLink);
+                final String parentNodeID = getParentNodeID(downloadLink);
+                if (StringUtils.equals("alldebrid.com", buildForThisPlugin.getHost())) {
+                    return "https://mega.co.nz/#!" + fileID + "!" + keyString + "=~~" + parentNodeID;
+                } else {
+                    return "https://mega.co.nz/#!" + fileID + "!" + keyString + "!" + parentNodeID;
+                }
             } else {
                 return null;
             }
         }
-
     }
 
     /* NO OVERRIDE!! We need to stay 0.9*compatible */
     public boolean allowHandle(final DownloadLink downloadLink, final PluginForHost plugin) {
         if (downloadLink != null) {
             if (plugin != null) {
-                if (!StringUtils.equals((String) downloadLink.getProperty("usedPlugin", plugin.getHost()), plugin.getHost())) {
+                if (!StringUtils.equals(downloadLink.getStringProperty("usedPlugin", plugin.getHost()), plugin.getHost())) {
                     return false;
                 }
             }
@@ -1183,7 +1349,8 @@ public class MegaConz extends PluginForHost {
 
     @Override
     public void resetDownloadlink(DownloadLink link) {
-        link.setProperty("usedPlugin", Property.NULL);
+        if (link != null) {
+            link.removeProperty("usedPlugin");
+        }
     }
-
 }

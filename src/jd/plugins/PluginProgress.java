@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins;
 
 import java.awt.Color;
@@ -24,15 +23,14 @@ import org.jdownloader.gui.views.downloads.columns.ETAColumn;
 import org.jdownloader.plugins.PluginTaskID;
 
 public abstract class PluginProgress {
-    protected long   total;
-    protected long   current;
-    protected long   eta                            = -1;
-
-    protected Color  color;
-    protected Icon   icon                           = null;
-    protected Object progressSource                 = null;
-    private long     started;
-    private boolean  displayInProgressColumnEnabled = true;
+    protected volatile long total                          = 0;
+    protected volatile long current                        = 0;
+    protected volatile long eta                            = -1;
+    protected Color         color;
+    protected Icon          icon                           = null;
+    protected Object        progressSource                 = null;
+    protected final long    startedTimestamp;
+    private boolean         displayInProgressColumnEnabled = true;
 
     public void setDisplayInProgressColumnEnabled(boolean displayInProgressColumnEnabled) {
         this.displayInProgressColumnEnabled = displayInProgressColumnEnabled;
@@ -46,7 +44,7 @@ public abstract class PluginProgress {
         this.total = total;
         this.current = current;
         this.color = color;
-        started = System.currentTimeMillis();
+        startedTimestamp = System.currentTimeMillis();
     }
 
     public Color getColor() {
@@ -81,7 +79,7 @@ public abstract class PluginProgress {
         this.current = current;
         this.total = total;
         // try to calculate the eta
-        long runtime = System.currentTimeMillis() - started;
+        long runtime = System.currentTimeMillis() - startedTimestamp;
         if (runtime > 0) {
             double speed = current / (double) runtime;
             if (speed > 0) {
@@ -127,7 +125,7 @@ public abstract class PluginProgress {
     }
 
     public long getStarted() {
-        return started;
+        return startedTimestamp;
     }
 
     public void abort() {
@@ -136,5 +134,4 @@ public abstract class PluginProgress {
     public boolean isDisplayInProgressColumnEnabled() {
         return displayInProgressColumnEnabled;
     }
-
 }

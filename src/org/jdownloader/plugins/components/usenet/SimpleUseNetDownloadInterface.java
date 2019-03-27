@@ -3,12 +3,16 @@ package org.jdownloader.plugins.components.usenet;
 import java.awt.Color;
 import java.io.Closeable;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
-import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.CRC32;
 import java.util.zip.CheckedInputStream;
@@ -34,7 +38,6 @@ import jd.plugins.download.SparseFile;
 
 import org.appwork.exceptions.WTFException;
 import org.appwork.utils.Application;
-import org.appwork.utils.Hash;
 import org.appwork.utils.IO;
 import org.appwork.utils.formatter.HexFormatter;
 import org.appwork.utils.logging2.LogInterface;
@@ -42,12 +45,10 @@ import org.appwork.utils.logging2.LogSource;
 import org.appwork.utils.net.NullInputStream;
 import org.appwork.utils.net.socketconnection.SocketConnection;
 import org.appwork.utils.net.throttledconnection.MeteredThrottledInputStream;
-import org.appwork.utils.net.usenet.MessageBodyNotFoundException;
 import org.appwork.utils.net.usenet.SimpleUseNet;
 import org.appwork.utils.net.usenet.YEncInputStream;
+import org.appwork.utils.net.usenet.YEncInputStream.YEncDecodedSizeException;
 import org.appwork.utils.speedmeter.AverageSpeedMeter;
-import org.jdownloader.controlling.FileCreationManager;
-import org.jdownloader.controlling.FileCreationManager.DeleteOption;
 import org.jdownloader.plugins.DownloadPluginProgress;
 import org.jdownloader.plugins.HashCheckPluginProgress;
 import org.jdownloader.plugins.SkipReason;
@@ -55,11 +56,9 @@ import org.jdownloader.plugins.SkipReasonException;
 import org.jdownloader.translate._JDT;
 
 public class SimpleUseNetDownloadInterface extends DownloadInterface {
-
     private final Downloadable                      downloadable;
     private final ManagedThrottledConnectionHandler connectionHandler;
     private final LogInterface                      logger;
-
     private final AtomicBoolean                     abort                = new AtomicBoolean(false);
     private final AtomicBoolean                     terminated           = new AtomicBoolean(false);
     private File                                    outputCompleteFile;
@@ -126,7 +125,22 @@ public class SimpleUseNetDownloadInterface extends DownloadInterface {
                             final HashInfo fileHashInfo;
                             switch (type) {
                             case CRC32:
-                                final long checksum = Hash.getCRC32(outputPartFile);
+                                final FileInputStream fis = new FileInputStream(outputPartFile);
+                                final long checksum;
+                                try {
+                                    final byte[] b = new byte[128 * 1024];
+                                    int read = 0;
+                                    long cur = 0;
+                                    final CheckedInputStream cis = new CheckedInputStream(fis, new CRC32());
+                                    while ((read = cis.read(b)) >= 0) {
+                                        cur += read;
+                                        hashProgress.setCurrent(cur);
+                                    }
+                                    checksum = cis.getChecksum().getValue();
+                                    cis.close();
+                                } finally {
+                                    fis.close();
+                                }
                                 fileHashInfo = new HashInfo(HexFormatter.byteArrayToHex(new byte[] { (byte) (checksum >>> 24), (byte) (checksum >>> 16), (byte) (checksum >>> 8), (byte) checksum }), TYPE.CRC32);
                                 break;
                             default:
@@ -225,7 +239,7 @@ public class SimpleUseNetDownloadInterface extends DownloadInterface {
         final MeteredThrottledInputStream meteredThrottledInputStream = new MeteredThrottledInputStream(new NullInputStream(), new AverageSpeedMeter(10));
         boolean writeUsenetFile = false;
         try {
-            final ArrayList<UsenetFileSegment> segments = new ArrayList<UsenetFileSegment>(usenetFile.getSegments());
+            final LinkedList<UsenetFileSegment> segments = new LinkedList<UsenetFileSegment>(usenetFile.getSegments());
             if (downloadable.isResumable() && raf.length() > 0) {
                 final long partFileSize = raf.length();
                 final Iterator<UsenetFileSegment> it = segments.iterator();
@@ -247,63 +261,82 @@ public class SimpleUseNetDownloadInterface extends DownloadInterface {
             }
             connectionHandler.addThrottledConnection(meteredThrottledInputStream);
             final byte[] buffer = new byte[32767];
-            segmentLoop: for (final UsenetFileSegment segment : segments) {
-                if (abort.get()) {
-                    break segmentLoop;
+            final Map<String, AtomicInteger> retryMap = new HashMap<String, AtomicInteger>();
+            while (true) {
+                final UsenetFileSegment segment = segments.poll();
+                if (abort.get() || segment == null) {
+                    break;
                 } else {
-                    final InputStream bodyInputStream = client.requestMessageBodyAsInputStream(segment.getMessageID());
-                    meteredThrottledInputStream.setInputStream(bodyInputStream);
-                    if (bodyInputStream instanceof YEncInputStream) {
-                        final YEncInputStream yEnc = (YEncInputStream) bodyInputStream;
-                        final long partSize = yEnc.getPartSize();
-                        if (partSize >= 0) {
-                            segment.setPartBegin(yEnc.getPartBegin());
-                            segment.setPartEnd(yEnc.getPartEnd());
-                            final long writePosition = yEnc.getPartBegin() - 1;
-                            // update file-pointer and totalLinkBytesLoaded
-                            raf.seek(writePosition);
-                            totalLinkBytesLoaded.set(writePosition);
-                            writeUsenetFile = true;
+                    try {
+                        final InputStream bodyInputStream = client.requestMessageBodyAsInputStream(segment.getMessageID());
+                        if (bodyInputStream instanceof YEncInputStream) {
+                            final YEncInputStream yEnc = (YEncInputStream) bodyInputStream;
+                            final long partSize = yEnc.getPartSize();
+                            if (partSize >= 0) {
+                                segment.setPartBegin(yEnc.getPartBegin());
+                                segment.setPartEnd(yEnc.getPartEnd());
+                                final long writePosition = yEnc.getPartBegin() - 1;
+                                // update file-pointer and totalLinkBytesLoaded
+                                raf.seek(writePosition);
+                                totalLinkBytesLoaded.set(writePosition);
+                                writeUsenetFile = true;
+                            }
+                            meteredThrottledInputStream.setInputStream(new CheckedInputStream(bodyInputStream, new CRC32()));
+                        } else {
+                            meteredThrottledInputStream.setInputStream(bodyInputStream);
                         }
-                        meteredThrottledInputStream.setInputStream(new CheckedInputStream(bodyInputStream, new CRC32()));
-                    }
-                    int bytesRead = 0;
-                    while ((bytesRead = meteredThrottledInputStream.read(buffer)) != -1) {
+                        while (true) {
+                            final int bytesRead = meteredThrottledInputStream.read(buffer);
+                            if (abort.get() || bytesRead == -1) {
+                                break;
+                            } else if (bytesRead > 0) {
+                                localIO = true;
+                                raf.write(buffer, 0, bytesRead);
+                                localIO = false;
+                                totalLinkBytesLoaded.addAndGet(bytesRead);
+                            }
+                        }
                         if (abort.get()) {
                             // so we can quit normally
                             drainInputStream(bodyInputStream);
-                            break segmentLoop;
-                        }
-                        if (bytesRead > 0) {
-                            localIO = true;
-                            raf.write(buffer, 0, bytesRead);
-                            localIO = false;
-                            totalLinkBytesLoaded.addAndGet(bytesRead);
-                        }
-                    }
-                    if (bodyInputStream instanceof YEncInputStream) {
-                        final YEncInputStream yEnc = (YEncInputStream) bodyInputStream;
-                        if (yEnc.getPartCRC32() != null && meteredThrottledInputStream.getInputStream() instanceof CheckedInputStream) {
-                            final HashInfo hashInfo = new HashInfo(yEnc.getPartCRC32(), HashInfo.TYPE.CRC32);
-                            final long checksum = ((CheckedInputStream) meteredThrottledInputStream.getInputStream()).getChecksum().getValue();
-                            if (!new HashResult(hashInfo, HexFormatter.byteArrayToHex(new byte[] { (byte) (checksum >>> 24), (byte) (checksum >>> 16), (byte) (checksum >>> 8), (byte) checksum })).match()) {
-                                throw new PluginException(LinkStatus.ERROR_DOWNLOAD_FAILED, _JDT.T.system_download_doCRC2_failed(HashInfo.TYPE.CRC32));
+                            break;
+                        } else if (bodyInputStream instanceof YEncInputStream) {
+                            final YEncInputStream yEnc = (YEncInputStream) bodyInputStream;
+                            if (yEnc.getPartCRC32() != null && meteredThrottledInputStream.getInputStream() instanceof CheckedInputStream) {
+                                final HashInfo hashInfo = new HashInfo(yEnc.getPartCRC32(), HashInfo.TYPE.CRC32);
+                                final long checksum = ((CheckedInputStream) meteredThrottledInputStream.getInputStream()).getChecksum().getValue();
+                                if (!new HashResult(hashInfo, HexFormatter.byteArrayToHex(new byte[] { (byte) (checksum >>> 24), (byte) (checksum >>> 16), (byte) (checksum >>> 8), (byte) checksum })).match()) {
+                                    throw new PluginException(LinkStatus.ERROR_DOWNLOAD_FAILED, _JDT.T.system_download_doCRC2_failed(HashInfo.TYPE.CRC32));
+                                }
+                                segment._setHashInfo(hashInfo);
+                                writeUsenetFile = true;
                             }
-                            segment._setHashInfo(hashInfo);
-                            writeUsenetFile = true;
+                            if (usenetFile.getHash() == null && yEnc.getFileCRC32() != null) {
+                                usenetFile._setHashInfo(new HashInfo(yEnc.getFileCRC32(), HashInfo.TYPE.CRC32, true));
+                                writeUsenetFile = true;
+                            }
                         }
-                        if (usenetFile.getHash() == null && yEnc.getFileCRC32() != null) {
-                            usenetFile._setHashInfo(new HashInfo(yEnc.getFileCRC32(), HashInfo.TYPE.CRC32, true));
-                            writeUsenetFile = true;
+                    } catch (YEncDecodedSizeException e) {
+                        AtomicInteger retryCount = retryMap.get(segment.getMessageID());
+                        if (retryCount == null) {
+                            retryCount = new AtomicInteger(0);
+                            retryMap.put(segment.getMessageID(), retryCount);
+                        }
+                        if (retryCount.incrementAndGet() == 1) {
+                            logger.log(e);
+                            segments.offerFirst(segment);
+                        } else {
+                            throw e;
                         }
                     }
                 }
             }
         } catch (IOException e) {
             if (localIO) {
-                throw new SkipReasonException(SkipReason.DISK_FULL);
+                throw new SkipReasonException(SkipReason.DISK_FULL, e);
+            } else {
+                throw e;
             }
-            throw e;
         } finally {
             close(raf);
             cleanupDownladInterface();
@@ -319,14 +352,12 @@ public class SimpleUseNetDownloadInterface extends DownloadInterface {
 
     @Override
     public boolean startDownload() throws Exception {
-        boolean deletePartFile = false;
         try {
             downloadable.setConnectionHandler(this.getManagedConnetionHandler());
             final DiskSpaceReservation reservation = downloadable.createDiskSpaceReservation();
             DownloadPluginProgress downloadPluginProgress = null;
             try {
                 if (!downloadable.checkIfWeCanWrite(new ExceptionRunnable() {
-
                     @Override
                     public void run() throws Exception {
                         downloadable.checkAndReserve(reservation);
@@ -335,7 +366,7 @@ public class SimpleUseNetDownloadInterface extends DownloadInterface {
                             downloadable.lockFiles(outputCompleteFile, outputFinalCompleteFile, outputPartFile);
                         } catch (FileIsLockedException e) {
                             downloadable.unlockFiles(outputCompleteFile, outputFinalCompleteFile, outputPartFile);
-                            throw new PluginException(LinkStatus.ERROR_ALREADYEXISTS);
+                            throw new PluginException(LinkStatus.ERROR_ALREADYEXISTS, null, e);
                         }
                     }
                 }, null)) {
@@ -346,9 +377,6 @@ public class SimpleUseNetDownloadInterface extends DownloadInterface {
                 downloadable.addPluginProgress(downloadPluginProgress);
                 downloadable.setAvailable(AvailableStatus.TRUE);
                 download();
-            } catch (MessageBodyNotFoundException e) {
-                deletePartFile = true;
-                throw e;
             } finally {
                 try {
                     downloadable.free(reservation);
@@ -356,7 +384,10 @@ public class SimpleUseNetDownloadInterface extends DownloadInterface {
                     LogSource.exception(logger, e);
                 }
                 try {
-                    downloadable.addDownloadTime(System.currentTimeMillis() - getStartTimeStamp());
+                    final long startTimeStamp = getStartTimeStamp();
+                    if (startTimeStamp > 0) {
+                        downloadable.addDownloadTime(System.currentTimeMillis() - getStartTimeStamp());
+                    }
                 } catch (final Throwable e) {
                 }
                 downloadable.removePluginProgress(downloadPluginProgress);
@@ -386,9 +417,6 @@ public class SimpleUseNetDownloadInterface extends DownloadInterface {
         } finally {
             downloadable.unlockFiles(outputCompleteFile, outputFinalCompleteFile, outputPartFile);
             cleanupDownladInterface();
-            if (deletePartFile) {
-                FileCreationManager.getInstance().delete(outputPartFile, DeleteOption.NULL);
-            }
         }
     }
 
@@ -488,5 +516,4 @@ public class SimpleUseNetDownloadInterface extends DownloadInterface {
     public boolean isResumedDownload() {
         return resumed;
     }
-
 }

@@ -4,6 +4,7 @@ import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.File;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -41,7 +42,9 @@ import org.appwork.utils.Application;
 import org.appwork.utils.formatter.HexFormatter;
 import org.appwork.utils.net.httpserver.HttpConnection;
 import org.appwork.utils.net.httpserver.HttpConnection.HttpConnectionType;
+import org.appwork.utils.net.httpserver.HttpHandlerInfo;
 import org.appwork.utils.net.httpserver.HttpServer;
+import org.appwork.utils.net.httpserver.handler.HttpRequestHandler;
 import org.appwork.utils.net.httpserver.requests.GetRequest;
 import org.appwork.utils.net.httpserver.requests.HeadRequest;
 import org.appwork.utils.net.httpserver.requests.OptionsRequest;
@@ -66,7 +69,6 @@ import org.bouncycastle.x509.X509V3CertificateGenerator;
 import org.jdownloader.logging.LogController;
 
 public class DeprecatedAPIServer extends HttpServer {
-
     protected static class APICert {
         private final KeyPair keyPair;
 
@@ -158,6 +160,11 @@ public class DeprecatedAPIServer extends HttpServer {
         super(port);
     }
 
+    @Override
+    public HttpHandlerInfo registerRequestHandler(HttpRequestHandler handler) {
+        return super.registerRequestHandler(handler);
+    }
+
     public class CustomHttpConnection extends HttpConnection {
         protected CustomHttpConnection(HttpServer server, Socket clientSocket, InputStream is, OutputStream os) throws IOException {
             super(server, clientSocket, is, os);
@@ -191,7 +198,7 @@ public class DeprecatedAPIServer extends HttpServer {
     protected static final APICert getAPICert(final String serverName) throws NoSuchAlgorithmException, CertificateEncodingException, InvalidKeyException, IllegalStateException, SignatureException, IOException {
         final String name;
         if (serverName != null) {
-            if (serverName.matches("^\\d+-\\d+-\\d+-\\d+.mydns.jdownloader.org$")) {
+            if (serverName.matches("(?i)^\\d+-\\d+-\\d+-\\d+.mydns.jdownloader.org$") || serverName.matches("(?i)^[a-fA-F0-9]{8}.mydns.jdownloader.org$") || serverName.matches("(?i)^[a-fA-F0-9]{32}.mydns.jdownloader.org$")) {
                 name = "*.mydns.jdownloader.org";
             } else {
                 name = serverName;
@@ -269,7 +276,6 @@ public class DeprecatedAPIServer extends HttpServer {
                 }
                 final byte[] json = JSonStorage.getMapper().objectToByteArray(certStorables);
                 final Runnable run = new Runnable() {
-
                     @Override
                     public void run() {
                         JSonStorage.saveTo(APICERTSFILE, false, JSonStorage.KEY, json);
@@ -314,9 +320,38 @@ public class DeprecatedAPIServer extends HttpServer {
                 httpOS = clientSocket.getOutputStream();
             } else {
                 // https
-                final TlsServerProtocol tlsServerProtocol = new TlsServerProtocol(clientSocketIS, clientSocket.getOutputStream(), new SecureRandom());
-                tlsServerProtocol.accept(new DefaultTlsServer() {
+                final TlsServerProtocol tlsServerProtocol = new TlsServerProtocol(clientSocketIS, clientSocket.getOutputStream(), new SecureRandom()) {
+                    InputStream modifiedTlsInputStream = null;
 
+                    @Override
+                    public InputStream getInputStream() {
+                        if (modifiedTlsInputStream == null && super.getInputStream() != null) {
+                            /*
+                             * customized InputStream with optimized implementation of available to provide support for non blocking read
+                             */
+                            modifiedTlsInputStream = new FilterInputStream(super.getInputStream()) {
+                                public int available() throws IOException {
+                                    final int dataAvailable = applicationDataAvailable();
+                                    if (dataAvailable > 0) {
+                                        return dataAvailable;
+                                    } else {
+                                        final int socketAvailable = clientSocketIS.available();
+                                        if (socketAvailable >= 5) {
+                                            // recordHeader must be minimum 5 long
+                                            // TlsProtocol.readApplicationData -> safeReadRecord -> recordStream.readRecord() -> byte[]
+                                            // recordHeader = TlsUtils.readAllOrNothing(5, input);
+                                            return socketAvailable;
+                                        } else {
+                                            return 0;
+                                        }
+                                    }
+                                };
+                            };
+                        }
+                        return modifiedTlsInputStream;
+                    }
+                };
+                tlsServerProtocol.accept(new DefaultTlsServer() {
                     private Certificate            cert     = null;
                     private AsymmetricKeyParameter keyParam = null;
 
@@ -364,8 +399,8 @@ public class DeprecatedAPIServer extends HttpServer {
                     }
 
                     protected TlsSignerCredentials getRSASignerCredentials() throws IOException {
-                        // SignatureAndHashAlgorithm needed for TLS1.2
                         final SignatureAndHashAlgorithm signatureAndHashAlgorithm = new SignatureAndHashAlgorithm(HashAlgorithm.sha256, SignatureAlgorithm.rsa);
+                        // SignatureAndHashAlgorithm needed for TLS1.2
                         return new DefaultTlsSignerCredentials(context, cert, keyParam, signatureAndHashAlgorithm);
                     }
 
@@ -373,7 +408,6 @@ public class DeprecatedAPIServer extends HttpServer {
                         // signal TLS1.2 support
                         return ProtocolVersion.TLSv12;
                     };
-
                 });
                 httpIS = tlsServerProtocol.getInputStream();
                 httpOS = tlsServerProtocol.getOutputStream();
@@ -393,12 +427,10 @@ public class DeprecatedAPIServer extends HttpServer {
     @Override
     protected Runnable createConnectionHandler(final Socket clientSocket) throws IOException {
         return new Runnable() {
-
             @Override
             public void run() {
                 try {
                     final HttpConnection httpConnection = autoWrapSSLConnection(clientSocket, new AutoSSLHttpConnectionFactory() {
-
                         @Override
                         public HttpConnection create(Socket clientSocket, InputStream is, OutputStream os) throws IOException {
                             return new CustomHttpConnection(DeprecatedAPIServer.this, clientSocket, is, os);

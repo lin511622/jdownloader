@@ -13,10 +13,7 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
-
-import java.io.IOException;
 
 import jd.PluginWrapper;
 import jd.config.ConfigContainer;
@@ -41,9 +38,8 @@ import jd.utils.locale.JDL;
 
 import org.appwork.utils.formatter.SizeFormatter;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "solidfiles.com" }, urls = { "https?://(?:www\\.)?solidfiles\\.com/(?:d|v)/[a-z0-9]+/?" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "solidfiles.com" }, urls = { "https?://(?:www\\.)?solidfiles\\.com/(?:d|v)/[a-z0-9]+" })
 public class SolidFilesCom extends PluginForHost {
-
     public SolidFilesCom(PluginWrapper wrapper) {
         super(wrapper);
         setConfigElements();
@@ -58,7 +54,6 @@ public class SolidFilesCom extends PluginForHost {
 
     public static final String   DECRYPTFOLDERS               = "DECRYPTFOLDERS";
     private static final String  NOCHUNKS                     = "NOCHUNKS";
-
     /* Connection stuff */
     private static final boolean FREE_RESUME                  = true;
     private static final int     FREE_MAXCHUNKS               = 1;
@@ -72,36 +67,48 @@ public class SolidFilesCom extends PluginForHost {
 
     @SuppressWarnings("deprecation")
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         /* Offline links should also get nice filenames */
         if (!link.isNameSet()) {
             link.setName(new Regex(link.getDownloadURL(), "solidfiles\\.com/v/([a-z0-9]+)").getMatch(0));
         }
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
-        br.getPage(link.getDownloadURL());
-        if (br.getURL().contains("/error/") || br.containsHTML(">404<|>Not found<|>We couldn\\'t find the file you requested|Access to this file was disabled|The file you are trying to download has|>File not available") || this.br.getHttpConnection().getResponseCode() == 404) {
-            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        if (link.getBooleanProperty("directDownload", false)) {
+            return AvailableStatus.TRUE;
         }
-        String filename = PluginJSonUtils.getJsonValue(br, "name");
+        br.getPage(link.getDownloadURL());
+        isOffline(false);
+        // String filename = PluginJSonUtils.getJsonValue(br, "name");
+        String filename = br.getRegex("<h1 class=\"node-name\">(.*?)</h1>").getMatch(0);
         if (filename == null) {
             filename = br.getRegex("<title>([^<>\"]*?) (?:-|\\|) Solidfiles</title>").getMatch(0);
+            if (filename == null) {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            }
         }
-        if (filename == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-        }
-        link.setName(Encoding.htmlDecode(filename.trim()));
+        link.setName(Encoding.htmlDecode(filename.trim()).replace(" ", "_"));// spaces are replaced by _
         String filesize = PluginJSonUtils.getJsonValue(br, "size");
         if (filesize == null) {
             filesize = br.getRegex("class=\"filesize\">\\(([^<>\"]*?)\\)</span>").getMatch(0);
             if (filesize == null) {
                 filesize = br.getRegex("dt>File size<.*?dd>(.*?)</").getMatch(0);
+                if (filesize == null) {
+                    /* 2017-03-21 */
+                    filesize = br.getRegex("</copy-button>([^<>\"]*?) -").getMatch(0);
+                }
             }
         }
         if (filesize != null) {
             link.setDownloadSize(SizeFormatter.getSize(filesize));
         }
         return AvailableStatus.TRUE;
+    }
+
+    private void isOffline(boolean isDownload) throws PluginException {
+        if ((!isDownload && br.getURL().contains("/error/")) || br.containsHTML(">404<|>Not found<|>We couldn't find the file you requested|Access to this file was disabled|The file you are trying to download has|>File not available|This file/folder has been disabled") || br.getHttpConnection().getResponseCode() == 404) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        }
     }
 
     @Override
@@ -111,39 +118,43 @@ public class SolidFilesCom extends PluginForHost {
     }
 
     private void doFree(final DownloadLink downloadLink, final boolean resume, final int maxchunks, final String directlinkproperty) throws Exception {
-        if (br.containsHTML("We're currently processing this file and it's unfortunately not available yet")) {
+        if (br.containsHTML("We're currently processing this file and it's unfortunately not available yet|>\\s*We're preparing your download, please wait\\.{3}\\s*<")) {
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "File is not available yet", 5 * 60 * 1000l);
         }
         String dllink = checkDirectLink(downloadLink, directlinkproperty);
+        if (dllink == null && downloadLink.getBooleanProperty("directDownload", false)) {
+            // direct download...
+            dllink = downloadLink.getDownloadURL();
+        }
         if (dllink == null) {
             dllink = br.getRegex("class=\"direct-download regular-download\"[^\r\n]+href=\"(https?://[^\"']+)").getMatch(0);
             if (dllink == null) {
-                dllink = br.getRegex("(https?://s\\d+\\.solidfilesusercontent\\.com/[^\"' <>]+)").getMatch(0);
+                dllink = br.getRegex("(\"|'|)(https?://s\\d+\\.solidfilesusercontent\\.com/.*?)\\1").getMatch(1);
             }
             if (dllink == null) {
                 logger.warning("Final downloadlink is null");
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
+            dllink = dllink.trim();
         }
-
         int maxChunks = maxchunks;
         if (downloadLink.getBooleanProperty(NOCHUNKS, false)) {
             maxChunks = 1;
         }
-        dllink = dllink.trim();
-        downloadLink.setProperty(directlinkproperty, dllink);
         final long downloadCurrentRaw = downloadLink.getDownloadCurrentRaw();
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, resume, maxChunks);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, resume, maxChunks);
         if (dl.getConnection().getContentType().contains("html")) {
             if (dl.getConnection().getResponseCode() == 503) {
                 throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 503 - use less connections and try again", 10 * 60 * 1000l);
             }
             br.followConnection();
+            isOffline(true);
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
+        downloadLink.setProperty(directlinkproperty, br.getURL());
         try {
-            if (!this.dl.startDownload()) {
-                if (this.dl.externalDownloadStop()) {
+            if (!dl.startDownload()) {
+                if (dl.externalDownloadStop()) {
                     return;
                 }
             }
@@ -197,14 +208,14 @@ public class SolidFilesCom extends PluginForHost {
                 String bearertoken = getBearertoken(account);
                 final Cookies cookies = account.loadCookies("");
                 if (cookies != null && !force) {
-                    this.br.setCookies(this.getHost(), cookies);
+                    br.setCookies(this.getHost(), cookies);
                     return;
                 }
                 br.setFollowRedirects(true);
                 br.getPage("https://www." + this.getHost() + "/login");
-                String token = this.br.getRegex("name=token content=([^<>\"]+)>").getMatch(0);
+                String token = br.getRegex("name=token content=([^<>\"]+)>").getMatch(0);
                 if (token == null) {
-                    token = this.br.getCookie(this.br.getHost(), "csrftoken");
+                    token = br.getCookie(br.getHost(), "csrftoken");
                 }
                 if (token == null) {
                     if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
@@ -216,8 +227,8 @@ public class SolidFilesCom extends PluginForHost {
                     }
                 }
                 br.postPage("/login", "csrfmiddlewaretoken=" + Encoding.urlEncode(token) + "&username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
-                bearertoken = PluginJSonUtils.getJsonValue(this.br, "access_token");
-                if (br.getCookie(this.br.getHost(), "sessionid") == null || bearertoken == null) {
+                bearertoken = PluginJSonUtils.getJsonValue(br, "access_token");
+                if (br.getCookie(br.getHost(), "sessionid") == null || bearertoken == null) {
                     if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     } else {
@@ -225,7 +236,7 @@ public class SolidFilesCom extends PluginForHost {
                     }
                 }
                 account.setProperty("bearertoken", bearertoken);
-                account.saveCookies(this.br.getCookies(this.getHost()), "");
+                account.saveCookies(br.getCookies(this.getHost()), "");
             } catch (final PluginException e) {
                 account.clearCookies("");
                 throw e;
@@ -244,15 +255,14 @@ public class SolidFilesCom extends PluginForHost {
             throw e;
         }
         prepBRAjax(account);
-        this.br.getPage("https://www." + this.getHost() + "/api/payments?limit=25&offset=0");
+        br.getPage("https://www." + this.getHost() + "/api/payments?limit=25&offset=0");
         ai.setUnlimitedTraffic();
-        final String subscriptioncount = PluginJSonUtils.getJsonValue(this.br, "count");
+        final String subscriptioncount = PluginJSonUtils.getJsonValue(br, "count");
         if (subscriptioncount == null || subscriptioncount.equals("0")) {
             account.setType(AccountType.FREE);
             /* free accounts can still have captcha */
             account.setMaxSimultanDownloads(ACCOUNT_PREMIUM_MAXDOWNLOADS);
             account.setConcurrentUsePossible(false);
-            ai.setStatus("Registered (free) user");
         } else {
             /* TODO: Add expire date */
             // final String expire = null;
@@ -262,7 +272,6 @@ public class SolidFilesCom extends PluginForHost {
             account.setType(AccountType.PREMIUM);
             account.setMaxSimultanDownloads(ACCOUNT_PREMIUM_MAXDOWNLOADS);
             account.setConcurrentUsePossible(true);
-            ai.setStatus("Premium account");
         }
         account.setValid(true);
         return ai;
@@ -284,7 +293,7 @@ public class SolidFilesCom extends PluginForHost {
     }
 
     private String getCsrftoken() {
-        return this.br.getCookie(this.br.getHost(), "csrftoken");
+        return br.getCookie(br.getHost(), "csrftoken");
     }
 
     @Override
@@ -308,7 +317,7 @@ public class SolidFilesCom extends PluginForHost {
                     throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
             }
-            dl = jd.plugins.BrowserAdapter.openDownload(br, link, dllink, ACCOUNT_PREMIUM_RESUME, ACCOUNT_PREMIUM_MAXCHUNKS);
+            dl = new jd.plugins.BrowserAdapter().openDownload(br, link, dllink, ACCOUNT_PREMIUM_RESUME, ACCOUNT_PREMIUM_MAXCHUNKS);
             if (dl.getConnection().getContentType().contains("html")) {
                 if (dl.getConnection().getResponseCode() == 403) {
                     throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 60 * 60 * 1000l);
@@ -330,7 +339,7 @@ public class SolidFilesCom extends PluginForHost {
     }
 
     private void setConfigElements() {
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), ChoMikujPl.DECRYPTFOLDERS, JDL.L("plugins.hoster.solidfilescom.decryptfolders", "Decrypt subfolders in folders")).setDefaultValue(true));
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), SolidFilesCom.DECRYPTFOLDERS, JDL.L("plugins.hoster.solidfilescom.decryptfolders", "Decrypt subfolders in folders")).setDefaultValue(true));
     }
 
     @Override
@@ -345,5 +354,4 @@ public class SolidFilesCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

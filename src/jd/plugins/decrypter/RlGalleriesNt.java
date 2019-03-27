@@ -13,28 +13,24 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Random;
 
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
 import jd.http.Browser;
-import jd.parser.Regex;
 import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
 import jd.plugins.PluginForDecrypt;
-import jd.utils.JDUtilities;
+import jd.plugins.components.UserAgents;
 
-import org.appwork.utils.StringUtils;
-
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "urlgalleries.net" }, urls = { "http://(www\\.)?[a-z0-9_]+\\.urlgalleries\\.net/blog_gallery\\.php\\?id=\\d+" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "urlgalleries.net" }, urls = { "https?://(?:[a-z0-9_]+\\.)?urlgalleries\\.net/porn-gallery-\\d+/.*" })
 public class RlGalleriesNt extends PluginForDecrypt {
-
     private static String agent = null;
 
     public RlGalleriesNt(PluginWrapper wrapper) {
@@ -42,47 +38,52 @@ public class RlGalleriesNt extends PluginForDecrypt {
     }
 
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
-        final String parameter = param.toString();
         final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
-        br.setFollowRedirects(false);
+        final String parameter = param.toString().replace("http://", "https://");
         br.setReadTimeout(3 * 60 * 1000);
         // br.setCookie(".urlgalleries.net", "popundr", "1");
         if (agent == null) {
-            /* we first have to load the plugin, before we can reference it */
-            JDUtilities.getPluginForHost("mediafire.com");
-            agent = jd.plugins.hoster.MediafireCom.stringUserAgent();
+            agent = UserAgents.stringUserAgent();
         }
         br.getHeaders().put("User-Agent", agent);
         br.getHeaders().put("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
         br.getHeaders().put("Accept-Language", "en-gb, en;q=0.9");
         br.getPage(parameter);
-        if (br.containsHTML("<title> \\- urlgalleries\\.net</title>|>ERROR - NO IMAGES AVAILABLE") || StringUtils.endsWithCaseInsensitive(br.getRedirectLocation(), "/not_found_adult.php")) {
+        br.followRedirect();
+        if (br.containsHTML("<title> - urlgalleries\\.net</title>|>ERROR - NO IMAGES AVAILABLE") || br.getURL().contains("/not_found_adult.php")) {
             logger.info("Link offline: " + parameter);
             decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
         }
-        final String host = new Regex(parameter, "(https?://[^/]+\\.urlgalleries\\.net)").getMatch(0);
-        final String fpName = br.getRegex("border=\\'0\\' /></a></div>(.*?)</td></tr><tr>").getMatch(0);
-        final String[] links = br.getRegex("\\'(/image\\.php\\?cn=\\d+\\&uid=[A-Za-z0-9]+\\&where=.*?)\\'").getColumn(0);
-        if (links == null || links.length == 0) {
-            logger.warning("Decrypter broken for link: " + parameter);
-            return null;
+        String fpName = br.getRegex("border='0' /></a></div>(?:\\s*<h\\d+[^>]*>\\s*)?(.*?)(?:\\s*</h\\d+>\\s*)?</td></tr><tr>").getMatch(0);
+        if (fpName == null) {
+            fpName = br.getRegex("<title>([^<]*?)</title>").getMatch(0);
         }
         FilePackage fp = FilePackage.getInstance();
         if (fpName != null) {
             fp.setName(fpName.trim());
         }
+        String[][] items = br.getRegex("href='(/porn-picture[^']+)'[^<>]+><[^<>]+title=\"([^\"]+)\"").getMatches();
+        if (items == null || items.length == 0) {
+            logger.warning("Decrypter broken for link: " + parameter);
+            return null;
+        }
         int counter = 1;
         final Browser brc = br.cloneBrowser();
-        for (final String aLink : links) {
+        final HashSet<String> dups = new HashSet<String>();
+        for (final String item[] : items) {
             if (isAbort()) {
                 logger.info("Decryption process aborted by user, stopping...");
                 break;
             }
-            logger.info("Decrypting link " + counter + " of " + links.length);
+            String aLink = item[0];
+            if (!dups.add(aLink)) {
+                continue;
+            }
+            logger.info("Decrypting link " + counter + " of " + items.length);
             sleep(new Random().nextInt(3) + 1000, param);
             try {
-                brc.getPage(host + aLink);
+                brc.getPage(aLink);
             } catch (final Exception e) {
                 logger.info("Link timed out: " + aLink);
                 counter++;
@@ -93,7 +94,6 @@ public class RlGalleriesNt extends PluginForDecrypt {
                 logger.warning("Decrypter broken for link: " + parameter);
                 return null;
             }
-            // new Random().nextInt(10)
             final DownloadLink lol = createDownloadlink(finallink);
             // Give temp name so we have no same filenames
             lol.setName(Integer.toString(new Random().nextInt(1000000000)));
@@ -101,11 +101,11 @@ public class RlGalleriesNt extends PluginForDecrypt {
                 fp.add(lol);
             }
             decryptedLinks.add(lol);
+            lol.setFinalFileName(item[1]);
             distribute(lol);
             logger.info(finallink);
             counter++;
         }
-
         return decryptedLinks;
     }
 
@@ -113,5 +113,4 @@ public class RlGalleriesNt extends PluginForDecrypt {
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

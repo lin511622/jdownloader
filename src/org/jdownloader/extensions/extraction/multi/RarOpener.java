@@ -17,15 +17,14 @@
 package org.jdownloader.extensions.extraction.multi;
 
 import java.io.Closeable;
+import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.logging.Logger;
 
 import jd.parser.Regex;
 import net.sf.sevenzipjbinding.IArchiveOpenCallback;
@@ -37,30 +36,37 @@ import net.sf.sevenzipjbinding.SevenZipException;
 import net.sf.sevenzipjbinding.impl.RandomAccessFileInStream;
 
 import org.appwork.exceptions.WTFException;
+import org.appwork.utils.IO;
+import org.appwork.utils.logging2.LogInterface;
 import org.jdownloader.extensions.extraction.Archive;
 import org.jdownloader.extensions.extraction.ArchiveFile;
 
-/**
- * Used to join the separated rar files.
- *
- * @author botzi
- *
- */
 class RarOpener implements IArchiveOpenVolumeCallback, IArchiveOpenCallback, ICryptoGetTextPassword, Closeable {
-    private final Map<String, OpenerAccessTracker> openedRandomAccessFileList = new HashMap<String, OpenerAccessTracker>();
-    private String                                 name                       = null;
-    private final String                           password;
-    private final Archive                          archive;
-    private final HashMap<String, ArchiveFile>     map                        = new HashMap<String, ArchiveFile>();
-    private String                                 firstName;
-    private final Logger                           logger;
-    private long                                   accessCounter              = 0l;
 
-    RarOpener(Archive archive, Logger logger) {
+    private final class RandomAcessFileStats {
+
+        private final RandomAccessFile raf;
+        private long                   bytesRead = 0;
+        private long                   bytesSeek = 0;
+
+        private RandomAcessFileStats(RandomAccessFile raf) {
+            this.raf = raf;
+        }
+
+    }
+
+    private final Map<String, RandomAcessFileStats> openedRandomAccessFileList = new HashMap<String, RandomAcessFileStats>();
+    private String                                  name                       = null;
+    private final String                            password;
+    private final Archive                           archive;
+    private String                                  firstName;
+    private final LogInterface                      logger;
+
+    RarOpener(Archive archive, LogInterface logger) {
         this(archive, null, logger);
     }
 
-    RarOpener(Archive archive, String password, Logger logger) {
+    RarOpener(Archive archive, String password, LogInterface logger) {
         if (password == null) {
             /* password null will crash jvm */
             this.password = "";
@@ -72,9 +78,14 @@ class RarOpener implements IArchiveOpenVolumeCallback, IArchiveOpenCallback, ICr
         init();
     }
 
-    public void resetTracker() {
-        for (OpenerAccessTracker tracker : getTrackedFiles()) {
-            tracker.setAccessIndex(0);
+    /*
+     * additional dots before .rar confuses 7zip
+     */
+    private final String fixInternalName(final String name) {
+        if (name != null && name.matches(("(?i).*\\.pa?r?t?\\.?\\d+\\D+\\.rar$"))) {
+            return name.replaceFirst("(\\d+)(\\D+\\.rar)$", "$1.rar");
+        } else {
+            return name;
         }
     }
 
@@ -84,11 +95,16 @@ class RarOpener implements IArchiveOpenVolumeCallback, IArchiveOpenCallback, ICr
         if (logger != null) {
             logger.info("Init Map:");
         }
-        ArchiveFile firstArchiveFile = archive.getArchiveFiles().get(0);
+        final ArchiveFile firstArchiveFile = archive.getArchiveFiles().get(0);
         if (firstArchiveFile.getFilePath().matches("(?i).*\\.pa?r?t?\\.?\\d+\\D.*?\\.rar$")) {
             for (ArchiveFile af : archive.getArchiveFiles()) {
-                String name = archive.getName() + "." + new Regex(af.getFilePath(), ".*(part\\d+)").getMatch(0) + ".rar";
-
+                final String rest = new Regex(af.getFilePath(), ".*pa?r?t?\\.?\\d+(\\D.*?)\\.rar$").getMatch(0);
+                final String name;
+                if (rest == null) {
+                    name = archive.getName() + "." + new Regex(af.getFilePath(), ".*(pa?r?t?\\d+)").getMatch(0) + ".rar";
+                } else {
+                    name = archive.getName() + "." + new Regex(af.getFilePath(), ".*(pa?r?t?\\d+)").getMatch(0) + rest + ".rar";
+                }
                 if (logger != null) {
                     logger.info(af.getFilePath() + " name: " + name);
                 }
@@ -119,63 +135,88 @@ class RarOpener implements IArchiveOpenVolumeCallback, IArchiveOpenCallback, ICr
         return getStream(firstName == null ? firstArchiveFile.getFilePath() : firstName);
     }
 
-    public IInStream getStream(String filename) throws SevenZipException {
+    private final HashMap<String, ArchiveFile> map = new HashMap<String, ArchiveFile>();
+
+    public IInStream getStream(final String fileName) throws SevenZipException {
+        ArchiveFile af = null;
         try {
-            OpenerAccessTracker tracker = openedRandomAccessFileList.get(filename);
+            RandomAcessFileStats tracker = openedRandomAccessFileList.get(fileName);
             if (tracker == null) {
-                ArchiveFile af = map.get(filename);
+                af = map.get(fileName);
                 if (af == null) {
-                    af = archive.getBestArchiveFileMatch(filename);
+                    af = archive.getBestArchiveFileMatch(fileName);
+                    if (af != null) {
+                        map.put(fileName, af);
+                    }
                 }
-                filename = af == null ? filename : af.getFilePath();
-                tracker = new OpenerAccessTracker(filename, new RandomAccessFile(filename, "r"));
-                openedRandomAccessFileList.put(filename, tracker);
+                final File file;
+                if (af != null) {
+                    file = new File(af.getFilePath());
+                } else {
+                    file = new File(fileName);
+                }
+                logger.info("OpenFile->Filename:" + fileName + "|ArchiveFile:" + af + "|Filename(onDisk)" + file.getAbsolutePath());
+                tracker = new RandomAcessFileStats(IO.open(file, "r"));
+                openedRandomAccessFileList.put(fileName, tracker);
             }
             if (name == null) {
-                name = filename;
+                name = fixInternalName(fileName);
             }
-            final OpenerAccessTracker finalTracker = tracker;
-            finalTracker.getRandomAccessFile().seek(0);
-            return new RandomAccessFileInStream(finalTracker.getRandomAccessFile()) {
+            final RandomAcessFileStats finalTracker = tracker;
+            finalTracker.raf.seek(0);
+            return new RandomAccessFileInStream(finalTracker.raf) {
                 @Override
                 public int read(byte[] abyte0) throws SevenZipException {
-                    finalTracker.setAccessIndex(++accessCounter);
-                    return super.read(abyte0);
+                    final int read = super.read(abyte0);
+                    if (read > 0) {
+                        finalTracker.bytesRead += read;
+                    }
+                    return read;
                 }
 
                 @Override
-                public long seek(long l, int i) throws SevenZipException {
-                    finalTracker.setAccessIndex(++accessCounter);
-                    return super.seek(l, i);
+                public synchronized long seek(long arg0, int arg1) throws SevenZipException {
+                    final long seek = super.seek(arg0, arg1);
+                    if (seek > 0) {
+                        finalTracker.bytesSeek += seek;
+                    }
+                    return seek;
                 }
 
             };
-        } catch (FileNotFoundException fileNotFoundException) {
-            return null;
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    /**
-     * Closes open files.
-     *
-     * @throws IOException
-     */
-    public void close() throws IOException {
-        Iterator<Entry<String, OpenerAccessTracker>> it = openedRandomAccessFileList.entrySet().iterator();
-        while (it.hasNext()) {
-            Entry<String, OpenerAccessTracker> next = it.next();
-            try {
-                next.getValue().getRandomAccessFile().close();
-            } catch (final Throwable e) {
+        } catch (FileNotFoundException e) {
+            if (af != null) {
+                logger.log(e);
+                throw new SevenZipException(e);
+            } else {
+                return null;
             }
-            it.remove();
+        } catch (IOException e) {
+            logger.log(e);
+            if (af != null) {
+                throw new SevenZipException(e);
+            } else {
+                return null;
+            }
+        } catch (Exception e) {
+            logger.log(e);
+            throw new SevenZipException(e);
         }
     }
 
-    public Collection<OpenerAccessTracker> getTrackedFiles() {
-        return openedRandomAccessFileList.values();
+    public void close() throws IOException {
+        final Iterator<Entry<String, RandomAcessFileStats>> it = openedRandomAccessFileList.entrySet().iterator();
+        while (it.hasNext()) {
+            final Entry<String, RandomAcessFileStats> next = it.next();
+            try {
+                logger.info("CloseFile->Filename:" + next.getKey() + "|BytesRead:" + next.getValue().bytesRead + "|BytesSeek:" + next.getValue().bytesSeek);
+                next.getValue().raf.close();
+            } catch (final Throwable e) {
+                logger.log(e);
+            } finally {
+                it.remove();
+            }
+        }
     }
 
     public void setCompleted(Long files, Long bytes) throws SevenZipException {

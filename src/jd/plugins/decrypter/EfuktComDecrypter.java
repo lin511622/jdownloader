@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
@@ -26,35 +25,42 @@ import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
-import jd.plugins.PluginForDecrypt;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "efukt.com" }, urls = { "http://(www\\.)?efukt\\.com/(\\d+[A-Za-z0-9_\\-]+\\.html|out\\.php\\?id=\\d+|view\\.gif\\.php\\?id=\\d+)" })
-public class EfuktComDecrypter extends PluginForDecrypt {
+import org.jdownloader.plugins.components.antiDDoSForDecrypt;
 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "efukt.com" }, urls = { "https?://(www\\.)?efukt\\.com/(\\d+[A-Za-z0-9_\\-]+\\.html|out\\.php\\?id=\\d+|view\\.gif\\.php\\?id=\\d+)" })
+public class EfuktComDecrypter extends antiDDoSForDecrypt {
     public EfuktComDecrypter(PluginWrapper wrapper) {
         super(wrapper);
     }
 
-    private static final String type_redirect = "http://(www\\.)?efukt\\.com/out\\.php\\?id=\\d+";
-
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
-        ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
+        final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         final String parameter = param.toString();
+        setBrowserExclusive();
         br.setFollowRedirects(false);
-        br.getPage(parameter);
+        getPage(parameter);
         String redirect = br.getRedirectLocation();
         if (redirect == null) {
-            redirect = this.br.getRegex("window\\.location[\t\n\r ]*?=[\t\n\r ]*?\\'(http[^<>\"]*?)\\';").getMatch(0);
+            redirect = this.br.getRegex("window\\.location[\t\n\r ]*?=[\t\n\r ]*?\\'(https?[^<>\"]*?)\\';").getMatch(0);
         }
         if (redirect != null && !redirect.contains("efukt.com/")) {
             decryptedLinks.add(createDownloadlink(redirect));
             return decryptedLinks;
         } else if (redirect != null) {
-            br.getPage(redirect);
+            getPage(redirect);
+            redirect = br.getRedirectLocation();
+            if (redirect == null) {
+                redirect = this.br.getRegex("window\\.location[\t\n\r ]*?=[\t\n\r ]*?\\'(https?[^<>\"]*?)\\';").getMatch(0);
+            }
+            if (redirect != null && !redirect.contains("efukt.com/")) {
+                decryptedLinks.add(createDownloadlink(redirect));
+                return decryptedLinks;
+            }
             br.followRedirect(true);
         }
         final DownloadLink main = createDownloadlink(parameter.replace("efukt.com/", "efuktdecrypted.com/"));
-        if (br.getURL().equals("http://efukt.com/")) {
+        if (br.getURL().equals("http://efukt.com/") || br.getURL().equals("https://efukt.com/")) {
             main.setFinalFileName(new Regex(parameter, "https?://efukt\\.com/(.+)").getMatch(0));
             main.setAvailable(false);
             main.setProperty("offline", true);
@@ -70,7 +76,7 @@ public class EfuktComDecrypter extends PluginForDecrypt {
                 title = br.getRegex("property=\"og:title\" content=\"([^<>\"]*?)").getMatch(0);
             }
             if (title == null) {
-                title = br.getRegex("<title>eFukt.com\\s*\\|\\s*(.*?)\\s*\\|").getMatch(0);
+                title = br.getRegex("<title>(?:eFukt.com\\s*\\|\\s*)?(.*?)\\s*\\|").getMatch(0);
             }
             if (title == null) {
                 title = new Regex(parameter, "efukt\\.com/(\\d+[A-Za-z0-9_\\-]+)\\.html").getMatch(0);
@@ -82,7 +88,7 @@ public class EfuktComDecrypter extends PluginForDecrypt {
                 pics = br.getRegex("img\\s*src\\s*=\\s*\"(https?://cdn\\.efukt\\.com/[^\"<>]*)\"\\s*onerror=").getColumn(0);
             }
             if (pics == null || pics.length == 0) {
-                pics = br.getRegex("img\\s*src\\s*=\\s*\"(https?://cdn\\.efukt\\.com/[^\"<>]*\\.(gif|webm))\"\\s*alt=\".*?\"\\s*class=\"image_content\"").getColumn(0);
+                pics = br.getRegex("<img\\s*?src\\s*?=\\s*?\"(https?://cdn\\.efukt\\.com/[^\"<>]*\\.(gif|webm|jpg))\"\\s*?alt=\".*?\"\\s*?class=\"image_content\"").getColumn(0);
             }
             if (pics == null || pics.length == 0) {
                 logger.warning("Decrypter broken for link: " + parameter);
@@ -95,10 +101,7 @@ public class EfuktComDecrypter extends PluginForDecrypt {
             final FilePackage fp = FilePackage.getInstance();
             fp.setName(title);
             fp.addLinks(decryptedLinks);
-
         }
-
         return decryptedLinks;
     }
-
 }

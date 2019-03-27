@@ -13,11 +13,15 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.LinkedHashMap;
+import java.util.Locale;
+
+import org.jdownloader.scripting.JavaScriptEngineFactory;
 
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
@@ -30,11 +34,8 @@ import jd.plugins.FilePackage;
 import jd.plugins.PluginForDecrypt;
 import jd.plugins.components.PluginJSonUtils;
 
-import org.jdownloader.scripting.JavaScriptEngineFactory;
-
 @DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "younow.com" }, urls = { "https?://(?:www\\.)?younow\\.com/[^/]+(?:/\\d+)?" })
 public class YounowComChannel extends PluginForDecrypt {
-
     public YounowComChannel(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -53,22 +54,36 @@ public class YounowComChannel extends PluginForDecrypt {
             br.getPage("https://api.younow.com/php/api/broadcast/info/user=" + username + "/curId=0");
             int addedlinks = 0;
             int addedlinks_temp = 0;
+            int maxItemsPerPage = 20;
             String userid = this.br.getRegex("\"userId\":\"(\\d+)\"").getMatch(0);
             if (userid == null) {
                 userid = PluginJSonUtils.getJsonValue(br, "userId");
             }
+            String timestampValue = "0";
             if (inValidate(userid)) {
                 /* Probably that user does not exist */
                 return decryptedLinks;
             }
+            final ArrayList<String> dupecheck = new ArrayList<String>();
+            boolean done = false;
+            boolean hasMore = false;
+            long lastDateUploaded = 0;
             do {
+                if (this.isAbort()) {
+                    return decryptedLinks;
+                }
                 addedlinks_temp = 0;
+                if (addedlinks > 0) {
+                    timestampValue = Long.toString(lastDateUploaded);
+                }
                 this.br.getHeaders().put("Accept", "application/json, text/plain, */*");
                 this.br.getHeaders().put("Referer", "https://www.younow.com/" + username + "/channel");
                 // this.br.getHeaders().put("Origin", "https://www.younow.com");
-                br.getPage("https://cdn2.younow.com/php/api/post/getBroadcasts/channelId=" + userid + "/startFrom=" + (addedlinks + 1));
+                // br.getPage("https://cdn2.younow.com/php/api/post/getBroadcasts/channelId=" + userid + "/startFrom=" + (addedlinks + 1));
+                br.getPage("https://cdn.younow.com/php/api/moment/profile/channelId=" + userid + "/createdBefore=" + timestampValue + "/records=" + maxItemsPerPage);
                 LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
-                final ArrayList<Object> ressourcelist = (ArrayList) entries.get("posts");
+                hasMore = ((Boolean) entries.get("hasMore")).booleanValue();
+                final ArrayList<Object> ressourcelist = (ArrayList) entries.get("items");
                 if (ressourcelist == null) {
                     break;
                 }
@@ -76,24 +91,36 @@ public class YounowComChannel extends PluginForDecrypt {
                     addedlinks++;
                     addedlinks_temp++;
                     entries = (LinkedHashMap<String, Object>) objecto;
-                    entries = (LinkedHashMap<String, Object>) entries.get("media");
-                    final long mediatype = JavaScriptEngineFactory.toLong(entries.get("type"), 0);
-                    if (mediatype != 5) {
+                    final String type = (String) entries.get("type");
+                    // final long mediatype = JavaScriptEngineFactory.toLong(entries.get("type"), 0);
+                    if (type == null || !type.equalsIgnoreCase("collection")) {
                         /* Skip non-video-content */
                         continue;
                     }
-                    entries = (LinkedHashMap<String, Object>) entries.get("broadcast");
                     final long broadcastID = JavaScriptEngineFactory.toLong(entries.get("broadcastId"), 0);
-                    final String broadcasttitle = jd.plugins.hoster.YounowCom.getbroadcastTitle(entries);
-                    if (broadcastID == 0 || inValidate(broadcasttitle)) {
-                        continue;
+                    lastDateUploaded = JavaScriptEngineFactory.toLong(entries.get("created"), 0);
+                    String broadcasttitle = jd.plugins.hoster.YounowCom.getbroadcastTitle(entries);
+                    if (broadcastID == 0 || lastDateUploaded == 0) {
+                        /* This should never happen! */
+                        done = true;
+                        break;
                     }
+                    if (dupecheck.contains(Long.toString(broadcastID))) {
+                        /* Same content again? We're done! */
+                        done = true;
+                        break;
+                    }
+                    dupecheck.add(Long.toString(broadcastID));
                     final DownloadLink dl = this.createDownloadlink("https://www.younowdecrypted.com/" + username + "/" + broadcastID);
                     String temp_filename;
                     if (!inValidate(broadcasttitle)) {
                         /* We might not be able to easily get this information later --> Save it on our DownloadLink */
                         dl.setProperty("decryptedbroadcasttitle", broadcasttitle);
                         temp_filename = username + "_" + broadcastID + "_" + broadcasttitle;
+                    } else if (lastDateUploaded > 0) {
+                        final SimpleDateFormat df = new SimpleDateFormat("MMMM dd, yyyy", Locale.UK);
+                        final String date = df.format(new Date(lastDateUploaded * 1000));
+                        temp_filename = username + "_" + broadcastID + " - " + date;
                     } else {
                         temp_filename = username + "_" + broadcastID;
                     }
@@ -103,15 +130,16 @@ public class YounowComChannel extends PluginForDecrypt {
                     decryptedLinks.add(dl);
                     distribute(dl);
                 }
-            } while (addedlinks_temp == 10);
+            } while (addedlinks_temp >= 1 && !done);
+            if (decryptedLinks.isEmpty() && !hasMore) {
+                logger.info("Channel is empty / does not contain any recorded and downloadable content");
+            }
         }
-
         if (fpName != null) {
             final FilePackage fp = FilePackage.getInstance();
             fp.setName(Encoding.htmlDecode(fpName.trim()));
             fp.addLinks(decryptedLinks);
         }
-
         return decryptedLinks;
     }
 
@@ -130,5 +158,4 @@ public class YounowComChannel extends PluginForDecrypt {
             return false;
         }
     }
-
 }

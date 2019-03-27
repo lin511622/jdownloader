@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
@@ -26,26 +25,40 @@ import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterException;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
+import jd.plugins.LinkStatus;
+import jd.plugins.PluginException;
 import jd.plugins.PluginForDecrypt;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "security-links.com" }, urls = { "http://(www\\.)?security\\-links\\.com/[A-Za-z0-9]+" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "security-links.com" }, urls = { "http://(?:www\\.)?security-links\\.com/(?:\\d+/(\\S+)|[A-Za-z0-9]+)" })
 public class SecurityLinksCom extends PluginForDecrypt {
-
     public SecurityLinksCom(PluginWrapper wrapper) {
         super(wrapper);
     }
 
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
-        ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
+        final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         final String parameter = param.toString();
+        if (new Regex(parameter, "/\\d+/\\S+").matches()) {
+            // code by raztoki
+            try {
+                final String fuid = new Regex(parameter, this.getSupportedLinks()).getMatch(0);
+                final String decode = Encoding.urlDecode(fuid, false);
+                final StringBuilder sb = new StringBuilder();
+                for (int index = 0; index < decode.length(); index++) {
+                    char ch = decode.charAt(index);
+                    sb.append(Character.toChars(ch - 1));
+                }
+                if (sb.toString().matches("(?i)(?:http|ftp).+")) {
+                    decryptedLinks.add(createDownloadlink(sb.toString()));
+                    return decryptedLinks;
+                }
+            } catch (final Throwable t) {
+            }
+        }
         br.setFollowRedirects(true);
         br.getPage(parameter);
         if (br.containsHTML("il y a une ereur")) {
-            final DownloadLink offline = createDownloadlink("directhttp://" + parameter);
-            offline.setFinalFileName(new Regex(parameter, "https?://[^<>\"/]+/(.+)").getMatch(0));
-            offline.setAvailable(false);
-            offline.setProperty("offline", true);
-            decryptedLinks.add(offline);
+            decryptedLinks.add(createOfflinelink(parameter, null, new Regex(parameter, "https?://[^<>\"/]+/(.+)").getMatch(0)));
             return decryptedLinks;
         }
         if (br.containsHTML("\"generate\\.php\"")) {
@@ -58,7 +71,7 @@ public class SecurityLinksCom extends PluginForDecrypt {
                 break;
             }
             if (br.containsHTML("\"generate\\.php\"")) {
-                throw new DecrypterException(DecrypterException.CAPTCHA);
+                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
             }
         } else if (br.containsHTML("le lien est protegé par un mot de passe")) {
             for (int i = 0; i <= 3; i++) {
@@ -73,7 +86,14 @@ public class SecurityLinksCom extends PluginForDecrypt {
                 throw new DecrypterException(DecrypterException.PASSWORD);
             }
         }
-        final String[] links = br.getRegex("\\d+\\| <a href=\\'(http[^<>\"]*?)\\'").getColumn(0);
+        String[] links = br.getRegex("\\d+\\| <a href='(http[^<>\"]*?)'").getColumn(0);
+        if (links == null || links.length == 0) {
+            // for /\\d+/[A-Za-z0-9:;]+/[A-Za-z0-9:;]+
+            final String filter = br.getRegex("<div id=\"hideshow\".*?</div>").getMatch(-1);
+            if (filter != null) {
+                links = new Regex(filter, "href=('|\")(.*?)\\1").getColumn(1);
+            }
+        }
         if (links == null || links.length == 0) {
             logger.warning("Decrypter broken for link: " + parameter);
             return null;
@@ -81,8 +101,6 @@ public class SecurityLinksCom extends PluginForDecrypt {
         for (final String singleLink : links) {
             decryptedLinks.add(createDownloadlink(singleLink));
         }
-
         return decryptedLinks;
     }
-
 }

@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
@@ -21,7 +20,6 @@ import java.util.ArrayList;
 import jd.PluginWrapper;
 import jd.config.SubConfiguration;
 import jd.controlling.ProgressController;
-import jd.http.Browser.BrowserException;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.plugins.CryptedLink;
@@ -31,14 +29,14 @@ import jd.plugins.FilePackage;
 import jd.plugins.PluginForDecrypt;
 import jd.utils.JDUtilities;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "sta.sh" }, urls = { "http://(www\\.)?sta\\.sh/[a-z0-9]+" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "sta.sh" }, urls = { "https?://(www\\.)?sta\\.sh/(zip/)?[a-z0-9]+" })
 public class StaShDecrypter extends PluginForDecrypt {
-
     public StaShDecrypter(PluginWrapper wrapper) {
         super(wrapper);
     }
 
-    private final String  INVALIDLINKS           = "http://(www\\.)?sta\\.sh/(muro|writer|login)";
+    private final String  INVALIDLINKS           = "https?://(www\\.)?sta\\.sh/(muro|writer|login)";
+    private final String  TYPE_ZIP               = "https?://(www\\.)?sta\\.sh/zip/[a-z0-9]+";
     private static String FORCEHTMLDOWNLOAD      = "FORCEHTMLDOWNLOAD";
     private static String USE_LINKID_AS_FILENAME = "USE_LINKID_AS_FILENAME";
     private static String DOWNLOAD_ZIP           = "DOWNLOAD_ZIP";
@@ -46,6 +44,13 @@ public class StaShDecrypter extends PluginForDecrypt {
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
         ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         final String parameter = param.toString();
+        if (parameter.matches(TYPE_ZIP)) {
+            final DownloadLink link = createDownloadlink(parameter.replace("sta.sh/", "stadecrypted.sh/"));
+            link.setProperty("iszip", true);
+            link.setProperty("directlink", parameter);
+            decryptedLinks.add(link);
+            return decryptedLinks;
+        }
         JDUtilities.getPluginForHost("sta.sh");
         final SubConfiguration cfg = SubConfiguration.getConfig("sta.sh");
         final boolean force_html_dl = cfg.getBooleanProperty(FORCEHTMLDOWNLOAD, false);
@@ -53,53 +58,64 @@ public class StaShDecrypter extends PluginForDecrypt {
         final String main_linkid = new Regex(parameter, "sta\\.sh/(.+)").getMatch(0);
         final DownloadLink main = createDownloadlink(parameter.replace("sta.sh/", "stadecrypted.sh/"));
         if (parameter.matches(INVALIDLINKS)) {
-            main.setAvailable(false);
-            decryptedLinks.add(main);
+            decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
         }
-        try {
-            br.getPage(parameter);
-        } catch (final BrowserException e) {
-            main.setAvailable(false);
-            decryptedLinks.add(main);
+        br.getPage(parameter);
+        if (this.br.getHttpConnection().getResponseCode() == 404) {
+            decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
         }
-        final String[][] picdata = br.getRegex("class=\"thumb\" href=\"(https?://(www\\.)?sta\\.sh/[a-z0-9]+)\" title=\"([^<>\"]*?)\"").getMatches();
-        if (picdata == null || picdata.length == 0) {
-            decryptedLinks.add(main);
-            return decryptedLinks;
-        }
-
+        final String linkid_general = new Regex(parameter, "([a-z0-9]+)$").getMatch(0);
         String fpName = br.getRegex("name=\"og:title\" content=\"([^<>\"]*?)\"").getMatch(0);
         if (fpName == null) {
-            fpName = new Regex(parameter, "([a-z0-9]+)$").getMatch(0);
+            /* Fallback */
+            fpName = linkid_general;
         }
         fpName = Encoding.htmlDecode(fpName.trim());
-
-        for (final String singleLinkData[] : picdata) {
-            final String url = singleLinkData[0];
-            final String linkid = new Regex(url, "sta\\.sh/(.+)").getMatch(0);
-            String name = Encoding.htmlDecode(singleLinkData[2]);
-            final DownloadLink dl = createDownloadlink(url.replace("sta.sh/", "stadecrypted.sh/"));
-            /* Obey user setting */
-            if (linkid_as_filename) {
-                name = linkid;
+        if (this.br.containsHTML("dev\\-metainfo\\-details\\-client\\-link")) {
+            /* We should have one or multiple pictures. */
+            final String[][] picdata = br.getRegex("class=\"thumb\" href=\"(https?://(www\\.)?sta\\.sh/[a-z0-9]+)\" title=\"([^<>\"]*?)\"").getMatches();
+            if (picdata == null || picdata.length == 0) {
+                decryptedLinks.add(main);
+                return decryptedLinks;
             }
-            if (force_html_dl) {
-                dl.setName(name + ".html");
-                dl.setAvailable(true);
-            } else {
-                /* No ext found --> Don't set available, let host plugin perform a full check to find the correct name */
-                final String ext = jd.plugins.hoster.StaSh.getFileExt(this.br);
-                if (ext != null) {
-                    dl.setName(name + "." + ext);
+            for (final String singleLinkData[] : picdata) {
+                final String url = singleLinkData[0];
+                final String linkid = new Regex(url, "sta\\.sh/(.+)").getMatch(0);
+                String name = Encoding.htmlDecode(singleLinkData[2]);
+                final DownloadLink dl = createDownloadlink(url.replace("sta.sh/", "stadecrypted.sh/"));
+                /* Obey user setting */
+                if (linkid_as_filename) {
+                    name = linkid;
+                }
+                if (force_html_dl) {
+                    dl.setName(name + ".html");
                     dl.setAvailable(true);
                 } else {
-                    dl.setName(name);
+                    /* No ext found --> Don't set available, let host plugin perform a full check to find the correct name */
+                    final String ext = jd.plugins.hoster.StaSh.getFileExt(this.br);
+                    if (ext != null) {
+                        dl.setName(name + "." + ext);
+                        dl.setAvailable(true);
+                    } else {
+                        dl.setName(name);
+                    }
                 }
+                decryptedLinks.add(dl);
             }
-            decryptedLinks.add(dl);
+        } else {
+            /* These URLs will go back into the decrypter. */
+            final String[] URLs = this.br.getRegex("href=\"(https?://sta\\.sh/[a-z0-9]{10,})\"").getColumn(0);
+            for (final String url : URLs) {
+                if (url.contains(linkid_general)) {
+                    /* Fail-safe to prevent infinite loops! */
+                    continue;
+                }
+                decryptedLinks.add(this.createDownloadlink(url));
+            }
         }
+        /* Download zip if it exists and user wants it. */
         final String zipLink = br.getRegex("\"(/zip/[a-z0-9]+)\"").getMatch(0);
         if (cfg.getBooleanProperty(DOWNLOAD_ZIP, false) && zipLink != null) {
             final DownloadLink zip = createDownloadlink(parameter.replace("sta.sh/", "stadecrypted.sh/"));

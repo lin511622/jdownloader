@@ -13,12 +13,12 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
 import java.util.Iterator;
-import java.util.concurrent.atomic.AtomicBoolean;
+
+import org.appwork.utils.formatter.SizeFormatter;
 
 import jd.PluginWrapper;
 import jd.config.SubConfiguration;
@@ -33,13 +33,9 @@ import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
 import jd.plugins.PluginForDecrypt;
-import jd.utils.JDUtilities;
 
-import org.appwork.utils.formatter.SizeFormatter;
-
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "filesmonster.com" }, urls = { "https?://(www\\.)?filesmonster\\.com/(download\\.php\\?id=[A-Za-z0-9_-]+|dl/.*?/free/(?:[^\\s<>/]*/)*)" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "filesmonster.com" }, urls = { "https?://(?:www\\.)?filesmonster\\.com/(?:download\\.php\\?id=[A-Za-z0-9_-]+|player/v\\d+/video/[A-Za-z0-9_-]+|dl/.*?/free/(?:[^\\s<>/]*/)*)" })
 public class FilesMonsterDecrypter extends PluginForDecrypt {
-
     public FilesMonsterDecrypter(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -47,6 +43,7 @@ public class FilesMonsterDecrypter extends PluginForDecrypt {
     public static final String  FILENAMEREGEX            = "\">File name:</td>[\t\n\r ]+<[^<>]+>(.*?)</td>";
     public static final String  FILESIZEREGEX            = "\">File size:</td>[\t\n\r ]+<[^<>]+>(.*?)</td>";
     private static final String ADDLINKSACCOUNTDEPENDANT = "ADDLINKSACCOUNTDEPENDANT";
+    private static final String TYPE_EMBEDDED            = ".+/player/v3/video/.+";
 
     /**
      * TODO: Seems like some urls only have a free download option available if a certain Referer is present e.g.
@@ -56,7 +53,7 @@ public class FilesMonsterDecrypter extends PluginForDecrypt {
         br = new Browser();
         final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         String FAILED = null;
-        final boolean onlyAddNeededLinks = SubConfiguration.getConfig("filesmonster.com").getBooleanProperty(ADDLINKSACCOUNTDEPENDANT, false);
+        final boolean onlyAddNeededLinks = SubConfiguration.getConfig(this.getHost()).getBooleanProperty(ADDLINKSACCOUNTDEPENDANT, false);
         boolean addFree = true;
         boolean addPremium = true;
         if (onlyAddNeededLinks) {
@@ -95,7 +92,13 @@ public class FilesMonsterDecrypter extends PluginForDecrypt {
         }
         br.setReadTimeout(3 * 60 * 1000);
         br.setFollowRedirects(false);
-        final String parameter = param.toString();
+        final String parameter;
+        if (param.toString().matches(TYPE_EMBEDDED)) {
+            final String url_id = new Regex(param.toString(), "/([^/]+)$").getMatch(0);
+            parameter = String.format("https://%s/download.php?id=%s", this.getHost(), url_id);
+        } else {
+            parameter = param.toString();
+        }
         String protocol = new Regex(parameter, "(https?)://").getMatch(0);
         String browserReferrer = getBrowserReferrer();
         if (browserReferrer != null) {
@@ -105,17 +108,8 @@ public class FilesMonsterDecrypter extends PluginForDecrypt {
         }
         br.getHeaders().put("User-Agent", jd.plugins.hoster.MediafireCom.stringUserAgent());
         br.getPage(parameter);
-        // Link offline
-        if (br.containsHTML(">File was deleted by owner or it was deleted for violation of copyrights<|>File not found<|>The link could not be decoded<")) {
-            final DownloadLink finalOne = createDownloadlink(parameter.replace("filesmonster.com", "filesmonsterdecrypted.com"));
-            finalOne.setAvailable(false);
-            finalOne.setProperty("offline", true);
-            finalOne.setName(new Regex(parameter, "download\\.php\\?id=(.+)").getMatch(0));
-            decryptedLinks.add(finalOne);
-            return decryptedLinks;
-        }
-        // Advertising link
-        if (br.containsHTML("the file can be accessed at the|>can be accessed at the")) {
+        final String title = jd.plugins.hoster.FilesMonsterCom.getLongTitle(this.br);
+        if (jd.plugins.hoster.FilesMonsterCom.isOffline(this.br)) {
             final DownloadLink finalOne = createDownloadlink(parameter.replace("filesmonster.com", "filesmonsterdecrypted.com"));
             finalOne.setAvailable(false);
             finalOne.setProperty("offline", true);
@@ -125,7 +119,6 @@ public class FilesMonsterDecrypter extends PluginForDecrypt {
         }
         String fname = br.getRegex(FILENAMEREGEX).getMatch(0);
         String fsize = br.getRegex(FILESIZEREGEX).getMatch(0);
-
         String[] decryptedStuff = null;
         final String postThat = br.getRegex("\"(/dl/.*?)\"").getMatch(0);
         if (postThat != null) {
@@ -141,10 +134,9 @@ public class FilesMonsterDecrypter extends PluginForDecrypt {
         if (br.containsHTML(">You need Premium membership to download files larger than")) {
             FAILED = "There are no free downloadlinks";
         }
-
         if (addFree) {
             if (FAILED == null) {
-                String theImportantPartOfTheMainLink = new Regex(parameter, "filesmonster\\.com/download\\.php\\?id=(.+)").getMatch(0);
+                final String theImportantPartOfTheMainLink = jd.plugins.hoster.FilesMonsterCom.getMainLinkID(parameter);
                 for (String fileInfo : decryptedStuff) {
                     String filename = new Regex(fileInfo, "\"name\":\"(.*?)\"").getMatch(0);
                     String filesize = new Regex(fileInfo, "\"size\":(\")?(\\d+)").getMatch(1);
@@ -156,13 +148,16 @@ public class FilesMonsterDecrypter extends PluginForDecrypt {
                     String dllink = protocol + "://filesmonsterdecrypted.com/dl/" + theImportantPartOfTheMainLink + "/free/2/" + filelinkPart;
                     final DownloadLink finalOne = createDownloadlink(dllink);
                     // name here can be unicode....
-                    finalOne.setFinalFileName(Encoding.htmlDecode(unescape(filename)));
+                    finalOne.setFinalFileName(Encoding.htmlDecode(Encoding.unicodeDecode(filename)));
                     finalOne.setDownloadSize(Integer.parseInt(filesize));
                     finalOne.setAvailable(true);
                     // for this to be used in hoster plugin it needs non escaped name. see: getNewTemporaryLink
                     finalOne.setProperty("origfilename", filename);
                     finalOne.setProperty("origsize", filesize);
                     finalOne.setProperty("mainlink", parameter);
+                    if (title != null) {
+                        finalOne.setComment(title);
+                    }
                     decryptedLinks.add(finalOne);
                 }
                 if (decryptedStuff == null || decryptedStuff.length == 0) {
@@ -173,7 +168,6 @@ public class FilesMonsterDecrypter extends PluginForDecrypt {
                 logger.info("Failed to get free links because: " + FAILED);
             }
         }
-
         if (addPremium || FAILED != null) {
             final DownloadLink thebigone = createDownloadlink(parameter.replace("filesmonster.com", "filesmonsterdecrypted.com"));
             if (fname != null && fsize != null) {
@@ -182,6 +176,9 @@ public class FilesMonsterDecrypter extends PluginForDecrypt {
                 thebigone.setAvailable(true);
             }
             thebigone.setProperty("PREMIUMONLY", true);
+            if (title != null) {
+                thebigone.setComment(title);
+            }
             decryptedLinks.add(thebigone);
         }
         /** All those links belong to the same file so lets make a package */
@@ -193,19 +190,8 @@ public class FilesMonsterDecrypter extends PluginForDecrypt {
         return decryptedLinks;
     }
 
-    private static AtomicBoolean yt_loaded = new AtomicBoolean(false);
-
-    private String unescape(final String s) {
-        /* we have to make sure the youtube plugin is loaded */
-        if (!yt_loaded.getAndSet(true)) {
-            JDUtilities.getPluginForHost("youtube.com");
-        }
-        return jd.nutils.encoding.Encoding.unescapeYoutube(s);
-    }
-
     /* NO OVERRIDE!! */
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

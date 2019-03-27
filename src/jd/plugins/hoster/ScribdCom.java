@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -22,6 +21,8 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+
+import org.appwork.utils.formatter.TimeFormatter;
 
 import jd.PluginWrapper;
 import jd.config.ConfigContainer;
@@ -44,23 +45,16 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.utils.locale.JDL;
 
-import org.appwork.utils.formatter.TimeFormatter;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "scribd.com" }, urls = { "https?://(?:www\\.)?(?:(?:de|ru|es)\\.)?scribd\\.com/doc/\\d+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "scribd.com" }, urls = { "https?://(?:www\\.)?(?:(?:de|ru|es)\\.)?scribd\\.com/(doc|document|embeds)/\\d+" })
 public class ScribdCom extends PluginForHost {
-
     private final String        formats            = "formats";
-
     /** The list of server values displayed to the user */
     private final String[]      allFormats         = new String[] { "PDF", "TXT", "DOCX" };
-
     private static final String FORMAT_PPS         = "class=\"format_ext\">\\.PPS</span>";
-
     private final String        NODOWNLOAD         = JDL.L("plugins.hoster.ScribdCom.NoDownloadAvailable", "Download is disabled for this file!");
     private final String        PREMIUMONLY        = JDL.L("plugins.hoster.ScribdCom.premonly", "Download requires a scribd.com account!");
     private String              authenticity_token = null;
     private String              ORIGURL            = null;
-
     private static Object       LOCK               = new Object();
     private static final String COOKIE_HOST        = "http://scribd.com";
 
@@ -71,10 +65,20 @@ public class ScribdCom extends PluginForHost {
         this.setStartIntervall(5 * 1000l);
     }
 
-    public void correctDownloadLink(DownloadLink link) {
-        final String linkPart = new Regex(link.getDownloadURL(), "(scribd\\.com/doc/\\d+)").getMatch(0);
+    public void correctDownloadLink(final DownloadLink link) {
+        final String linkid = getLinkID(link);
         /* Forced https */
-        link.setUrlDownload("https://www." + linkPart.toLowerCase());
+        link.setPluginPatternMatcher("https://www.scribd.com/document/" + linkid);
+    }
+
+    @Override
+    public String getLinkID(final DownloadLink link) {
+        final String linkid = new Regex(link.getPluginPatternMatcher(), "(\\d+)$").getMatch(0);
+        if (linkid != null) {
+            return linkid;
+        } else {
+            return super.getLinkID(link);
+        }
     }
 
     @SuppressWarnings("deprecation")
@@ -86,10 +90,9 @@ public class ScribdCom extends PluginForHost {
         try {
             int counter400 = 0;
             do {
-                br.getPage(downloadLink.getDownloadURL());
+                br.getPage(downloadLink.getPluginPatternMatcher());
                 counter400++;
             } while (counter400 <= 5 && br.getHttpConnection().getResponseCode() == 400);
-
             for (int i = 0; i <= 5; i++) {
                 String newurl = br.getRedirectLocation();
                 if (newurl != null) {
@@ -115,6 +118,10 @@ public class ScribdCom extends PluginForHost {
             }
             throw e;
         }
+        if (this.br.containsHTML("<p>The document .* has been deleted.*?</p>")) {
+            /* Offline message without corresponding http response. */
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        }
         ORIGURL = br.getURL();
         String filename = br.getRegex("<meta name=\"title\" content=\"(.*?)\"").getMatch(0);
         if (filename == null) {
@@ -132,9 +139,7 @@ public class ScribdCom extends PluginForHost {
         if (filename == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-
         downloadLink.setName(Encoding.htmlDecode(filename.trim()) + "." + getExtension());
-
         /* saving session info can result in avoiding 400, 410 server errors */
         final HashMap<String, String> cookies = new HashMap<String, String>();
         final Cookies add = br.getCookies(this.getHost());
@@ -222,7 +227,6 @@ public class ScribdCom extends PluginForHost {
     // }
     // return newText;
     // }
-
     @Override
     public int getMaxSimultanFreeDownloadNum() {
         return -1;
@@ -236,15 +240,8 @@ public class ScribdCom extends PluginForHost {
     @Override
     public void handleFree(DownloadLink downloadLink) throws Exception {
         requestFileInformation(downloadLink);
-        sleep(10000, downloadLink, PREMIUMONLY);
-        try {
-            throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
-        } catch (final Throwable e) {
-            if (e instanceof PluginException) {
-                throw (PluginException) e;
-            }
-        }
-        throw new PluginException(LinkStatus.ERROR_FATAL, NODOWNLOAD);
+        /* Account required */
+        throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
     }
 
     public void handlePremium(final DownloadLink parameter, final Account account) throws Exception {
@@ -344,7 +341,7 @@ public class ScribdCom extends PluginForHost {
         }
         String[] dlinfo = new String[2];
         dlinfo[1] = getExtension();
-        final String fileId = new Regex(parameter.getDownloadURL(), "scribd\\.com/doc/(\\d+)").getMatch(0);
+        final String fileId = new Regex(parameter.getDownloadURL(), "scribd\\.com/(?:doc|document)/(\\d+)").getMatch(0);
         if (fileId == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
@@ -438,7 +435,6 @@ public class ScribdCom extends PluginForHost {
                 final HashMap<String, String> cookies = (HashMap<String, String>) cookieMonster.get();
                 for (Map.Entry<String, String> entry : cookies.entrySet()) {
                     prepBr.setCookie(this.getHost(), entry.getKey(), entry.getValue());
-
                 }
                 coLoaded = true;
             }

@@ -37,4 +37,7 @@ public interface EndCaptchaConfigInterface extends ChallengeSolverConfig {
 
     void setFeedBackSendingEnabled(boolean b);
 
+    @AboutConfig
+    @DefaultBooleanValue(false)
+    boolean isEnabled();
 }

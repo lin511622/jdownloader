@@ -4,12 +4,14 @@ import jd.controlling.downloadcontroller.DownloadController;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
 
+import org.appwork.utils.Application;
 import org.jdownloader.gui.views.components.packagetable.PackageControllerTableModel;
 import org.jdownloader.gui.views.components.packagetable.columns.ChecksumColumn;
 import org.jdownloader.gui.views.components.packagetable.columns.CommentColumn;
 import org.jdownloader.gui.views.components.packagetable.columns.DownloadPasswordColumn;
 import org.jdownloader.gui.views.components.packagetable.columns.FileTypeColumn;
 import org.jdownloader.gui.views.components.packagetable.columns.HasCaptchaColumn;
+import org.jdownloader.gui.views.components.packagetable.columns.LinkIDColumn;
 import org.jdownloader.gui.views.downloads.columns.AddedDateColumn;
 import org.jdownloader.gui.views.downloads.columns.AvailabilityColumn;
 import org.jdownloader.gui.views.downloads.columns.CandidateAccountColumn;
@@ -35,9 +37,7 @@ import org.jdownloader.gui.views.linkgrabber.columns.UrlColumn;
 import org.jdownloader.settings.staticreferences.CFG_GUI;
 
 public class DownloadsTableModel extends PackageControllerTableModel<FilePackage, DownloadLink> {
-
     private static final long                serialVersionUID = -198189279671615981L;
-
     private static final DownloadsTableModel INSTANCE         = new DownloadsTableModel();
 
     public static DownloadsTableModel getInstance() {
@@ -45,13 +45,9 @@ public class DownloadsTableModel extends PackageControllerTableModel<FilePackage
     }
 
     private StopSignColumn     stopSignColumn;
-
     protected FileColumn       expandCollapse;
-
     private PriorityColumn     priorityColumn;
-
     private TaskColumn         taskColumn;
-
     private AvailabilityColumn available;
 
     private DownloadsTableModel() {
@@ -68,33 +64,29 @@ public class DownloadsTableModel extends PackageControllerTableModel<FilePackage
         this.addColumn(new ConnectionColumn());
         this.addColumn(new CandidateGatewayColumn());
         this.addColumn(new CandidateAccountColumn());
-
         this.addColumn(taskColumn = new TaskColumn());
         this.addColumn(new RemainingColumn());
         this.addColumn(new EnabledDisabledColumn());
-
         this.addColumn(new AddedDateColumn());
         this.addColumn(new FinishedDateColumn());
         this.addColumn(new DurationColumn());
-
         this.addColumn(new SpeedColumn());
         this.addColumn(new ETAColumn());
-
         this.addColumn(new LoadedColumn());
         this.addColumn(new ProgressColumn());
-
         this.addColumn(priorityColumn = new PriorityColumn());
         this.addColumn(available = new AvailabilityColumn());
         this.addColumn(new DownloadFolderColumn());
         this.addColumn(new CommentColumn());
+        if (!Application.isJared(null)) {
+            this.addColumn(new LinkIDColumn());
+        }
         this.addColumn(new DownloadPasswordColumn());
         this.addColumn(new ChecksumColumn());
         this.addColumn(new FileTypeColumn());
         this.addColumn(new HasCaptchaColumn());
         this.addColumn(stopSignColumn = new StopSignColumn());
-
         // reset sort
-
     }
 
     public TaskColumn getTaskColumn() {
@@ -128,7 +120,5 @@ public class DownloadsTableModel extends PackageControllerTableModel<FilePackage
     @Override
     protected int[] getScrollPositionFromConfig() {
         return CFG_GUI.CFG.getDownloadListScrollPosition();
-
     }
-
 }

@@ -13,10 +13,8 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -39,7 +37,6 @@ import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
-import jd.plugins.PluginForHost;
 import jd.plugins.components.PluginJSonUtils;
 import jd.utils.locale.JDL;
 
@@ -50,45 +47,51 @@ import org.appwork.utils.formatter.SizeFormatter;
 import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
 import org.jdownloader.gui.InputChangedCallbackInterface;
 import org.jdownloader.plugins.accounts.AccountBuilderInterface;
+import org.jdownloader.plugins.components.antiDDoSForHost;
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
-@HostPlugin(revision = "$Revision: 29998 $", interfaceVersion = 3, names = { "filecloud.io", "ezfile.ch" }, urls = { "https?://(?:www\\.)?(?:filecloud\\.io|ezfile\\.ch)/[a-z0-9]+", "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsdgfd32424" }) 
-public class FilecloudIo extends PluginForHost {
-
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "filecloud.io", "ezfile.ch" }, urls = { "https?://(?:www\\.)?(?:filecloud\\.io|ezfile\\.ch)/[a-z0-9]+", "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsdgfd32424" })
+public class FilecloudIo extends antiDDoSForHost {
     private final String         useragent                    = "JDownloader";
-
     /* Connection stuff */
     private static final boolean FREE_RESUME                  = true;
     private static final int     FREE_MAXCHUNKS               = 1;
-    private static final int     FREE_MAXDOWNLOADS            = 1;
+    private static final int     FREE_MAXDOWNLOADS            = 5;
     private static final boolean ACCOUNT_FREE_RESUME          = true;
     private static final int     ACCOUNT_FREE_MAXCHUNKS       = 1;
     private static final int     ACCOUNT_FREE_MAXDOWNLOADS    = 1;
     private static final boolean ACCOUNT_PREMIUM_RESUME       = true;
     private static final int     ACCOUNT_PREMIUM_MAXCHUNKS    = 1;
     private static final int     ACCOUNT_PREMIUM_MAXDOWNLOADS = 10;
-
     private static final String  NOCHUNKS                     = "NOCHUNKS";
     private static final String  NORESUME                     = "NORESUME";
     public static final String   MAINPAGE                     = "https://filecloud.io";
     private static AtomicInteger maxPrem                      = new AtomicInteger(1);
     private static AtomicBoolean UNDERMAINTENANCE             = new AtomicBoolean(false);
     private static final String  UNDERMAINTENANCEUSERTEXT     = "The site is under maintenance!";
-
     private static final String  API_ERROR_NO_PERMISSION      = "No permission granted for this apikey to perform this api call";
-
     /* API doc: https://filecloud.io/?m=apidoc */
     // private static final String NICE_HOST = "filecloud.io";
     private static final boolean useFilecheckAPI              = true;
-
     private String               dllink                       = null;
     private boolean              isPrivateFile                = false;
 
-    @SuppressWarnings("deprecation")
     public FilecloudIo(final PluginWrapper wrapper) {
         super(wrapper);
         this.setAccountwithoutUsername(true);
         this.enablePremium(MAINPAGE + "/user-register.html");
+    }
+
+    @Override
+    protected Browser prepBrowser(final Browser prepBr, final String host) {
+        if (!(this.browserPrepped.containsKey(prepBr) && this.browserPrepped.get(prepBr) == Boolean.TRUE)) {
+            super.prepBrowser(prepBr, host);
+            /* define custom browser headers and language settings */
+            prepBr.getHeaders().put("User-Agent", useragent);
+            prepBr.getHeaders().put("Accept-Language", "de-de,de;q=0.8,en-us;q=0.5,en;q=0.3");
+            br.setCookie(MAINPAGE, "lang", "en");
+        }
+        return prepBr;
     }
 
     @Override
@@ -122,12 +125,11 @@ public class FilecloudIo extends PluginForHost {
         isPrivateFile = false;
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
-        prepBrowser(br);
         String filename = null;
         String filesize = null;
         downloadLink.setLinkID(new Regex(downloadLink.getDownloadURL(), "([a-z0-9]+)$").getMatch(0));
         if (useFilecheckAPI) {
-            br.getPage(MAINPAGE + "/?m=api&a=check_file&fkey=" + downloadLink.getLinkID());
+            getPage(MAINPAGE + "/?m=api&a=check_file&fkey=" + downloadLink.getLinkID());
             if (!this.br.containsHTML("HTTP 404 > no such module or action<") && this.br.getHttpConnection().getResponseCode() != 404) {
                 final LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
                 final Object filesizeo = entries.get("fsize");
@@ -157,7 +159,7 @@ public class FilecloudIo extends PluginForHost {
         }
         final boolean isfollowingRedirect = br.isFollowingRedirects();
         // clear old browser
-        br = prepBrowser(new Browser());
+        br = new Browser();
         // can be direct link!
         URLConnectionAdapter con = null;
         br.setFollowRedirects(true);
@@ -233,7 +235,7 @@ public class FilecloudIo extends PluginForHost {
                 throw new PluginException(LinkStatus.ERROR_FATAL, "This is a private file which can only be downloaded by its owner");
             }
             if (useFilecheckAPI) {
-                br.getPage(downloadLink.getDownloadURL());
+                getPage(downloadLink.getDownloadURL());
             }
             if (br.containsHTML("You do not have enough traffic to continue<")) {
                 throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
@@ -249,7 +251,7 @@ public class FilecloudIo extends PluginForHost {
             final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
             postData += Encoding.urlEncode(recaptchaV2Response);
             br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
-            br.postPage("/?m=download&a=request", postData);
+            postPage("/?m=download&a=request", postData);
             handleErrorsAPI();
             this.dllink = PluginJSonUtils.getJsonValue(br, "downloadUrl");
             if (dllink == null) {
@@ -313,7 +315,6 @@ public class FilecloudIo extends PluginForHost {
     private void login(final Account account) throws Exception {
         br.setCookiesExclusive(true);
         br.setFollowRedirects(true);
-        prepBrowser(br);
         accessAPI(MAINPAGE + "/?m=api&a=fetch_account_info&akey=" + Encoding.urlEncode(account.getPass()));
         final String message = PluginJSonUtils.getJsonValue(br, "message");
         if (message != null) {
@@ -400,12 +401,10 @@ public class FilecloudIo extends PluginForHost {
                 /* This should never happen. */
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-
             int maxchunks = ACCOUNT_PREMIUM_MAXCHUNKS;
             if (link.getBooleanProperty(NOCHUNKS, false)) {
                 maxchunks = 1;
             }
-
             dl = jd.plugins.BrowserAdapter.openDownload(br, link, finallink, ACCOUNT_PREMIUM_RESUME, maxchunks);
             if (dl.getConnection().getContentType().contains("html")) {
                 handleServerErrors();
@@ -430,8 +429,8 @@ public class FilecloudIo extends PluginForHost {
         }
     }
 
-    private void accessAPI(final String url) throws IOException, PluginException {
-        br.getPage(url);
+    private void accessAPI(final String url) throws Exception {
+        getPage(url);
         handleErrorsAPI();
     }
 
@@ -521,16 +520,6 @@ public class FilecloudIo extends PluginForHost {
         return maxPrem.get();
     }
 
-    public Browser prepBrowser(Browser br) {
-        if (br == null) {
-            br = new Browser();
-        }
-        br.getHeaders().put("User-Agent", useragent);
-        br.getHeaders().put("Accept-Language", "de-de,de;q=0.8,en-us;q=0.5,en;q=0.3");
-        br.setCookie(MAINPAGE, "lang", "en");
-        return br;
-    }
-
     private String getFid(final DownloadLink downloadLink) {
         return new Regex(downloadLink.getDownloadURL(), "([a-z0-9]+)$").getMatch(0);
     }
@@ -561,7 +550,6 @@ public class FilecloudIo extends PluginForHost {
          *
          */
         private static final long serialVersionUID = 1L;
-
         private final String      APIKEYHELP       = "Enter your APIKey / APIKey eingeben";
 
         public boolean updateAccount(Account input, Account output) {
@@ -594,15 +582,12 @@ public class FilecloudIo extends PluginForHost {
             super("ins 0, wrap 2", "[][grow,fill]", "");
             add(new JLabel("Instructions / Anleitung:"));
             add(new JLink(MAINPAGE + "/?m=help&a=jdownloader"));
-
             add(new JLabel("APIKey:"));
             add(this.pass = new ExtPasswordField() {
-
                 @Override
                 public void onChanged() {
                     callback.onChangedInput(this);
                 }
-
             }, "");
             pass.setHelpText(APIKEYHELP);
         }
@@ -629,5 +614,4 @@ public class FilecloudIo extends PluginForHost {
             return new Account(null, getPassword());
         }
     }
-
 }

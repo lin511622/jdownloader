@@ -13,11 +13,11 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.text.DecimalFormat;
 import java.util.ArrayList;
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 import jd.PluginWrapper;
@@ -32,16 +32,15 @@ import jd.plugins.FilePackage;
 import jd.plugins.PluginForDecrypt;
 import jd.plugins.components.PluginJSonUtils;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "hentai2read.com" }, urls = { "http://(www\\.)?hentai2read.com/(?!latest)[a-z0-9\\-_]+/\\d+" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "hentai2read.com" }, urls = { "https?://(www\\.)?hentai2read.com/(?!latest)[a-z0-9\\-_]+/\\d+" })
 public class Hentai2ReadCom extends PluginForDecrypt {
-
     public Hentai2ReadCom(PluginWrapper wrapper) {
         super(wrapper);
     }
 
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
         final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
-        final String parameter = param.toString();
+        final String parameter = param.toString().replace("http:", "https:");
         br.getPage(parameter + "/1/");
         if (br.getHttpConnection().getResponseCode() == 404) {
             decryptedLinks.add(createOfflinelink(parameter));
@@ -50,9 +49,11 @@ public class Hentai2ReadCom extends PluginForDecrypt {
             decryptedLinks.add(createOfflinelink(parameter));
             return decryptedLinks;
         }
-        String fpName = br.getRegex("itemprop=\"itemreviewed\">([^<>]*?)</span>").getMatch(0);
-        if (fpName == null) {
-            fpName = new Regex(parameter, "hentai2read.com/([a-z0-9\\-_]+)/").getMatch(0);
+        final String name = upperCase(new Regex(parameter, "hentai2read.com/([a-z0-9\\-_]+)/").getMatch(0));
+        final String chapter = new Regex(parameter, "hentai2read.com/[a-z0-9\\-_]+/(\\d+)").getMatch(0);
+        String fpName = br.getRegex("itemprop=\"(?:itemreviewed|name)\">([^<>]*?)</span>").getMatch(0);
+        if (fpName == null && name != null && chapter != null) {
+            fpName = name + " - Chapter " + chapter;
         }
         String arraytext = br.getRegex("var wpm_mng_rdr_img_lst = \\[(.*?)\\]").getMatch(0);
         if (arraytext != null) {
@@ -66,11 +67,16 @@ public class Hentai2ReadCom extends PluginForDecrypt {
             }
         } else {
             // all links are now within json!
-            final String json = br.getRegex("var rff_imageList = (\\[.*?\\]);").getMatch(0);
+            String json = br.getRegex("var rff_imageList = (\\[.*?\\]);").getMatch(0);
+            if (json == null) {
+                json = br.getRegex("'images'\\s*:\\s*(\\[.*?\\]),").getMatch(0);
+            }
+            final DecimalFormat df = new DecimalFormat("000");
             if (json != null) {
                 final String[] results = PluginJSonUtils.getJsonResultsFromArray(json);
                 String base = null;
-                for (final String result : results) {
+                for (int i = 0; i < results.length; i++) {
+                    final String result = results[i];
                     final String res = PluginJSonUtils.unescape(result);
                     // for first one we need to decide base
                     if (base == null) {
@@ -82,6 +88,8 @@ public class Hentai2ReadCom extends PluginForDecrypt {
                     }
                     final String escaped = Request.getLocation(base + res, br.getRequest());
                     final DownloadLink dl = createDownloadlink("directhttp://" + escaped);
+                    final String extension = getFileNameExtensionFromURL(escaped);
+                    dl.setFinalFileName(name + "_CH" + chapter + "_" + df.format(i) + extension);
                     dl.setAvailable(true);
                     decryptedLinks.add(dl);
                 }
@@ -98,23 +106,41 @@ public class Hentai2ReadCom extends PluginForDecrypt {
                     return null;
                 }
                 final String mainpart = linkStructure.getMatch(0);
-                final DecimalFormat df = new DecimalFormat("000");
                 for (int i = 1; i <= Integer.parseInt(lastpage); i++) {
                     final String finallink = "directhttp://" + mainpart + df.format(i) + ".jpg";
                     final DownloadLink dl = createDownloadlink(finallink);
+                    dl.setFinalFileName(name + "_CH" + chapter + "_" + df.format(i) + ".jpg");
                     dl.setAvailable(true);
                     decryptedLinks.add(dl);
                 }
             }
         }
-
         if (fpName != null) {
             final FilePackage fp = FilePackage.getInstance();
             fp.setName(Encoding.htmlDecode(fpName.trim()));
             fp.addLinks(decryptedLinks);
         }
-
         return decryptedLinks;
     }
 
+    private String upperCase(String input) {
+        if (input != null) {
+            final String values[] = input.split("( |_)");
+            final StringBuilder sb = new StringBuilder();
+            for (String value : values) {
+                if (sb.length() > 0) {
+                    sb.append(" ");
+                }
+                value = value.trim();
+                if (value.length() > 0) {
+                    sb.append(value.substring(0, 1).toUpperCase(Locale.ENGLISH));
+                    if (value.length() > 1) {
+                        sb.append(value.substring(1));
+                    }
+                }
+            }
+            return sb.length() > 0 ? sb.toString() : "";
+        }
+        return null;
+    }
 }

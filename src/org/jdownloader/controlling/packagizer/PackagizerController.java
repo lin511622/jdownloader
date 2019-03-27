@@ -9,6 +9,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Map.Entry;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -21,9 +23,6 @@ import jd.controlling.linkcrawler.PackageInfo;
 import jd.controlling.packagecontroller.AbstractNode;
 import jd.controlling.packagecontroller.AbstractPackageChildrenNode;
 import jd.controlling.packagecontroller.AbstractPackageNode;
-import jd.gui.swing.jdgui.views.settings.panels.linkgrabberfilter.editdialog.OnlineStatusFilter;
-import jd.gui.swing.jdgui.views.settings.panels.linkgrabberfilter.editdialog.OnlineStatusFilter.OnlineStatus;
-import jd.gui.swing.jdgui.views.settings.panels.linkgrabberfilter.editdialog.OnlineStatusFilter.OnlineStatusMatchtype;
 import jd.nutils.encoding.Encoding;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
@@ -49,38 +48,105 @@ import org.appwork.utils.os.CrossSystem;
 import org.jdownloader.controlling.FileCreationEvent;
 import org.jdownloader.controlling.FileCreationListener;
 import org.jdownloader.controlling.FileCreationManager;
-import org.jdownloader.controlling.Priority;
-import org.jdownloader.controlling.filter.RegexFilter;
-import org.jdownloader.controlling.filter.RegexFilter.MatchType;
+import org.jdownloader.controlling.packagizer.PackagizerControllerListener.STATE;
 import org.jdownloader.extensions.extraction.ArchiveFile;
 import org.jdownloader.extensions.extraction.BooleanStatus;
 import org.jdownloader.extensions.extraction.ExtractionController;
-import org.jdownloader.extensions.extraction.ExtractionExtension;
 import org.jdownloader.extensions.extraction.bindings.downloadlink.DownloadLinkArchive;
 import org.jdownloader.extensions.extraction.bindings.downloadlink.DownloadLinkArchiveFile;
-import org.jdownloader.jd1import.JD1Importer;
 import org.jdownloader.logging.LogController;
 import org.jdownloader.settings.staticreferences.CFG_GENERAL;
 
 public class PackagizerController implements PackagizerInterface, FileCreationListener {
     private final PackagizerSettings              config;
-    private volatile ArrayList<PackagizerRule>    list                  = new ArrayList<PackagizerRule>();
+    private volatile ArrayList<PackagizerRule>    list                       = new ArrayList<PackagizerRule>();
     private final PackagizerControllerEventSender eventSender;
-    private volatile List<PackagizerRuleWrapper>  rules                 = null;
+    private volatile List<PackagizerRuleWrapper>  rules                      = null;
+    public static final String                    ORGFILENAME                = "orgfilename";
+    public static final String                    ORGFILENAMEWITHOUTEXT      = "orgfilenamewithoutext";
+    public static final String                    ORGFILETYPE                = "orgfiletype";
+    public static final String                    HOSTER                     = "hoster";
+    public static final String                    SOURCE                     = "source";
+    public static final String                    ENV                        = "env";
+    public static final String                    PACKAGENAME                = "packagename";
+    public static final String                    SIMPLEDATE                 = "simpledate";
+    public static final String                    INDEXOF                    = "indexof";
+    private final static PackagizerReplacer       DATER_REPLACER             = new PackagizerReplacer() {
+        public String getID() {
+            return SIMPLEDATE;
+        }
 
-    public static final String                    ORGFILENAME           = "orgfilename";
-    public static final String                    ORGFILENAMEWITHOUTEXT = "orgfilenamewithoutext";
-    public static final String                    ORGFILETYPE           = "orgfiletype";
-    public static final String                    HOSTER                = "hoster";
-    public static final String                    SOURCE                = "source";
+        public String replace(REPLACEVARIABLE replaceVariable, String modifiers, CrawledLink link, String input, PackagizerRuleWrapper lgr) {
+            if (StringUtils.isNotEmpty(modifiers)) {
+                final String dateString = new SimpleDateFormat(modifiers).format(new Date());
+                return Pattern.compile("<jd:simpledate:" + Pattern.quote(modifiers) + "/?>").matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, dateString)));
+            }
+            return input;
+        }
+    };
+    private final static PackagizerReplacer       ENV_REPLACER               = new PackagizerReplacer() {
+        private final Map<String, String> env = System.getenv();
 
-    public static final String                    PACKAGENAME           = "packagename";
-    public static final String                    SIMPLEDATE            = "simpledate";
-    public static final String                    INDEXOF               = "indexof";
+        public String getID() {
+            return ENV;
+        }
 
-    private static final PackagizerController     INSTANCE              = new PackagizerController(false);
-    public static final String                    ORGPACKAGENAME        = "orgpackagename";
-    private HashMap<String, PackagizerReplacer>   replacers             = new HashMap<String, PackagizerReplacer>();
+        public String replace(REPLACEVARIABLE replaceVariable, String modifiers, CrawledLink link, String input, PackagizerRuleWrapper lgr) {
+            if (StringUtils.isNotEmpty(modifiers)) {
+                String value = env.get(modifiers);
+                if (value == null) {
+                    for (Entry<String, String> entry : env.entrySet()) {
+                        if (StringUtils.containsIgnoreCase(entry.getKey(), modifiers)) {
+                            value = entry.getValue();
+                            break;
+                        }
+                    }
+                }
+                return Pattern.compile("<jd:env:" + Pattern.quote(modifiers) + "/?>").matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, StringUtils.valueOrEmpty(value))));
+            }
+            return input;
+        }
+    };
+    private final static PackagizerReplacer       SUBFOLDERBYPLUGIN_REPLACER = new PackagizerReplacer() {
+        private final Pattern pat = Pattern.compile("<jd:" + DownloadLink.RELATIVE_DOWNLOAD_FOLDER_PATH + "/?>");
+
+        public String replace(REPLACEVARIABLE replaceVariable, String modifiers, CrawledLink link, String input, PackagizerRuleWrapper lgr) {
+            String subFolder = null;
+            final DownloadLink dlLink = link.getDownloadLink();
+            if (dlLink != null) {
+                Object subFolderByPlugin = dlLink.getProperty(DownloadLink.RELATIVE_DOWNLOAD_FOLDER_PATH);
+                if (subFolderByPlugin != null && subFolderByPlugin instanceof String) {
+                    final String pathParts[] = ((String) subFolderByPlugin).split("/");
+                    final StringBuilder sb = new StringBuilder();
+                    for (String pathPart : pathParts) {
+                        if (sb.length() > 0) {
+                            sb.append("/");
+                        }
+                        pathPart = preprocessReplacement(replaceVariable, pathPart);
+                        if (StringUtils.isNotEmpty(pathPart)) {
+                            sb.append(pathPart);
+                        }
+                    }
+                    subFolder = sb.toString();
+                    if (CrossSystem.isAbsolutePath(subFolder)) {
+                        subFolder = null;
+                    }
+                }
+            }
+            if (StringUtils.isEmpty(subFolder)) {
+                return pat.matcher(input).replaceAll(Matcher.quoteReplacement(""));
+            } else {
+                return pat.matcher(input).replaceAll(Matcher.quoteReplacement(subFolder));
+            }
+        }
+
+        public String getID() {
+            return DownloadLink.RELATIVE_DOWNLOAD_FOLDER_PATH;
+        }
+    };
+    private static final PackagizerController     INSTANCE                   = new PackagizerController(false);
+    public static final String                    ORGPACKAGENAME             = "orgpackagename";
+    private HashMap<String, PackagizerReplacer>   replacers                  = new HashMap<String, PackagizerReplacer>();
     private final boolean                         testInstance;
     private final KeyHandler<Object>              ruleListHandler;
 
@@ -108,7 +174,7 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
                 LogController.CL(false).log(e);
             }
             final int sizeLoaded = list != null ? list.size() : 0;
-            list = addDefaultRules(importJD1(list));
+            list = addDefaultRules(list);
             final int sizeNow = list != null ? list.size() : 0;
             if (sizeLoaded != sizeNow) {
                 save(list);
@@ -190,62 +256,6 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
         return ret;
     }
 
-    private ArrayList<PackagizerRule> importJD1(ArrayList<PackagizerRule> list) {
-        if (config != null && config.isTryJD1ImportEnabled()) {
-            final JD1Importer jd1Importer = new JD1Importer();
-            if (jd1Importer.isAvailable()) {
-                config.setTryJD1ImportEnabled(false);
-                try {
-                    final Map<String, Object> data = jd1Importer.getHashMap("JD Package Customizer");
-                    if (data != null) {
-                        final ArrayList<HashMap<String, Object>> settings = JSonStorage.convert(data.get("SETTINGS"), new TypeRef<ArrayList<HashMap<String, Object>>>() {
-                        });
-
-                        if (settings != null) {
-                            if (list == null) {
-                                list = new ArrayList<PackagizerRule>();
-                            }
-                            for (HashMap<String, Object> map : settings) {
-                                final PackagizerRule rule = new PackagizerRule();
-                                final String regex = (String) map.get("regex");
-                                final String password = (String) map.get("password");
-                                final String name = (String) map.get("name");
-                                final boolean extract = Boolean.TRUE.equals(map.get("extract"));
-                                final boolean enabled = Boolean.TRUE.equals(map.get("enabled"));
-                                final boolean useSubDirectory = Boolean.TRUE.equals(map.get("useSubDirectory"));
-                                final int priority = ((Number) map.get("priority")).intValue();
-                                String downloadDir = (String) map.get("downloadDir");
-                                if (downloadDir == null) {
-                                    downloadDir = "";
-                                }
-                                if (useSubDirectory) {
-                                    downloadDir += File.separator + "<jd:packagename>";
-                                }
-                                rule.setName(name);
-                                rule.setAutoExtractionEnabled(extract);
-                                rule.setEnabled(enabled);
-                                rule.setOnlineStatusFilter(new OnlineStatusFilter(OnlineStatusMatchtype.IS, true, OnlineStatus.ONLINE));
-                                if (StringUtils.isNotEmpty(downloadDir)) {
-                                    rule.setDownloadDestination(downloadDir);
-                                }
-                                if (StringUtils.isNotEmpty(password)) {
-                                    ExtractionExtension.getInstance().addPassword(password);
-                                }
-                                rule.setPriority(Priority.getPriority(priority));
-                                rule.setFilenameFilter(new RegexFilter(true, MatchType.EQUALS, regex, true));
-                                list.add(rule);
-                            }
-                            save(list);
-                        }
-                    }
-                } catch (final Throwable e) {
-                    LogController.CL(false).log(e);
-                }
-            }
-        }
-        return list;
-    }
-
     public PackagizerController(boolean testInstance) {
         this.testInstance = testInstance;
         eventSender = new PackagizerControllerEventSender();
@@ -262,7 +272,6 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
         update();
         if (!isTestInstance()) {
             ruleListHandler.getEventSender().addListener(new GenericConfigEventListener<Object>() {
-
                 @Override
                 public void onConfigValueModified(KeyHandler<Object> keyHandler, Object newValue) {
                     list = readConfig();
@@ -274,7 +283,6 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
                 }
             });
             ShutdownController.getInstance().addShutdownEvent(new ShutdownEvent() {
-
                 @Override
                 public void onShutdown(final ShutdownRequest shutdownRequest) {
                     save(list);
@@ -292,24 +300,9 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
             });
             FileCreationManager.getInstance().getEventSender().addListener(this);
         }
+        addReplacer(ENV_REPLACER);
+        addReplacer(DATER_REPLACER);
         addReplacer(new PackagizerReplacer() {
-
-            public String getID() {
-                return SIMPLEDATE;
-            }
-
-            public String replace(REPLACEVARIABLE replaceVariable, String modifiers, CrawledLink link, String input, PackagizerRuleWrapper lgr) {
-                if (StringUtils.isNotEmpty(modifiers)) {
-                    final String dateString = new SimpleDateFormat(modifiers).format(new Date());
-                    return Pattern.compile("<jd:simpledate:" + modifiers + "/?>").matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, dateString)));
-                }
-                return input;
-            }
-
-        });
-
-        addReplacer(new PackagizerReplacer() {
-
             public String getID() {
                 return SOURCE;
             }
@@ -319,13 +312,11 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
                     return input;
                 }
                 final int id = Integer.parseInt(modifiers);
-
                 String output = input;
                 // the i counter allows us to write regular expressions that address a certain line only.
                 final String pattern = lgr.getSourceRule().getPattern().pattern();
                 final boolean indexed = pattern.matches("^\\-?\\d+\\\\\\. .+");
-                final boolean inverted = pattern.startsWith("-");
-
+                final boolean inverted = indexed && pattern.startsWith("-");
                 final String[] sources;
                 if (link.getSourceUrls() != null) {
                     sources = link.getSourceUrls();
@@ -356,22 +347,20 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
                         }
                     }
                     if (values != null && values.length > (id - 1)) {
-                        final String value = Encoding.urlDecode(stringOrEmpty(values[id - 1]), false);
-                        output = Pattern.compile("<jd:source:" + id + "\\s*/?\\s*>").matcher(output).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, value)));
+                        final String value = Encoding.urlDecode(StringUtils.valueOrEmpty(values[id - 1]), false);
+                        output = Pattern.compile("<jd:source:" + Pattern.quote(String.valueOf(id)) + "\\s*/?\\s*>").matcher(output).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, value)));
                     }
                 }
                 return output;
             }
         });
-
         addReplacer(new PackagizerReplacer() {
-
             private final Pattern pat = Pattern.compile("<jd:" + ORGFILENAME + "\\s*/?\\s*>");
 
             public String replace(REPLACEVARIABLE replaceVariable, String modifiers, CrawledLink link, String input, PackagizerRuleWrapper lgr) {
                 if (StringUtils.isNotEmpty(modifiers)) {
-                    final String rep = stringOrEmpty(new Regex(link.getName(), lgr.getFileNameRule().getPattern()).getMatch(Integer.parseInt(modifiers) - 1));
-                    return Pattern.compile("<jd:" + ORGFILENAME + ":" + modifiers + "\\s*/?\\s*>").matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, rep)));
+                    final String rep = StringUtils.valueOrEmpty(new Regex(link.getName(), lgr.getFileNameRule().getPattern()).getMatch(Integer.parseInt(modifiers) - 1));
+                    return Pattern.compile("<jd:" + ORGFILENAME + ":" + Pattern.quote(modifiers) + "\\s*/?\\s*>").matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, rep)));
                 }
                 return pat.matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, link.getName())));
             }
@@ -379,10 +368,8 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
             public String getID() {
                 return ORGFILENAME;
             }
-
         });
         addReplacer(new PackagizerReplacer() {
-
             private final Pattern pat = Pattern.compile("<jd:" + ORGPACKAGENAME + "\\s*/?\\s*>");
 
             public String replace(REPLACEVARIABLE replaceVariable, String modifiers, CrawledLink link, String input, PackagizerRuleWrapper lgr) {
@@ -400,11 +387,10 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
                 if (StringUtils.isEmpty(packagename)) {
                     packagename = "";
                 }
-                packagename = CrossSystem.alleviatePathParts(packagename);
                 if (StringUtils.isNotEmpty(modifiers)) {
                     final Pattern patt = lgr.getPackageNameRule().getPattern();
                     final String[] matches = new Regex(packagename, patt).getRow(0);
-                    return Pattern.compile("<jd:" + ORGPACKAGENAME + ":" + modifiers + "\\s*/?\\s*>").matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, stringOrEmpty(matches[Integer.parseInt(modifiers) - 1]))));
+                    return Pattern.compile("<jd:" + ORGPACKAGENAME + ":" + Pattern.quote(modifiers) + "\\s*/?\\s*>").matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, StringUtils.valueOrEmpty(matches[Integer.parseInt(modifiers) - 1]))));
                     //
                 }
                 return pat.matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, packagename)));
@@ -413,56 +399,9 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
             public String getID() {
                 return ORGPACKAGENAME;
             }
-
         });
-
+        addReplacer(SUBFOLDERBYPLUGIN_REPLACER);
         addReplacer(new PackagizerReplacer() {
-
-            private final Pattern pat = Pattern.compile("<jd:" + DownloadLink.RELATIVE_DOWNLOAD_FOLDER_PATH + "/?>");
-
-            public String replace(REPLACEVARIABLE replaceVariable, String modifiers, CrawledLink link, String input, PackagizerRuleWrapper lgr) {
-                String subFolder = null;
-                final DownloadLink dlLink = link.getDownloadLink();
-
-                if (dlLink != null) {
-
-                    Object subFolderByPlugin = dlLink.getProperty(DownloadLink.RELATIVE_DOWNLOAD_FOLDER_PATH);
-
-                    if (subFolderByPlugin != null && subFolderByPlugin instanceof String) {
-                        final String pathParts[] = ((String) subFolderByPlugin).split("/");
-                        final StringBuilder sb = new StringBuilder();
-                        for (String pathPart : pathParts) {
-                            if (sb.length() > 0) {
-                                sb.append("/");
-                            }
-                            pathPart = CrossSystem.alleviatePathParts(pathPart);
-                            if (StringUtils.isNotEmpty(pathPart)) {
-                                sb.append(pathPart);
-                            }
-                        }
-                        subFolder = sb.toString();
-                        if (CrossSystem.isAbsolutePath(subFolder)) {
-                            subFolder = null;
-                        }
-                    }
-                }
-
-                if (StringUtils.isEmpty(subFolder)) {
-                    return pat.matcher(input).replaceAll(Matcher.quoteReplacement(""));
-                } else {
-                    return pat.matcher(input).replaceAll(Matcher.quoteReplacement(subFolder));
-                }
-
-            }
-
-            public String getID() {
-                return DownloadLink.RELATIVE_DOWNLOAD_FOLDER_PATH;
-            }
-
-        });
-
-        addReplacer(new PackagizerReplacer() {
-
             private final Pattern pat = Pattern.compile("<jd:orgfiletype/?>");
 
             public String replace(REPLACEVARIABLE replaceVariable, String modifiers, CrawledLink link, String input, PackagizerRuleWrapper lgr) {
@@ -471,7 +410,7 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
                     fileType = "";
                 }
                 if (StringUtils.isNotEmpty(modifiers)) {
-                    return Pattern.compile("<jd:orgfiletype:" + modifiers + "/?>").matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, stringOrEmpty(new Regex(fileType, lgr.getFileNameRule().getPattern()).getRow(0)[Integer.parseInt(modifiers) - 1]))));
+                    return Pattern.compile("<jd:orgfiletype:" + Pattern.quote(modifiers) + "/?>").matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, StringUtils.valueOrEmpty(new Regex(fileType, lgr.getFileNameRule().getPattern()).getRow(0)[Integer.parseInt(modifiers) - 1]))));
                 } else {
                     return pat.matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, fileType)));
                 }
@@ -480,12 +419,9 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
             public String getID() {
                 return ORGFILETYPE;
             }
-
         });
-
         addReplacer(new PackagizerReplacer() {
-
-            private final Pattern pat = Pattern.compile("<orgfilenamewithoutext/?>");
+            private final Pattern pat = Pattern.compile("<jd:orgfilenamewithoutext/?>");
 
             public String replace(REPLACEVARIABLE replaceVariable, String modifiers, CrawledLink link, String input, PackagizerRuleWrapper lgr) {
                 final String name = new Regex(link.getName(), "(.+)\\.[0-9a-zA-Z]+$").getMatch(0);
@@ -499,64 +435,121 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
             public String getID() {
                 return ORGFILENAMEWITHOUTEXT;
             }
-
         });
-
         addReplacer(new PackagizerReplacer() {
-
             public String replace(REPLACEVARIABLE replaceVariable, String modifiers, CrawledLink link, String input, PackagizerRuleWrapper lgr) {
                 if (StringUtils.isEmpty(modifiers)) {
                     return input;
                 }
                 final int id = Integer.parseInt(modifiers);
-                final Regex regex = new Regex(link.getURL(), lgr.getHosterRule().getPattern());
+                if (id == -1) {
+                    final String host = link.getHost();
+                    return Pattern.compile("<jd:hoster:" + Pattern.quote(String.valueOf(id)) + "/?>").matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, Encoding.urlDecode(StringUtils.valueOrEmpty(host), false))));
+                }
+                final String url;
+                if (link.getDownloadLink() != null) {
+                    url = link.getDownloadLink().getContentUrlOrPatternMatcher();
+                } else {
+                    url = link.getURL();
+                }
+                final Regex regex = new Regex(url, lgr.getHosterRule().getPattern());
                 if (regex.matches()) {
                     final String[] values = regex.getRow(0);
-                    return Pattern.compile("<jd:hoster:" + id + "/?>").matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, Encoding.urlDecode(stringOrEmpty(values[id - 1]), false))));
+                    return Pattern.compile("<jd:hoster:" + Pattern.quote(String.valueOf(id)) + "/?>").matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, Encoding.urlDecode(StringUtils.valueOrEmpty(values[id - 1]), false))));
+                } else {
+                    return input;
                 }
-                return input;
             }
 
             public String getID() {
                 return HOSTER;
             }
-
         });
-
         addReplacer(new PackagizerReplacer() {
-
             public String replace(REPLACEVARIABLE replaceVariable, String modifiers, CrawledLink link, String input, PackagizerRuleWrapper lgr) {
                 if (StringUtils.isEmpty(modifiers) || link.getDownloadLink() == null) {
                     return input;
                 }
                 final Object property = link.getDownloadLink().getProperty(modifiers);
                 if (property == null || (!(property instanceof String) && !(property instanceof Number))) {
-                    return Pattern.compile("<jd:prop:" + modifiers + "/?>").matcher(input).replaceAll("");
+                    return Pattern.compile("<jd:prop:" + Pattern.quote(modifiers) + "/?>").matcher(input).replaceAll("");
                 } else {
-                    return Pattern.compile("<jd:prop:" + modifiers + "/?>").matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, property.toString())));
+                    return Pattern.compile("<jd:prop:" + Pattern.quote(modifiers) + "/?>").matcher(input).replaceAll(Matcher.quoteReplacement(preprocessReplacement(replaceVariable, property.toString())));
                 }
             }
 
             public String getID() {
                 return "prop";
             }
+        });
+        addReplacer(new PackagizerReplacer() {
+            private final Pattern pat = Pattern.compile("<jd:append/?>");
 
+            @Override
+            public String replace(REPLACEVARIABLE replaceVariable, String modifiers, CrawledLink link, String input, PackagizerRuleWrapper lgr) {
+                final CrawledPackage parentNode = link.getParentNode();
+                final PackageInfo dpi = link.getDesiredPackageInfo();
+                String append = null;
+                switch (replaceVariable) {
+                case COMMENT:
+                    append = link.getComment();
+                    break;
+                case DIRECTORY:
+                    if (parentNode != null) {
+                        append = parentNode.getDownloadFolder();
+                    }
+                    if (dpi != null && StringUtils.isEmpty(append)) {
+                        append = dpi.getDestinationFolder();
+                    }
+                    break;
+                case FILENAME:
+                    append = link.getName();
+                    break;
+                case PACKAGENAME:
+                    if (parentNode != null) {
+                        append = parentNode.getName();
+                    }
+                    if (dpi != null && StringUtils.isEmpty(append)) {
+                        append = dpi.getName();
+                    }
+                    break;
+                case PACKAGEKEY:
+                    if (dpi != null) {
+                        append = dpi.getPackageKey();
+                    }
+                    break;
+                default:
+                    break;
+                }
+                if (StringUtils.isEmpty(append)) {
+                    return pat.matcher(input).replaceAll("");
+                } else {
+                    final String ret = pat.matcher(input).replaceAll(Matcher.quoteReplacement(append));
+                    if (REPLACEVARIABLE.DIRECTORY.equals(replaceVariable)) {
+                        return CrossSystem.fixPathSeparators(ret);
+                    } else {
+                        return ret;
+                    }
+                }
+            }
+
+            @Override
+            public String getID() {
+                return "append";
+            }
         });
     }
 
-    private String preprocessReplacement(REPLACEVARIABLE replaceVariable, final String string) {
-        if (REPLACEVARIABLE.DIRECTORY.equals(replaceVariable)) {
-            return CrossSystem.alleviatePathParts(string);
-        } else {
+    private static String preprocessReplacement(REPLACEVARIABLE replaceVariable, final String string) {
+        if (replaceVariable == null) {
             return string;
-        }
-    }
-
-    private String stringOrEmpty(String input) {
-        if (StringUtils.isEmpty(input)) {
-            return "";
         } else {
-            return input;
+            switch (replaceVariable) {
+            case DIRECTORY:
+                return CrossSystem.alleviatePathParts(string);
+            default:
+                return string;
+            }
         }
     }
 
@@ -606,7 +599,6 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
             updateInternal();
         } else {
             TaskQueue.getQueue().add(new QueueAction<Void, RuntimeException>() {
-
                 @Override
                 protected Void run() throws RuntimeException {
                     updateInternal();
@@ -642,7 +634,6 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
         rules = newRules;
         if (getEventSender().hasListener()) {
             getEventSender().fireEvent(new PackagizerControllerEvent() {
-
                 @Override
                 public void sendTo(PackagizerControllerListener listener) {
                     listener.onPackagizerUpdate();
@@ -694,7 +685,6 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
             if (ruleListHandler != null) {
                 final Thread thread = Thread.currentThread();
                 eventSuppressor = new EventSuppressor<ConfigEvent>() {
-
                     @Override
                     public boolean suppressEvent(ConfigEvent eventType) {
                         return Thread.currentThread() == thread;
@@ -715,35 +705,59 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
     }
 
     public void runByFile(final CrawledLink link) {
+        final STATE firstState;
+        if (isTestInstance() == false && !org.jdownloader.settings.staticreferences.CFG_PACKAGIZER.PACKAGIZER_ENABLED.isEnabled()) {
+            firstState = STATE.AFTER;
+        } else {
+            firstState = STATE.BEFORE;
+        }
         if (getEventSender().hasListener()) {
             getEventSender().fireEvent(new PackagizerControllerEvent() {
-
                 @Override
                 public void sendTo(PackagizerControllerListener listener) {
-                    listener.onPackagizerRunAfterLinkcheck(link);
+                    listener.onPackagizerRunAfterLinkcheck(link, firstState);
                 }
             });
         }
-        if (isTestInstance() == false && !org.jdownloader.settings.staticreferences.CFG_PACKAGIZER.PACKAGIZER_ENABLED.isEnabled()) {
-            return;
+        if (STATE.BEFORE.equals(firstState)) {
+            applyPackagizerRules(link, rules, true);
+            if (getEventSender().hasListener()) {
+                getEventSender().fireEvent(new PackagizerControllerEvent() {
+                    @Override
+                    public void sendTo(PackagizerControllerListener listener) {
+                        listener.onPackagizerRunAfterLinkcheck(link, STATE.AFTER);
+                    }
+                });
+            }
         }
-        applyPackagizerRules(link, rules, true);
     }
 
     public void runByUrl(final CrawledLink link) {
+        final STATE firstState;
+        if (isTestInstance() == false && !org.jdownloader.settings.staticreferences.CFG_PACKAGIZER.PACKAGIZER_ENABLED.isEnabled()) {
+            firstState = STATE.AFTER;
+        } else {
+            firstState = STATE.BEFORE;
+        }
         if (getEventSender().hasListener()) {
             getEventSender().fireEvent(new PackagizerControllerEvent() {
-
                 @Override
                 public void sendTo(PackagizerControllerListener listener) {
-                    listener.onPackagizerRunBeforeLinkcheck(link);
+                    listener.onPackagizerRunBeforeLinkcheck(link, firstState);
                 }
             });
         }
-        if (isTestInstance() == false && !org.jdownloader.settings.staticreferences.CFG_PACKAGIZER.PACKAGIZER_ENABLED.isEnabled()) {
-            return;
+        if (STATE.BEFORE.equals(firstState)) {
+            applyPackagizerRules(link, rules, false);
+            if (getEventSender().hasListener()) {
+                getEventSender().fireEvent(new PackagizerControllerEvent() {
+                    @Override
+                    public void sendTo(PackagizerControllerListener listener) {
+                        listener.onPackagizerRunAfterLinkcheck(link, STATE.AFTER);
+                    }
+                });
+            }
         }
-        applyPackagizerRules(link, rules, false);
     }
 
     private void applyPackagizerRules(final CrawledLink link, final List<PackagizerRuleWrapper> rules, final boolean afterOnlineCheck) {
@@ -786,9 +800,10 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
         }
     }
 
-    public static String PACKAGETAG = "<jd:" + PackagizerController.PACKAGENAME + ">";
-    public static String DATETAG    = "<jd:" + PackagizerController.SIMPLEDATE + ":";
-    public static String INDEXOFTAG = "<jd:" + PackagizerController.INDEXOF + ">";
+    public static final String PACKAGETAG = "<jd:" + PackagizerController.PACKAGENAME + ">";
+    public static final String DATETAG    = "<jd:" + PackagizerController.SIMPLEDATE + ":";
+    public static final String INDEXOFTAG = "<jd:" + PackagizerController.INDEXOF + ">";
+    public static final String ENVTAG     = "<jd:" + PackagizerController.ENV + ":";
 
     private final static int padLength(final int size) {
         if (size < 10) {
@@ -810,21 +825,51 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
         }
     }
 
-    public static String replaceDynamicTags(String input, String packageName, AbstractNode node) {
-        if (StringUtils.isEmpty(input)) {
-            return input;
+    private static String replaceDynamicTags(REPLACEVARIABLE type, String input, String tag, PackagizerReplacer replacer, AtomicBoolean modifyFlag) {
+        int lastStart = -1;
+        while (true) {
+            final int start;
+            if (lastStart == -1) {
+                start = input.indexOf(tag);
+            } else {
+                start = input.indexOf(tag, lastStart);
+            }
+            if (start > lastStart) {
+                if (modifyFlag != null) {
+                    modifyFlag.set(true);
+                }
+                lastStart = start;
+                int end = start + tag.length();
+                while (end < input.length() && input.charAt(end) != '>') {
+                    end++;
+                }
+                final String modifier = input.substring(start + tag.length(), end);
+                try {
+                    input = replacer.replace(type, modifier, null, input, null);
+                } catch (final Throwable e) {
+                    LogController.CL().log(e);
+                }
+            } else {
+                break;
+            }
         }
+        return input;
+    }
+
+    public static String replaceDynamicTags(String input, String packageName, AbstractNode node) {
         String ret = input;
-        if (ret.contains("<jd:")) {
+        if (ret != null && ret.contains("<jd:")) {
+            final AtomicBoolean modifyFlag = new AtomicBoolean(false);
             if (ret.contains(PACKAGETAG)) {
+                modifyFlag.set(true);
                 if (StringUtils.isEmpty(packageName)) {
                     ret = ret.replace(PACKAGETAG, "");
                 } else {
                     ret = ret.replace(PACKAGETAG, CrossSystem.alleviatePathParts(packageName));
                 }
-                ret = CrossSystem.fixPathSeparators(ret);
             }
             if (ret.contains(INDEXOFTAG)) {
+                modifyFlag.set(true);
                 AbstractPackageNode parentNode = null;
                 if (!(node instanceof AbstractPackageChildrenNode) || (parentNode = ((AbstractPackageChildrenNode<AbstractPackageNode>) node).getParentNode()) == null) {
                     ret = ret.replace(INDEXOFTAG, "");
@@ -845,28 +890,20 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
                     } else {
                         ret = ret.replace(INDEXOFTAG, "");
                     }
-
                 }
+            }
+            ret = replaceDynamicTags(REPLACEVARIABLE.DIRECTORY, ret, ENVTAG, ENV_REPLACER, modifyFlag);
+            ret = replaceDynamicTags(REPLACEVARIABLE.DIRECTORY, ret, DATETAG, DATER_REPLACER, modifyFlag);
+            if (modifyFlag.get()) {
                 ret = CrossSystem.fixPathSeparators(ret);
             }
-            if (ret.contains(DATETAG)) {
-                int start = ret.indexOf(DATETAG);
-                int end = start + DATETAG.length();
-                while (end < ret.length() && ret.charAt(end) != '>') {
-                    end++;
-                }
-                try {
-                    SimpleDateFormat format = new SimpleDateFormat(ret.substring(start + DATETAG.length(), end));
-                    ret = ret.replace(ret.substring(start, end + 1), format.format(new Date()));
-                } catch (Throwable e) {
-                    ret = ret.replace(ret.substring(start, end + 1), "");
-                }
-            }
+            ret = ret.trim();
         }
-        return ret.trim();
+        return ret;
     }
 
     public static enum REPLACEVARIABLE {
+        PACKAGEKEY,
         DIRECTORY,
         COMMENT,
         FILENAME,
@@ -874,52 +911,89 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
     }
 
     protected void set(CrawledLink link, PackagizerRuleWrapper lgr) {
-        if (SubFolderByPackageRule.ID.equals(lgr.getRule().getId()) && StringUtils.contains(CFG_GENERAL.DEFAULT_DOWNLOAD_FOLDER.getValue(), "<jd:")) {
+        if (SubFolderByPackageRule.ID.equals(lgr.getRule().getId()) && StringUtils.contains(CFG_GENERAL.DEFAULT_DOWNLOAD_FOLDER.getValue(), PACKAGETAG)) {
             // ignore SubFolderByPackageRule when default folder already contains variables
             return;
         } else {
+            boolean packageKeyFlag = false;
+            String packageKey = null;
+            boolean packageNameFlag = false;
+            String packageNameValue = null;
+            boolean packageDirectoryFlag = false;
+            String packageDirectoryValue = null;
+            boolean fileNameFlag = false;
+            String fileNameValue = null;
+            // PARSE=========================================================================================
             if (lgr.getRule().getChunks() >= 0) {
                 /* customize chunk numbers */
                 link.setChunks(lgr.getRule().getChunks());
             }
             if (!StringUtils.isEmpty(lgr.getRule().getDownloadDestination())) {
                 /* customize download destination folder */
-                final String path = replaceVariables(REPLACEVARIABLE.DIRECTORY, lgr.getRule().getDownloadDestination(), link, lgr);
-                final PackageInfo dpi;
-                if (link.getDesiredPackageInfo() != null) {
-                    if (StringUtils.isNotEmpty(path)) {
-                        dpi = link.getDesiredPackageInfo();
-                    } else {
-                        dpi = null;
-                    }
-                } else {
-                    if (StringUtils.isNotEmpty(path)) {
-                        dpi = new PackageInfo();
-                    } else {
-                        dpi = null;
-                    }
-                }
-                if (dpi != null) {
-                    dpi.setPackagizerRuleMatched(true);
-                    dpi.setDestinationFolder(path);
-                    link.setDesiredPackageInfo(dpi);
-                }
+                packageDirectoryFlag = true;
+                packageDirectoryValue = replaceVariables(REPLACEVARIABLE.DIRECTORY, lgr.getRule().getDownloadDestination(), link, lgr);
             }
             if (lgr.getRule().getLinkEnabled() != null) {
                 link.setEnabled(lgr.getRule().getLinkEnabled());
             }
             if (!StringUtils.isEmpty(lgr.getRule().getPackageName())) {
                 /* customize package name */
-                final String name = replaceVariables(REPLACEVARIABLE.PACKAGENAME, lgr.getRule().getPackageName(), link, lgr);
+                packageNameFlag = true;
+                packageNameValue = replaceVariables(REPLACEVARIABLE.PACKAGENAME, lgr.getRule().getPackageName(), link, lgr);
+            }
+            if (lgr.getRule().getPriority() != null) {
+                /* customize priority */
+                link.setPriority(lgr.getRule().getPriority());
+            }
+            if (!StringUtils.isEmpty(lgr.getRule().getFilename())) {
+                /* customize filename */
+                fileNameFlag = true;
+                fileNameValue = replaceVariables(REPLACEVARIABLE.FILENAME, lgr.getRule().getFilename(), link, lgr);
+            }
+            if (!StringUtils.isEmpty(lgr.getRule().getComment())) {
+                /* customize filename */
+                link.setComment(replaceVariables(REPLACEVARIABLE.COMMENT, lgr.getRule().getComment(), link, lgr));
+            }
+            if (StringUtils.isNotEmpty((packageKey = lgr.getRule().getPackageKey()))) {
+                /* customize packagekey */
+                packageKeyFlag = true;
+                packageKey = replaceVariables(REPLACEVARIABLE.PACKAGEKEY, lgr.getRule().getPackageKey(), link, lgr);
+            }
+            if (fileNameFlag && StringUtils.isNotEmpty(fileNameValue)) {
+                link.setName(fileNameValue);
+            }
+            // MODIFY=========================================================================================
+            if (packageKeyFlag) {
                 final PackageInfo dpi;
                 if (link.getDesiredPackageInfo() != null) {
-                    if (StringUtils.isNotEmpty(name)) {
+                    if (StringUtils.isNotEmpty(packageKey)) {
                         dpi = link.getDesiredPackageInfo();
                     } else {
                         dpi = null;
                     }
                 } else {
-                    if (StringUtils.isNotEmpty(name)) {
+                    if (StringUtils.isNotEmpty(packageKey)) {
+                        dpi = new PackageInfo();
+                    } else {
+                        dpi = null;
+                    }
+                }
+                if (dpi != null) {
+                    dpi.setPackageKey(packageKey);
+                    dpi.setPackagizerRuleMatched(true);
+                    link.setDesiredPackageInfo(dpi);
+                }
+            }
+            if (packageNameFlag) {
+                final PackageInfo dpi;
+                if (link.getDesiredPackageInfo() != null) {
+                    if (StringUtils.isNotEmpty(packageNameValue)) {
+                        dpi = link.getDesiredPackageInfo();
+                    } else {
+                        dpi = null;
+                    }
+                } else {
+                    if (StringUtils.isNotEmpty(packageNameValue)) {
                         dpi = new PackageInfo();
                     } else {
                         dpi = null;
@@ -927,26 +1001,30 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
                 }
                 if (dpi != null) {
                     dpi.setPackagizerRuleMatched(true);
-                    dpi.setName(name);
+                    dpi.setName(packageNameValue);
                     link.setDesiredPackageInfo(dpi);
                 }
             }
-            if (lgr.getRule().getPriority() != null) {
-                /* customize priority */
-                link.setPriority(lgr.getRule().getPriority());
-            }
-            if (isTestInstance() == false) {
-                if (!StringUtils.isEmpty(lgr.getRule().getFilename())) {
-                    /* customize filename */
-                    final String name = replaceVariables(REPLACEVARIABLE.FILENAME, lgr.getRule().getFilename(), link, lgr);
-                    if (StringUtils.isNotEmpty(name)) {
-                        link.setName(name);
+            if (packageDirectoryFlag) {
+                final PackageInfo dpi;
+                if (link.getDesiredPackageInfo() != null) {
+                    if (StringUtils.isNotEmpty(packageDirectoryValue)) {
+                        dpi = link.getDesiredPackageInfo();
+                    } else {
+                        dpi = null;
+                    }
+                } else {
+                    if (StringUtils.isNotEmpty(packageDirectoryValue)) {
+                        dpi = new PackageInfo();
+                    } else {
+                        dpi = null;
                     }
                 }
-            }
-            if (!StringUtils.isEmpty(lgr.getRule().getComment())) {
-                /* customize filename */
-                link.setComment(replaceVariables(REPLACEVARIABLE.COMMENT, lgr.getRule().getComment(), link, lgr));
+                if (dpi != null) {
+                    dpi.setPackagizerRuleMatched(true);
+                    dpi.setDestinationFolder(packageDirectoryValue);
+                    link.setDesiredPackageInfo(dpi);
+                }
             }
             Boolean b = null;
             if ((b = lgr.getRule().isAutoExtractionEnabled()) != null) {
@@ -991,6 +1069,7 @@ public class PackagizerController implements PackagizerInterface, FileCreationLi
         return txt;
     }
 
+    // TODO: add support for deep extraction
     public void onNewFile(Object caller, File[] fileList) {
         if (org.jdownloader.settings.staticreferences.CFG_PACKAGIZER.PACKAGIZER_ENABLED.isEnabled()) {
             if (caller instanceof ExtractionController && caller != this) {

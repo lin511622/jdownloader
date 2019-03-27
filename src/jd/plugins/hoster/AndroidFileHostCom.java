@@ -13,14 +13,11 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.IOException;
+import org.jdownloader.plugins.components.antiDDoSForHost;
 
 import jd.PluginWrapper;
-import jd.config.Property;
-import jd.http.Browser;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
@@ -29,11 +26,9 @@ import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
-import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "androidfilehost.com" }, urls = { "https?://(www\\.)?androidfilehost\\.com/\\?fid=\\d+" }) 
-public class AndroidFileHostCom extends PluginForHost {
-
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "androidfilehost.com" }, urls = { "https?://(www\\.)?androidfilehost\\.com/\\?fid=\\d+" })
+public class AndroidFileHostCom extends antiDDoSForHost {
     public AndroidFileHostCom(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -49,10 +44,15 @@ public class AndroidFileHostCom extends PluginForHost {
     }
 
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
+    public String getLinkID(final DownloadLink link) {
+        return new Regex(link.getDownloadURL(), "(\\d+)$").getMatch(0);
+    }
+
+    @Override
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
-        br.getPage(link.getDownloadURL());
+        getPage(link.getDownloadURL());
         if (br.containsHTML(">file not found|404 not found") || br.getHttpConnection().getResponseCode() == 404 || (br.containsHTML("<h3>access denied</h3>") && br.containsHTML("you don't have permission to access this folder\\."))) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
@@ -78,10 +78,15 @@ public class AndroidFileHostCom extends PluginForHost {
         String dllink = null;
         if (dllink == null) {
             /* Old handling removed AFTER revision 26995 */
-            final String fid = new Regex(downloadLink.getDownloadURL(), "(\\d+)$").getMatch(0);
+            final String fid = getLinkID(downloadLink);
             // sleep(10 * 1001l, downloadLink);
+            /* 2018-04-12: Correct headers are required now */
+            br.getHeaders().put("Accept", "*/*");
+            br.getHeaders().put("X-MOD-SBB-CTYPE", "xhr");
+            br.getHeaders().put("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
             br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
-            br.postPage("https://www.androidfilehost.com/libs/otf/mirrors.otf.php", "submit=submit&action=getdownloadmirrors&fid=" + fid);
+            postPage("/libs/otf/checks.otf.php", "w=waitingtime");
+            postPage("/libs/otf/mirrors.otf.php", "submit=submit&action=getdownloadmirrors&fid=" + fid);
             final String[] mirrors = br.getRegex("\"url\":\"(http[^<>\"]*?)\"").getColumn(0);
             if (mirrors == null || mirrors.length == 0) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -108,7 +113,6 @@ public class AndroidFileHostCom extends PluginForHost {
         }
         // Disabled chunks and resume because different downloadserver = different connection limits
         dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 0);
-
         if (dl.getConnection().getContentType().contains("html")) {
             /* Check again for server error 404 just to make sure... */
             if (dl.getConnection().getResponseCode() == 404) {
@@ -119,26 +123,6 @@ public class AndroidFileHostCom extends PluginForHost {
         }
         downloadLink.setProperty("directlink", dllink);
         dl.startDownload();
-    }
-
-    private String checkDirectLink(final DownloadLink downloadLink, final String property) {
-        String dllink = downloadLink.getStringProperty(property);
-        if (dllink != null) {
-            try {
-                final Browser br2 = br.cloneBrowser();
-                br2.setFollowRedirects(true);
-                URLConnectionAdapter con = br2.openGetConnection(dllink);
-                if (con.getContentType().contains("html") || con.getLongContentLength() == -1) {
-                    downloadLink.setProperty(property, Property.NULL);
-                    dllink = null;
-                }
-                con.disconnect();
-            } catch (final Exception e) {
-                downloadLink.setProperty(property, Property.NULL);
-                dllink = null;
-            }
-        }
-        return dllink;
     }
 
     @Override
@@ -153,5 +137,4 @@ public class AndroidFileHostCom extends PluginForHost {
     @Override
     public void resetDownloadlink(final DownloadLink link) {
     }
-
 }

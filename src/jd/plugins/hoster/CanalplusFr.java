@@ -39,7 +39,7 @@ import org.jdownloader.downloader.hls.HLSDownloader;
 import org.jdownloader.plugins.components.hls.HlsContainer;
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
-@HostPlugin(revision = "$Revision: 32254 $", interfaceVersion = 3, names = { "canalplus.fr" }, urls = { "https?://(?:www\\.)?canalplus\\.fr/[^<>\"]+\\.html\\?vid=\\d+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "canalplus.fr" }, urls = { "https?://(?:www\\.)?canalplus\\.fr/[^<>\"]+\\.html\\?vid=\\d+" })
 public class CanalplusFr extends PluginForHost {
 
     public CanalplusFr(PluginWrapper wrapper) {
@@ -230,7 +230,7 @@ public class CanalplusFr extends PluginForHost {
             if (hlsbest == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-            final String url_hls = hlsbest.downloadurl;
+            final String url_hls = hlsbest.getDownloadurl();
             checkFFmpeg(downloadLink, "Download a HLS Stream");
             dl = new HLSDownloader(downloadLink, br, url_hls);
             dl.startDownload();

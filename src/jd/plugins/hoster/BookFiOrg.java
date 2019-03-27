@@ -13,8 +13,11 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
+
+import org.appwork.utils.formatter.SizeFormatter;
+import org.jdownloader.controlling.filter.CompiledFiletypeFilter;
+import org.jdownloader.plugins.components.antiDDoSForHost;
 
 import jd.PluginWrapper;
 import jd.http.Browser;
@@ -26,17 +29,12 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 
-import org.appwork.utils.formatter.SizeFormatter;
-import org.jdownloader.controlling.filter.CompiledFiletypeFilter;
-import org.jdownloader.plugins.components.antiDDoSForHost;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "bookfi.net" }, urls = { "http://(www\\.)?([a-z]+\\.)?bookfi\\.(?:org|net)/((book|dl)/\\d+(/[a-z0-9]+)?|md5/[A-F0-9]{32})" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "bookfi.net" }, urls = { "http://(www\\.)?([a-z]+\\.)?(?:bookfi\\.(?:org|net)|bookzz\\.org|b-ok\\.org)/((book|dl)/\\d+(/[a-z0-9]+)?|md5/[A-F0-9]{32})" })
 public class BookFiOrg extends antiDDoSForHost {
 
     // DEV NOTES
     // they share the same template
     // hosted on different IP ranges
-
     public BookFiOrg(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -47,11 +45,13 @@ public class BookFiOrg extends antiDDoSForHost {
     }
 
     public void correctDownloadLink(final DownloadLink link) {
-        if (link.getDownloadURL().matches("http://(?:www\\.)?bookfi\\.(?:net|org)/dl/\\d+.+")) {
-            final String fid = new Regex(link.getDownloadURL(), "bookfi\\.(?:net|org)/dl/(\\d+)").getMatch(0);
-            link.setUrlDownload("http://bookfi.net/book/" + fid);
-        } else {
-            link.setUrlDownload(link.getDownloadURL().replaceFirst("(?:www\\.)?(?:[a-z]{2}\\.)?bookfi.org/", "en.bookfi.net/"));
+        if (link.getDownloadURL().contains("bookfi.")) {
+            if (link.getDownloadURL().matches("http://(?:www\\.)?bookfi\\.(?:net|org)/dl/\\d+.+")) {
+                final String fid = new Regex(link.getDownloadURL(), "bookfi\\.(?:net|org)/dl/(\\d+)").getMatch(0);
+                link.setUrlDownload("http://bookfi.net/book/" + fid);
+            } else {
+                link.setUrlDownload(link.getDownloadURL().replaceFirst("(?:www\\.)?(?:[a-z]{2}\\.)?bookfi.org/", "en.bookfi.net/"));
+            }
         }
     }
 
@@ -75,19 +75,18 @@ public class BookFiOrg extends antiDDoSForHost {
         }
         if (parameter.contains("/md5/")) {
             // bookfi
-            String bookid = br.getRegex("<a href=\"(book/\\d+)\" ><h3").getMatch(0);
+            String bookid = br.getRegex("<a href=\"/?(book/\\d+)\"[^>]*><h3").getMatch(0);
             if (bookid == null) {
-                // bookos
-                bookid = br.getRegex("<a href=\"(book/\\d+/[a-z0-9]+)\"><h3").getMatch(0);
+                // bookos && bookzz
+                bookid = br.getRegex("<a href=\"/?(book/\\d+/[a-z0-9]+)\"[^>]*><h3").getMatch(0);
                 if (bookid == null) {
                     throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
             }
             getPage("/" + bookid);
         }
-
         // bookfi
-        String[] info = br.getRegex("<a class=\"button active\" href=\"([^\"]+)\">.*?\\([^,]+, ([^\\)]+?)\\)</a>").getRow(0);
+        String[] info = br.getRegex("<a class=\"button active[^\"]*\" href=\"([^\"]+)\">.*?\\([^,]+, ([^\\)]+?)\\)</a>").getRow(0);
         if (info == null) {
             // bookos
             info = br.getRegex("<a class=\"button active dnthandler\" href=\"([^\"]+)\">.*?\\([^,]+, ([^\\)]+?)\\)</a>").getRow(0);
@@ -135,9 +134,12 @@ public class BookFiOrg extends antiDDoSForHost {
     @Override
     public void handleFree(final DownloadLink link) throws Exception {
         requestFileInformation(link);
-        dl = jd.plugins.BrowserAdapter.openDownload(br, link, dllink, true, 1);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, link, dllink, true, 1);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
+            if (br.containsHTML("There are more then \\d+ downloads from this IP during last")) {
+                throw new PluginException(LinkStatus.ERROR_IP_BLOCKED);
+            }
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         dl.startDownload();
@@ -166,5 +168,4 @@ public class BookFiOrg extends antiDDoSForHost {
         }
         return false;
     }
-
 }

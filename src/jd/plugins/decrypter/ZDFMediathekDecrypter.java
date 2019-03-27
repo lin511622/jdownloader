@@ -13,92 +13,84 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map.Entry;
+import java.util.regex.Pattern;
+
+import org.appwork.utils.StringUtils;
+import org.appwork.utils.formatter.TimeFormatter;
+import org.jdownloader.downloader.hls.M3U8Playlist;
+import org.jdownloader.plugins.components.hls.HlsContainer;
+import org.jdownloader.plugins.config.PluginJsonConfig;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
 
 import jd.PluginWrapper;
-import jd.config.SubConfiguration;
 import jd.controlling.ProgressController;
 import jd.http.Browser;
-import jd.nutils.encoding.Encoding;
+import jd.http.URLConnectionAdapter;
 import jd.parser.Regex;
 import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
+import jd.plugins.LinkStatus;
+import jd.plugins.PluginException;
 import jd.plugins.PluginForDecrypt;
+import jd.plugins.components.PluginJSonUtils;
+import jd.plugins.hoster.ZdfDeMediathek.ZdfmediathekConfigInterface;
 
-import org.appwork.utils.formatter.SizeFormatter;
-import org.appwork.utils.formatter.TimeFormatter;
-import org.jdownloader.scripting.JavaScriptEngineFactory;
-
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "zdf.de", "phoenix.de", "neo-magazin-royale.de", "heute.de", "zdfneo.de", "zdfkultur.de", "zdfinfo.de", "zdfsport.de", "tivi.de" }, urls = { "https?://(?:www\\.)?zdf\\.de/.+", "https?://(?:www\\.)?phoenix\\.de/content/\\d+|http://(?:www\\.)?phoenix\\.de/podcast/runde/video/rss\\.xml", "https?://(?:www\\.)?neo\\-magazin\\-royale\\.de/.+", "https?://(?:www\\.)?heute\\.de/.+", "https?://(?:www\\.)?zdfneo\\.de/.+", "https?://(?:www\\.)?zdfkultur\\.de/.+", "https?://(?:www\\.)?zdfinfo\\.de/.+", "https?://(?:www\\.)?zdfsport\\.de/.+", "https?://(?:www\\.)?tivi\\.de/(mediathek/[a-z0-9\\-]+\\-\\d+/[a-z0-9\\-]+\\-\\d+/?|tiviVideos/beitrag/title/\\d+/\\d+\\?view=.+)" })
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "zdf.de", "neo-magazin-royale.de", "heute.de" }, urls = { "https?://(?:www\\.)?zdf\\.de/.+/[A-Za-z0-9_\\-]+\\.html|https?://(?:www\\.)?zdf\\.de/uri/(syncvideoimport_beitrag_\\d+|[a-z0-9\\-]+)", "https?://(?:www\\.)?neo\\-magazin\\-royale\\.de/.+", "https?://(?:www\\.)?heute\\.de/.+" })
 public class ZDFMediathekDecrypter extends PluginForDecrypt {
-
-    private static final String Q_SUBTITLES        = "Q_SUBTITLES";
-    private static final String Q_BEST             = "Q_BEST";
-    private static final String Q_LOW              = "Q_LOW";
-    private static final String Q_HIGH             = "Q_HIGH";
-    private static final String Q_VERYHIGH         = "Q_VERYHIGH";
-    private static final String Q_HD               = "Q_HD";
-    private static final String FASTLINKCHECK      = "FASTLINKCHECK";
-    private boolean             BEST               = false;
-
-    ArrayList<DownloadLink>     decryptedLinks     = new ArrayList<DownloadLink>();
-    private String              PARAMETER          = null;
-    private String              PARAMETER_ORIGINAL = null;
-    boolean                     fastlinkcheck      = false;
-
-    private final String        TYPE_PHOENIX       = "https?://(?:www\\.)?phoenix\\.de/content/\\d+";
-    private final String        TYPE_PHOENIX_RSS   = "http://(?:www\\.)?phoenix\\.de/podcast/runde/video/rss\\.xml";
-    private final String        TYPE_TIVI          = "https?://(?:www\\.)?tivi\\.de/(?:mediathek/[a-z0-9\\-]+\\-(\\d+)/[a-z0-9\\-]+\\-(\\d+)/?|tiviVideos/beitrag/title/(\\d+)/(\\d+)\\?view=.+)";
-    private final String        TYPE_TIVI_1        = "https?://(?:www\\.)?tivi\\.de/mediathek/[a-z0-9\\-]+\\-\\d+/[a-z0-9\\-]+\\-\\d+/?";
-    private final String        TYPE_TIVI_2        = "https?://(?:www\\.)?tivi\\.de/tiviVideos/beitrag/title/\\d+/\\d+\\?view=.+";
-    private final String        TYPE_ZDF           = "https://(?:www\\.)?zdf\\.de/ZDFmediathek#?/[^<>\"]*?beitrag/video/\\d+(?:.+)?";
+    ArrayList<DownloadLink>    decryptedLinks                = new ArrayList<DownloadLink>();
+    private String             PARAMETER                     = null;
+    private String             PARAMETER_ORIGINAL            = null;
+    private String             url_subtitle                  = null;
+    private boolean            fastlinkcheck                 = false;
+    private boolean            grabBest                      = false;
+    private boolean            grabSubtitles                 = false;
+    private long               filesizeSubtitle              = 0;
+    private final String       TYPE_ZDF                      = "https?://(?:www\\.)?zdf\\.de/.+";
+    private final String       TYPER_ZDF_REDIRECT            = ".+/uri/(syncvideoimport_beitrag_\\d+|[a-z0-9\\-]+)";
+    private final String       TYPE_ZDF_EMBEDDED_HEUTE       = "https?://(?:www\\.)?heute\\.de/.+";
+    private final String       TYPE_ZDF_EMBEDDED_NEO_MAGAZIN = "https?://(?:www\\.)?neo\\-magazin\\-royale\\.de/.+";
+    private final String       API_BASE                      = "https://api.zdf.de/";
+    /* Important: Keep this updated & keep this in order: Highest --> Lowest */
+    private final List<String> all_known_qualities           = Arrays.asList("hls_mp4_720", "http_mp4_hd", "http_webm_hd", "hls_mp4_480", "http_mp4_veryhigh", "http_webm_veryhigh", "hls_mp4_360", "http_webm_high", "hls_mp4_270", "http_mp4_high", "http_webm_low", "hls_mp4_170", "http_mp4_low", "hls_aac_0");
 
     public ZDFMediathekDecrypter(final PluginWrapper wrapper) {
         super(wrapper);
     }
 
     /** Example of a podcast-URL: http://www.zdf.de/ZDFmediathek/podcast/1074856?view=podcast */
-    /**
-     * TODO: Maybe add support for tivi.de but, similar to phoenix.de, we'd have to use another url to access their XML containing the final
-     * video urls - just stupid!
-     */
     /** Related sites: see RegExes, and also: 3sat.de */
     @SuppressWarnings({ "deprecation" })
     @Override
     public ArrayList<DownloadLink> decryptIt(final CryptedLink param, final ProgressController progress) throws Exception {
         this.br.setAllowedResponseCodes(500);
-        final SubConfiguration cfg = SubConfiguration.getConfig("zdf.de");
+        PARAMETER = param.toString();
         PARAMETER_ORIGINAL = param.toString();
-        PARAMETER = PARAMETER_ORIGINAL.replace("ZDFmediathek#/", "ZDFmediathek/");
-        BEST = cfg.getBooleanProperty(Q_BEST, false);
-        this.fastlinkcheck = cfg.getBooleanProperty(FASTLINKCHECK, false);
-        /* Check for invalid (Livestream) links */
-        if (PARAMETER.contains("beitrag/live/") && !PARAMETER.matches(".+beitrag/video/\\d+.+")) {
-            decryptedLinks.add(this.createOfflinelink(PARAMETER_ORIGINAL));
-            return decryptedLinks;
-        }
-
         setBrowserExclusive();
         br.setFollowRedirects(true);
-        if (PARAMETER_ORIGINAL.matches(TYPE_PHOENIX_RSS)) {
-            decryptPhoenixRSS();
-        } else if (this.PARAMETER_ORIGINAL.matches(TYPE_TIVI) || PARAMETER_ORIGINAL.matches(TYPE_PHOENIX)) {
-            getDownloadLinksZdfOld(cfg);
+        if (this.PARAMETER_ORIGINAL.matches(TYPE_ZDF_EMBEDDED_HEUTE)) {
+            this.crawlEmbeddedUrlsHeute();
+        } else if (this.PARAMETER_ORIGINAL.matches(TYPE_ZDF_EMBEDDED_NEO_MAGAZIN)) {
+            this.crawlEmbeddedUrlsNeoMagazin();
+        } else if (PARAMETER_ORIGINAL.matches(TYPE_ZDF)) {
+            getDownloadLinksZdfNew();
         } else {
-            getDownloadLinksZdfNew(cfg);
+            logger.info("Unsupported URL(s)");
         }
-
         if (decryptedLinks == null) {
             logger.warning("Decrypter out of date for link: " + PARAMETER);
             return null;
@@ -106,632 +98,592 @@ public class ZDFMediathekDecrypter extends PluginForDecrypt {
         return decryptedLinks;
     }
 
-    private void decryptPhoenixRSS() throws IOException {
+    protected DownloadLink createDownloadlink(final String url) {
+        final DownloadLink dl = super.createDownloadlink(url.replaceAll("https?://", "decryptedmediathek://"));
+        if (this.fastlinkcheck) {
+            dl.setAvailable(true);
+        }
+        return dl;
+    }
+
+    private void crawlEmbeddedUrlsHeute() throws Exception {
         br.getPage(this.PARAMETER);
-        if (this.br.getHttpConnection().getResponseCode() == 404 || this.br.getHttpConnection().getResponseCode() == 500) {
+        if (br.containsHTML("Der Beitrag konnte nicht gefunden werden") || this.br.getHttpConnection().getResponseCode() == 404 || this.br.getHttpConnection().getResponseCode() == 500) {
             decryptedLinks.add(this.createOfflinelink(PARAMETER_ORIGINAL));
             return;
         }
-        final String date_general = getXML("pubDate");
-        String title_general = getXML("title");
-        final String[] items = br.getRegex("<item>(.*?)</item>").getColumn(0);
-        if (items == null || items.length == 0 || title_general == null || date_general == null) {
-            this.decryptedLinks = null;
+        final String[] ids = this.br.getRegex("\"videoId\"\\s*?:\\s*?\"([^\"]*?)\"").getColumn(0);
+        for (final String videoid : ids) {
+            /* These urls go back into the decrypter. */
+            final String mainlink = "https://www." + this.getHost() + "/nachrichten/heute-journal/" + videoid + ".html";
+            decryptedLinks.add(super.createDownloadlink(mainlink));
+        }
+        return;
+    }
+
+    private void crawlEmbeddedUrlsNeoMagazin() throws Exception {
+        br.getPage(this.PARAMETER);
+        if (br.containsHTML("Der Beitrag konnte nicht gefunden werden") || this.br.getHttpConnection().getResponseCode() == 404 || this.br.getHttpConnection().getResponseCode() == 500) {
+            decryptedLinks.add(this.createOfflinelink(PARAMETER_ORIGINAL));
             return;
         }
-        final String fpname = encodeUnicode(formatDatePHOENIX(date_general) + "_" + title_general);
-        final FilePackage fp = FilePackage.getInstance();
-        fp.setName(fpname);
-        for (final String item : items) {
-            final String url = getXML(item, "guid");
-            final String title = getXML(item, "title");
-            final String description = getXML(item, "description");
-            final String date = getXML(item, "pubDate");
-            final String tvstation = getXML(item, "itunes:author");
-            final String filesize = new Regex(item, "length=\\'(\\d+)\\'").getMatch(0);
-            if (url == null || title == null || date == null || tvstation == null || filesize == null) {
-                this.decryptedLinks = null;
+        final ZdfmediathekConfigInterface cfg = PluginJsonConfig.get(jd.plugins.hoster.ZdfDeMediathek.ZdfmediathekConfigInterface.class);
+        final boolean neomagazinroyale_only_add_current_episode = cfg.isNeoMagazinRoyaleDeOnlyGrabCurrentEpisode();
+        final String[] htmls = this.br.getRegex("<div[^>]*?class=\"modules\" id=\"teaser\\-\\d+\"[^>]*?>.*?</div>\\s*?</div>\\s*?</div>\\s*?</div>").getColumn(-1);
+        for (final String html : htmls) {
+            /* These urls go back into the decrypter. */
+            final String videoid = new Regex(html, "data\\-sophoraid=\"([^\"]+)\"").getMatch(0);
+            final String title = new Regex(html, "class=\"headline\"[^>]*?><h3[^>]*?class=\"h3 zdf\\-\\-primary\\-light\"[^>]*?>([^<>]+)<").getMatch(0);
+            if (videoid == null) {
+                /* Probably no video content. */
+                continue;
+            }
+            final String mainlink = "https://www.zdf.de/comedy/neo-magazin-mit-jan-boehmermann/" + videoid + ".html";
+            /* Check if user only wants current Neo Magazin episode and if we have it. */
+            if (neomagazinroyale_only_add_current_episode && title != null && new Regex(title, Pattern.compile(".*?NEO MAGAZIN ROYALE.*?vom.*?", Pattern.CASE_INSENSITIVE)).matches()) {
+                /* Clear list */
+                decryptedLinks.clear();
+                /* Only add this one entry */
+                decryptedLinks.add(super.createDownloadlink(mainlink));
+                /* Return --> Done */
                 return;
             }
-            final DownloadLink dl = this.createDownloadlink("directhttp://" + url);
-            String final_filename = formatDatePHOENIX(date) + "_" + tvstation + "_" + title + ".mp4";
-            final_filename = encodeUnicode(final_filename);
-            if (description != null) {
-                dl.setComment(description);
-            }
-            dl.setProperty("date", date);
-            dl.setFinalFileName(final_filename);
-            dl.setDownloadSize(Long.parseLong(filesize));
-            if (this.fastlinkcheck) {
-                dl.setAvailable(true);
-            }
-            this.decryptedLinks.add(dl);
+            decryptedLinks.add(super.createDownloadlink(mainlink));
         }
-        fp.addLinks(decryptedLinks);
+        return;
     }
 
-    @SuppressWarnings("deprecation")
-    private ArrayList<DownloadLink> getDownloadLinksZdfOld(final SubConfiguration cfg) {
-        final boolean grabSubtitles = cfg.getBooleanProperty(Q_SUBTITLES, false);
-        String date = null;
-        String date_formatted = null;
-        String id = null;
-        String id_filename = null;
-        String title = null;
-        String show = null;
-        String subtitleURL = null;
-        String subtitleInfo = null;
-        String decrypterurl = null;
-        ArrayList<DownloadLink> ret = new ArrayList<DownloadLink>();
-        ArrayList<DownloadLink> newRet = new ArrayList<DownloadLink>();
-        HashMap<String, DownloadLink> bestMap = new HashMap<String, DownloadLink>();
+    private void crawlEmbeddedUrlsZdfNew() throws IOException {
+        this.br.getPage(this.PARAMETER);
+        if (this.br.getHttpConnection().getResponseCode() == 404) {
+            this.decryptedLinks.add(this.createOfflinelink(this.PARAMETER));
+            return;
+        }
+        final String[] embedded_player_ids = this.br.getRegex("data\\-zdfplayer\\-id=\"([^<>\"]+)\"").getColumn(0);
+        for (final String embedded_player_id : embedded_player_ids) {
+            final String finallink = String.format("https://www.zdf.de/jdl/jdl/%s.html", embedded_player_id);
+            this.decryptedLinks.add(super.createDownloadlink(finallink));
+        }
+    }
 
-        try {
-            if (PARAMETER_ORIGINAL.matches(TYPE_PHOENIX)) {
-                br.getPage(PARAMETER);
-                if (this.br.getHttpConnection().getResponseCode() == 404 || this.br.getHttpConnection().getResponseCode() == 500) {
-                    decryptedLinks.add(this.createOfflinelink(PARAMETER_ORIGINAL));
-                    return decryptedLinks;
-                }
-                id = br.getRegex("id=\"phx_vod_(\\d+)\"").getMatch(0);
-                if (id == null) {
-                    decryptedLinks.add(this.createOfflinelink(PARAMETER_ORIGINAL));
-                    return decryptedLinks;
-                }
-                id_filename = id;
-                decrypterurl = "decrypted://phoenix.de/content/" + id + "&quality=%s";
-                br.getPage("/php/zdfplayer-v1.3/data/beitragsDetails.php?ak=web&id=" + id);
-            } else if (this.PARAMETER_ORIGINAL.matches(TYPE_TIVI)) {
-                final String param_1;
-                final String param_2;
-                if (this.PARAMETER_ORIGINAL.matches(TYPE_TIVI_1)) {
-                    param_1 = new Regex(this.PARAMETER_ORIGINAL, TYPE_TIVI).getMatch(0);
-                    param_2 = new Regex(this.PARAMETER_ORIGINAL, TYPE_TIVI).getMatch(1);
-                } else {
-                    param_1 = new Regex(this.PARAMETER_ORIGINAL, TYPE_TIVI).getMatch(2);
-                    param_2 = new Regex(this.PARAMETER_ORIGINAL, TYPE_TIVI).getMatch(3);
-                }
-                id_filename = param_1 + "_" + param_2;
-                decrypterurl = "decrypted://tivi.de/content/" + param_1 + param_2 + "&quality=%s";
-                br.getPage("http://www.tivi.de/tiviVideos/beitrag/" + param_1 + "/" + param_2 + "?view=flashXml");
+    private String[] getApiTokenFromHtml(Browser br, final String url) throws IOException {
+        final Browser brc;
+        if (br == null) {
+            brc = this.br;
+        } else {
+            brc = br.cloneBrowser();
+            brc.setFollowRedirects(true);
+            brc.getPage(url);
+        }
+        String apitoken = brc.getRegex("(?:window\\.zdfsite\\s*=)?.*?apiToken\\s*?:\\s*?\\'([a-f0-9]+)\\'").getMatch(0);
+        if (apitoken == null) {
+            apitoken = PluginJSonUtils.getJsonNested(brc, "apiToken");
+        }
+        String apitoken2 = brc.getRegex("\"apiToken\"\\s*?:\\s*?\"([a-f0-9]+)\"").getMatch(0);
+        return new String[] { apitoken, apitoken2 };
+    }
+
+    @SuppressWarnings({ "unchecked" })
+    private void getDownloadLinksZdfNew() throws Exception {
+        List<String> all_selected_qualities = new ArrayList<String>();
+        final List<String> all_found_languages = new ArrayList<String>();
+        final HashMap<String, DownloadLink> all_found_downloadlinks = new HashMap<String, DownloadLink>();
+        final ZdfmediathekConfigInterface cfg = PluginJsonConfig.get(jd.plugins.hoster.ZdfDeMediathek.ZdfmediathekConfigInterface.class);
+        grabBest = cfg.isGrabBESTEnabled();
+        fastlinkcheck = cfg.isFastLinkcheckEnabled();
+        grabSubtitles = cfg.isGrabSubtitleEnabled();
+        final boolean grabHlsAudio = cfg.isGrabAudio();
+        if (grabHlsAudio) {
+            all_selected_qualities.add("hls_aac_0");
+        }
+        final boolean grabHls170 = cfg.isGrabHLS170pVideoEnabled();
+        final boolean grabHls270 = cfg.isGrabHLS270pVideoEnabled();
+        final boolean grabHls360 = cfg.isGrabHLS360pVideoEnabled();
+        final boolean grabHls480 = cfg.isGrabHLS480pVideoEnabled();
+        final boolean grabHls570 = cfg.isGrabHLS570pVideoEnabled();
+        final boolean grabHls720 = cfg.isGrabHLS720pVideoEnabled();
+        if (grabHls170) {
+            all_selected_qualities.add("hls_mp4_170");
+        }
+        if (grabHls270) {
+            all_selected_qualities.add("hls_mp4_270");
+        }
+        if (grabHls360) {
+            all_selected_qualities.add("hls_mp4_360");
+        }
+        if (grabHls480) {
+            all_selected_qualities.add("hls_mp4_480");
+        }
+        if (grabHls570) {
+            all_selected_qualities.add("hls_mp4_570");
+        }
+        if (grabHls720) {
+            all_selected_qualities.add("hls_mp4_720");
+        }
+        final boolean grabHttpMp4Low = cfg.isGrabHTTPMp4_170pVideoEnabled();
+        final boolean grabHttpMp4High = cfg.isGrabHTTPMp4_270pVideoEnabled();
+        final boolean grabHttpMp4VeryHigh = cfg.isGrabHTTPMp4_480pVideoEnabled();
+        final boolean grabHttpMp4HD = cfg.isGrabHTTPMp4HDVideoEnabled();
+        if (grabHttpMp4Low) {
+            all_selected_qualities.add("http_mp4_low");
+        }
+        if (grabHttpMp4High) {
+            all_selected_qualities.add("http_mp4_high");
+        }
+        if (grabHttpMp4VeryHigh) {
+            all_selected_qualities.add("http_mp4_veryhigh");
+        }
+        if (grabHttpMp4HD) {
+            all_selected_qualities.add("http_mp4_hd");
+        }
+        final boolean grabHttpWebmLow = cfg.isGrabHTTPWebmLowVideoEnabled();
+        final boolean grabHttpWebmHigh = cfg.isGrabHTTPWebmHighVideoEnabled();
+        final boolean grabHttpWebmVeryHigh = cfg.isGrabHTTPWebmVeryHighVideoEnabled();
+        final boolean grabHttpWebmHD = cfg.isGrabHTTPWebmHDVideoEnabled();
+        if (grabHttpWebmLow) {
+            all_selected_qualities.add("http_webm_low");
+        }
+        if (grabHttpWebmHigh) {
+            all_selected_qualities.add("http_webm_high");
+        }
+        if (grabHttpWebmVeryHigh) {
+            all_selected_qualities.add("http_webm_veryhigh");
+        }
+        if (grabHttpWebmHD) {
+            all_selected_qualities.add("http_webm_hd");
+        }
+        final boolean user_selected_nothing = all_selected_qualities.size() == 0;
+        if (user_selected_nothing) {
+            logger.info("User selected no quality at all --> Adding ALL qualities instead");
+            all_selected_qualities = all_known_qualities;
+        }
+        /*
+         * Grabbing hls means we make an extra http request --> Only do this if wished by the user or if the user set bad plugin settings!
+         */
+        final boolean grabHLS = grabHlsAudio || grabHls170 || grabHls270 || grabHls360 || grabHls480 || grabHls570 || grabHls720 || user_selected_nothing;
+        /*
+         * 2017-02-08: The only thing download has and http stream has not == http veryhigh --> Only grab this if user has selected it
+         * explicitly!
+         */
+        boolean grabDownloadUrls = !grabBest && grabHttpMp4HD;
+        final String sophoraIDSource;
+        if (this.PARAMETER.matches(TYPER_ZDF_REDIRECT)) {
+            this.br.setFollowRedirects(false);
+            this.br.getPage(this.PARAMETER);
+            sophoraIDSource = this.br.getRedirectLocation();
+            this.br.setFollowRedirects(true);
+        } else {
+            sophoraIDSource = this.PARAMETER;
+        }
+        final String sophoraID = new Regex(sophoraIDSource, "/([^/]+)\\.html").getMatch(0);
+        if (sophoraID == null) {
+            /* Probably no videocontent - most likely, used added an invalid TYPER_ZDF_REDIRECT url. */
+            decryptedLinks.add(this.createOfflinelink(PARAMETER));
+            return;
+        }
+        final String apitoken[] = getApiTokenFromHtml(br, PARAMETER_ORIGINAL);
+        /* 2016-12-21: By hardcoding the apitoken we can save one http request thus have a faster crawl process :) */
+        this.br.getHeaders().put("Api-Auth", "Bearer " + apitoken[0]);
+        this.br.getPage(API_BASE + "/content/documents/" + sophoraID + ".json?profile=player");
+        if (this.br.getHttpConnection().getResponseCode() == 404) {
+            decryptedLinks.add(this.createOfflinelink(PARAMETER));
+            return;
+        }
+        this.br.getHeaders().put("Api-Auth", "Bearer " + apitoken[1]);
+        LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaMap(this.br.toString());
+        LinkedHashMap<String, Object> entries_2 = null;
+        final String contentType = (String) entries.get("contentType");
+        String title = (String) entries.get("title");
+        final String editorialDate = (String) entries.get("editorialDate");
+        final Object tvStationo = entries.get("tvService");
+        final String tvStation = tvStationo != null && tvStationo instanceof String ? (String) tvStationo : "ZDF";
+        // final Object hasVideoo = entries.get("hasVideo");
+        // final boolean hasVideo = hasVideoo != null && hasVideoo instanceof Boolean ? ((Boolean) entries.get("hasVideo")).booleanValue() :
+        // false;
+        entries_2 = (LinkedHashMap<String, Object>) entries.get("http://zdf.de/rels/brand");
+        final String tvShow = entries_2 != null ? (String) entries_2.get("title") : null;
+        entries_2 = (LinkedHashMap<String, Object>) entries.get("mainVideoContent");
+        if (entries_2 == null) {
+            /* Not a single video? Maybe we have a playlist / embedded video(s)! */
+            logger.info("Content is not a video --> Scanning html for embedded content");
+            crawlEmbeddedUrlsZdfNew();
+            return;
+        }
+        entries_2 = (LinkedHashMap<String, Object>) entries_2.get("http://zdf.de/rels/target");
+        final String id;
+        final String player_url_template = (String) entries_2.get("http://zdf.de/rels/streams/ptmd-template");
+        /* 2017-02-03: Not required at the moment */
+        // if (!hasVideo) {
+        // logger.info("Content is not a video --> Nothing to download");
+        // return ret;
+        // }
+        if (inValidate(contentType) || inValidate(title) || inValidate(editorialDate) || inValidate(tvStation) || inValidate(player_url_template)) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
+        /* Show is not always available - merge it with the title, if tvShow is available. */
+        if (tvShow != null) {
+            title = tvShow + " - " + title;
+        }
+        final String date_formatted = new Regex(editorialDate, "(\\d{4}\\-\\d{2}\\-\\d{2})").getMatch(0);
+        id = new Regex(player_url_template, "/([^/]+)$").getMatch(0);
+        if (date_formatted == null || id == null) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
+        final String filename_packagename_base_title = String.format("%s_%s_%s", date_formatted, tvStation, title);
+        short counter = 0;
+        short highestHlsMasterValue = 0;
+        short hlsMasterValueTemp = 0;
+        int highestHlsBandwidth = 0;
+        boolean finished = false;
+        boolean grabDownloadUrlsPossible = false;
+        DownloadLink highestHlsDownload = null;
+        do {
+            if (this.isAbort()) {
+                return;
+            }
+            if (counter == 0) {
+                accessPlayerJson(player_url_template, "ngplayer_2_3");
+            } else if (grabDownloadUrls && grabDownloadUrlsPossible) {
+                accessPlayerJson(player_url_template, "zdf_pd_download_1");
+                finished = true;
             } else {
-                /*
-                 * When browsing the ZDFMediathek, the url will get longer and longer and can contain multiple video-IDs. However, the
-                 * current one is the last one --> Make sure we get that!
-                 */
-                /* E.g. 'beitrag/video/12345' or 'beitrag/einzelsendung/12345' */
-                String[] ids = new Regex(PARAMETER, "beitrag/[^/]+/(\\d+)").getColumn(0);
-                if (ids != null && ids.length > 0) {
-                    id = ids[ids.length - 1];
-                }
-                if (id == null) {
-                    /* Let's look for embedded zdfmediathek videoids in the html. */
-                    br.getPage(this.PARAMETER);
-                    if (br.containsHTML("Der Beitrag konnte nicht gefunden werden") || this.br.getHttpConnection().getResponseCode() == 404 || this.br.getHttpConnection().getResponseCode() == 500) {
-                        decryptedLinks.add(this.createOfflinelink(PARAMETER_ORIGINAL));
-                        return decryptedLinks;
+                /* Fail safe && case when there are no additional downloadlinks available. */
+                finished = true;
+                break;
+            }
+            entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaMap(this.br.toString());
+            final Object downloadAllowed_o = JavaScriptEngineFactory.walkJson(entries, "attributes/downloadAllowed/value");
+            if (downloadAllowed_o != null && downloadAllowed_o instanceof Boolean) {
+                /* Usually this is set in the first loop to decide whether a 2nd loop is required. */
+                grabDownloadUrlsPossible = ((Boolean) downloadAllowed_o).booleanValue();
+            }
+            final ArrayList<Object> ressourcelist = (ArrayList<Object>) entries.get("priorityList");
+            final Object subtitleO = JavaScriptEngineFactory.walkJson(entries, "captions/{0}/uri");
+            url_subtitle = subtitleO != null ? (String) subtitleO : null;
+            if (this.url_subtitle != null & this.grabSubtitles) {
+                /* Grab the filesize here once so if the user adds many links, JD will not check the same subtitle URL multiple times. */
+                URLConnectionAdapter con = null;
+                try {
+                    con = this.br.openHeadConnection(this.url_subtitle);
+                    if (!con.getContentType().contains("html")) {
+                        filesizeSubtitle = con.getLongContentLength();
                     }
-                    final boolean neomagazinroyale_only_add_current_episode = cfg.getBooleanProperty(jd.plugins.hoster.ZdfDeMediathek.NEOMAGAZINROYALE_DE_ADD_ONLY_CURRENT_EPISODE, jd.plugins.hoster.ZdfDeMediathek.defaultNEOMAGAZINROYALE_DE_ADD_ONLY_CURRENT_EPISODE);
-                    final String[] neomagazin_titles = this.br.getRegex("class=\"headline\"><h3 class=\"h3 zdf\\-\\-primary\\-light\">([^<>]+)<").getColumn(0);
-                    /* neo-magazin-royale.de, heute.de */
-                    final String[] regexes = { "data\\-assetid=\"(\\d+)\"", "\"videoId\"[\t\n\r ]*?:[\t\n\r ]*?\"(\\d+)\"" };
-                    int counter;
-                    for (final String regex : regexes) {
-                        ids = this.br.getRegex(regex).getColumn(0);
-                        if (ids != null && ids.length > 0) {
-                            counter = 0;
-                            for (final String videoid : ids) {
-                                final String video_mainlink = createZdfLink(videoid);
-                                final String neomagazin_title;
-                                if (neomagazin_titles != null && counter <= neomagazin_titles.length - 1) {
-                                    neomagazin_title = neomagazin_titles[counter];
-                                    if (neomagazin_title.matches(".*?NEO MAGAZIN ROYALE.*?vom.*?") && neomagazinroyale_only_add_current_episode) {
-                                        /* Clear list */
-                                        decryptedLinks.clear();
-                                        /* Only add this one entry */
-                                        decryptedLinks.add(this.createDownloadlink(video_mainlink));
-                                        /* Return --> Done */
-                                        return decryptedLinks;
-                                    }
-                                } else {
-                                    neomagazin_title = null;
-                                }
-                                decryptedLinks.add(this.createDownloadlink(video_mainlink));
-                                counter++;
-                            }
-                        }
-                    }
-                    return decryptedLinks;
-                }
-                id_filename = id;
-                decrypterurl = "decrypted://www.zdf.de/ZDFmediathek/beitrag/video/" + id + "&quality=%s";
-                br.getPage("/ZDFmediathek/xmlservice/web/beitragsDetails?id=" + id + "&ak=web");
-                /* Make sure link is decrypter-compatible */
-                PARAMETER = "http://www.zdf.de/ZDFmediathek/beitrag/video/" + id;
-            }
-            if (br.containsHTML("<debuginfo>Kein Beitrag mit ID") || br.containsHTML("<statuscode>wrongParameter</statuscode>")) {
-                decryptedLinks.add(this.createOfflinelink(PARAMETER_ORIGINAL));
-                return decryptedLinks;
-            }
-
-            date = getXML("airtime");
-            title = getTitle(br);
-            show = this.getXML("originChannelTitle");
-            if (show == null) {
-                /* E.g. for tivi.de */
-                show = this.getXML("ns2:broadcast-name");
-            }
-            String extension = ".mp4";
-            subtitleInfo = br.getRegex("<caption>(.*?)</caption>").getMatch(0);
-            if (subtitleInfo != null) {
-                subtitleURL = new Regex(subtitleInfo, "<url>(https?://utstreaming\\.zdf\\.de/tt/\\d{4}/[A-Za-z0-9_\\-]+\\.xml)</url>").getMatch(0);
-            }
-            if (br.getRegex("new MediaCollection\\(\"audio\",").matches()) {
-                extension = ".mp3";
-            }
-            if (date == null || title == null || show == null) {
-                return null;
-            }
-            show = Encoding.htmlDecode(show);
-            show = encodeUnicode(show);
-
-            date_formatted = formatDateZDF(date);
-
-            final Browser br2 = br.cloneBrowser();
-            final String[][] downloads = br2.getRegex("<[^>]*?formitaet basetype=\"([^\"]+)\" isDownload=\"[^\"]+\">(.*?)</[^>]*?formitaet>").getMatches();
-            for (String streams[] : downloads) {
-
-                if (!(streams[0].contains("mp4_http") || streams[0].contains("mp4_rtmp_zdfmeta"))) {
-                    continue;
-                }
-
-                for (String stream[] : new Regex(streams[1], "<[^>]*?quality>([^<]+)</[^>]*?quality>.*?<[^>]*?url>([^<]+)<.*?<[^>]*?filesize>(\\d+)<").getMatches()) {
-
-                    if (streams[0].contains("mp4_http") && !new Regex(streams[1], ("<[^>]*?facet>(progressive|restriction_useragent|podcast|hbbtv)</[^>]*?facet>")).matches()) {
-                        continue;
-                    }
-                    if (streams[0].contains("mp4_rtmp_zdfmeta")) {
-                        continue;
-                    }
-                    if (stream[1].endsWith(".meta") && stream[1].contains("streaming") && stream[1].startsWith("http")) {
-                        br2.getPage(stream[1]);
-                        stream[1] = br2.getRegex("<default\\-stream\\-url>(.*?)</default\\-stream\\-url>").getMatch(0);
-                        if (stream[1] == null) {
-                            continue;
-                        }
-                    }
-
-                    String url = stream[1];
-                    String fmt = stream[0];
-                    if (fmt != null) {
-                        fmt = fmt.toLowerCase(Locale.ENGLISH).trim();
-                    }
-                    if (fmt != null) {
-                        /* best selection is done at the end */
-                        if ("low".equals(fmt)) {
-                            if ((cfg.getBooleanProperty(Q_LOW, true) || BEST) == false) {
-                                continue;
-                            } else {
-                                fmt = "low";
-                            }
-                        } else if ("high".equals(fmt)) {
-                            if ((cfg.getBooleanProperty(Q_HIGH, true) || BEST) == false) {
-                                continue;
-                            } else {
-                                fmt = "high";
-                            }
-                        } else if ("veryhigh".equals(fmt)) {
-                            if ((cfg.getBooleanProperty(Q_VERYHIGH, true) || BEST) == false) {
-                                continue;
-                            } else {
-                                fmt = "veryhigh";
-                            }
-                        } else if ("hd".equals(fmt)) {
-                            if ((cfg.getBooleanProperty(Q_HD, true) || BEST) == false) {
-                                continue;
-                            } else {
-                                if (streams[0].contains("mp4_rtmp")) {
-                                    if (url.startsWith("http://")) {
-                                        Browser rtmp = new Browser();
-                                        rtmp.getPage(stream[1]);
-                                        url = rtmp.getRegex("<default\\-stream\\-url>([^<]+)<").getMatch(0);
-                                    }
-                                    if (url == null) {
-                                        continue;
-                                    }
-                                }
-                                fmt = "hd";
-                            }
-                        }
-                    }
-
-                    final String fmtUPPR = fmt.toUpperCase(Locale.ENGLISH);
-                    final String name = date_formatted + "_zdf_" + show + " - " + title + "_" + id_filename + "@" + fmtUPPR + extension;
-                    final DownloadLink link = createDownloadlink(String.format(decrypterurl, fmt));
-                    if (this.fastlinkcheck) {
-                        link.setAvailable(true);
-                    }
-                    link.setFinalFileName(name);
-                    link.setContentUrl(PARAMETER_ORIGINAL);
-                    link.setProperty("date", date_formatted);
-                    link.setProperty("directURL", url);
-                    link.setProperty("directName", name);
-                    link.setProperty("directQuality", stream[0]);
-                    link.setProperty("streamingType", "http");
-                    link.setProperty("directfmt", fmtUPPR);
-
-                    if (!url.contains("hinweis_fsk")) {
-                        try {
-                            link.setDownloadSize(SizeFormatter.getSize(stream[2]));
-                        } catch (Throwable e) {
-                        }
-                    }
-
-                    DownloadLink best = bestMap.get(fmt);
-                    if (best == null || link.getDownloadSize() > best.getDownloadSize()) {
-                        bestMap.put(fmt, link);
-                    }
-                    newRet.add(link);
-                }
-            }
-            if (newRet.size() > 0) {
-                if (BEST) {
-                    /* only keep best quality */
-                    DownloadLink keep = bestMap.get("hd");
-                    if (keep == null) {
-                        keep = bestMap.get("veryhigh");
-                    }
-                    if (keep == null) {
-                        keep = bestMap.get("high");
-                    }
-                    if (keep == null) {
-                        keep = bestMap.get("low");
-                    }
-                    if (keep != null) {
-                        newRet.clear();
-                        newRet.add(keep);
-                    }
-                }
-            }
-            ret = newRet;
-        } catch (final Throwable e) {
-            logger.severe(e.getMessage());
-        }
-        for (final DownloadLink dl : ret) {
-            if (grabSubtitles && subtitleURL != null) {
-                final String dlfmt = dl.getStringProperty("directfmt", null);
-                final String startTime = new Regex(subtitleInfo, "<offset>(\\-)?(\\d+)</offset>").getMatch(1);
-                final String name = date_formatted + "_zdf_" + show + " - " + title + "_" + id_filename + "@" + dlfmt + ".xml";
-                final DownloadLink subtitle = createDownloadlink(String.format(decrypterurl, dlfmt + "subtitle"));
-                subtitle.setAvailable(true);
-                subtitle.setFinalFileName(name);
-                subtitle.setProperty("date", date_formatted);
-                subtitle.setProperty("directURL", subtitleURL);
-                subtitle.setProperty("directName", name);
-                subtitle.setProperty("streamingType", "subtitle");
-                subtitle.setProperty("starttime", startTime);
-                subtitle.setContentUrl(PARAMETER_ORIGINAL);
-                subtitle.setLinkID(name);
-                decryptedLinks.add(subtitle);
-            }
-            decryptedLinks.add(dl);
-        }
-        if (decryptedLinks.size() > 1) {
-            final FilePackage fp = FilePackage.getInstance();
-            fp.setName(date_formatted + "_zdf_" + show + " - " + title);
-            fp.addLinks(decryptedLinks);
-        }
-        return ret;
-    }
-
-    @SuppressWarnings({ "deprecation", "unchecked", "rawtypes" })
-    private ArrayList<DownloadLink> getDownloadLinksZdfNew(final SubConfiguration cfg) {
-        final boolean grabSubtitles = cfg.getBooleanProperty(Q_SUBTITLES, false);
-        String date = null;
-        String date_formatted = null;
-        String id = null;
-        String title = null;
-        String show = null;
-        String subtitleURL = null;
-        String subtitleInfo = null;
-        String decrypterurl = null;
-        ArrayList<DownloadLink> ret = new ArrayList<DownloadLink>();
-        ArrayList<DownloadLink> newRet = new ArrayList<DownloadLink>();
-        HashMap<String, DownloadLink> bestMap = new HashMap<String, DownloadLink>();
-
-        try {
-            /*
-             * When browsing the ZDFMediathek, the url will get longer and longer and can contain multiple video-IDs. However, the current
-             * one is the last one --> Make sure we get that!
-             */
-            String[] ids = new Regex(PARAMETER, "beitrag/[^/]+/(\\d+)").getColumn(0);
-            if (ids != null && ids.length > 0) {
-                id = ids[ids.length - 1];
-            }
-            if (id != null && this.PARAMETER.matches(".+beitrag/einzelsendung/\\d+.*?")) {
-                /* Decrypt multiple videoids */
-                this.br.getPage("http://www.zdf.de/ZDFmediathek/xmlservice/web/aktuellste?ak=web&maxLength=50&ganzeSendungen=false&id=" + id + "&offset=0");
-                final String[] videoids = this.br.getRegex("<assetId>(\\d+)</assetId>").getColumn(0);
-                if (videoids != null && videoids.length > 0) {
-                    for (final String videoid : videoids) {
-                        final String video_mainlink = createZdfLink(videoid);
-                        decryptedLinks.add(this.createDownloadlink(video_mainlink));
-                    }
-                }
-                return decryptedLinks;
-            } else if (id == null) {
-                /* No videoid given in url added by user --> Let's look for embedded zdfmediathek videoids in the html. */
-                br.getPage(this.PARAMETER);
-                if (br.containsHTML("Der Beitrag konnte nicht gefunden werden") || this.br.getHttpConnection().getResponseCode() == 404 || this.br.getHttpConnection().getResponseCode() == 500) {
-                    decryptedLinks.add(this.createOfflinelink(PARAMETER_ORIGINAL));
-                    return decryptedLinks;
-                }
-                final boolean neomagazinroyale_only_add_current_episode = cfg.getBooleanProperty(jd.plugins.hoster.ZdfDeMediathek.NEOMAGAZINROYALE_DE_ADD_ONLY_CURRENT_EPISODE, jd.plugins.hoster.ZdfDeMediathek.defaultNEOMAGAZINROYALE_DE_ADD_ONLY_CURRENT_EPISODE);
-                final String[] neomagazin_titles = this.br.getRegex("class=\"headline\"><h3 class=\"h3 zdf\\-\\-primary\\-light\">([^<>]+)<").getColumn(0);
-                int counter = 0;
-                /* neo-magazin-royale.de, heute.de */
-                final String[] regexes = { "data\\-assetid=\"(\\d+)\"", "\"videoId\"[\t\n\r ]*?:[\t\n\r ]*?\"(\\d+)\"" };
-                for (final String regex : regexes) {
-                    counter = 0;
-                    ids = this.br.getRegex(regex).getColumn(0);
-                    for (final String videoid : ids) {
-                        final String video_mainlink = createZdfLink(videoid);
-                        final String neomagazin_title;
-                        if (neomagazin_titles != null && counter <= neomagazin_titles.length - 1) {
-                            neomagazin_title = neomagazin_titles[counter];
-                            if (neomagazin_title.matches(".*?NEO MAGAZIN ROYALE.*?vom.*?") && neomagazinroyale_only_add_current_episode) {
-                                /* Clear list */
-                                decryptedLinks.clear();
-                                /* Only add this one entry */
-                                decryptedLinks.add(this.createDownloadlink(video_mainlink));
-                                /* Return --> Done */
-                                return decryptedLinks;
-                            }
-                        } else {
-                            neomagazin_title = null;
-                        }
-                        decryptedLinks.add(this.createDownloadlink(video_mainlink));
-                        counter++;
-                    }
-                }
-                return decryptedLinks;
-            }
-            decrypterurl = "decrypted://www.zdf.de/ZDFmediathek/beitrag/video/" + id + "&quality=%s";
-            /* Old: http://www.zdf.de/ZDFmediathek/xmlservice/web/beitragsDetails?id=<id>&ak=web */
-            /* New February 2016: */
-            br.getPage("http://www.zdf.de/ZDFmediathek/xmlservice/v2/web/beitragsDetails?ak=web&id=" + id);
-            if (this.br.containsHTML(">wrongParameter<")) {
-                ret.add(this.createDownloadlink(PARAMETER));
-                return ret;
-            }
-            /* Make sure link is decrypter-compatible */
-            PARAMETER = "http://www.zdf.de/ZDFmediathek/beitrag/video/" + id;
-            if (br.containsHTML("<debuginfo>Kein Beitrag mit ID") || br.containsHTML("<statuscode>wrongParameter</statuscode>")) {
-                decryptedLinks.add(this.createOfflinelink(PARAMETER_ORIGINAL));
-                return decryptedLinks;
-            }
-            subtitleInfo = br.getRegex("<caption>(.*?)</caption>").getMatch(0);
-            final String basename = getXML("basename");
-            if (basename == null) {
-                return null;
-            }
-
-            date = getXML("airtime");
-            title = getTitle(br);
-            show = this.getXML("originChannelTitle");
-            if (show == null) {
-                /* E.g. for tivi.de */
-                show = this.getXML("ns2:broadcast-name");
-            }
-            String extension = ".mp4";
-            if (subtitleInfo != null) {
-                subtitleURL = new Regex(subtitleInfo, "<url>(https?://utstreaming\\.zdf\\.de/tt/\\d{4}/[A-Za-z0-9_\\-]+\\.xml)</url>").getMatch(0);
-            }
-            if (br.getRegex("new MediaCollection\\(\"audio\",").matches()) {
-                extension = ".mp3";
-            }
-            if (date == null || title == null || show == null) {
-                return null;
-            }
-            show = Encoding.htmlDecode(show);
-            show = encodeUnicode(show);
-            date_formatted = formatDateZDF(date);
-
-            this.br.getPage("http://www.zdf.de/ptmd/vod/mediathek/" + basename);
-            LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
-            final ArrayList<Object> ressourcelist = (ArrayList) entries.get("formitaeten");
-            ArrayList<Object> templist = null;
-
-            for (final Object formato : ressourcelist) {
-                entries = (LinkedHashMap<String, Object>) formato;
-                final String type = (String) entries.get("type");
-                String fmt = (String) entries.get("quality");
-                String url = (String) JavaScriptEngineFactory.walkJson(entries, "playouts/main/uris/{0}");
-                if (type == null || fmt == null || url == null) {
-                    continue;
-                }
-
-                /* E.g. http://www.metafilegenerator.de/ondemand/zdf/hbbtv/none/zdf/16/03/160304_top_mom_2328k_p35v12.mp4 */
-                boolean isHBBTV = false;
-                final String fixme = new Regex(url, "https?://(?:www\\.)?metafilegenerator\\.de/ondemand/zdf/hbbtv/([A-Za-z0-9]+/zdf/\\d+/\\d+/[^<>\"]+\\.mp4)").getMatch(0);
-                if (fixme != null) {
-                    /* E.g. http://rodl.zdf.de/none/zdf/16/03/160304_top_mom_2328k_p35v12.mp4 */
-                    /* Fix invalid / unauthorized hbbtv urls so that we get downloadable http urls */
-                    url = "http://rodl.zdf.de/" + fixme;
-                    isHBBTV = true;
-                }
-                if (!isHBBTV) {
-                    /* Okay hbbtv formats do not necessarily have hbbtv urls ... */
+                } finally {
                     try {
-                        templist = (ArrayList) entries.get("facets");
-                        for (final Object faceto : templist) {
-                            final String facet = (String) faceto;
-                            if ("hbbtv".equals(facet)) {
-                                isHBBTV = true;
-                                break;
-                            }
-                        }
+                        con.disconnect();
                     } catch (final Throwable e) {
                     }
                 }
-
-                if (fmt != null) {
-                    fmt = fmt.toLowerCase(Locale.ENGLISH).trim();
-                }
-
-                // if (!type.contains("mp4_http")) {
-                // continue;
-                // }
-                /* low is usually not available via hbbtv so we will use a non hbbtv variant for this */
-                final boolean isLowNonHbbtvQuality = "low".equals(fmt) && type.contains("mp4_http");
-                /** 2016-03-14: Only allow hbbtv variants as they have higher bitrates than other http variants */
-                if (!isHBBTV && !isLowNonHbbtvQuality) {
-                    continue;
-                }
-                /* best selection is done at the end */
-                if ("low".equals(fmt)) {
-                    if ((cfg.getBooleanProperty(Q_LOW, true) || BEST) == false) {
-                        continue;
-                    } else {
-                        fmt = "low";
-                    }
-                } else if ("high".equals(fmt)) {
-                    if ((cfg.getBooleanProperty(Q_HIGH, true) || BEST) == false) {
-                        continue;
-                    } else {
-                        fmt = "high";
-                    }
-                } else if ("veryhigh".equals(fmt)) {
-                    if ((cfg.getBooleanProperty(Q_VERYHIGH, true) || BEST) == false) {
-                        continue;
-                    } else {
-                        fmt = "veryhigh";
-                    }
-                } else if ("hd".equals(fmt)) {
-                    if ((cfg.getBooleanProperty(Q_HD, true) || BEST) == false) {
-                        continue;
-                    } else {
-                        /* TODO: Check this! */
-                        // if (type.contains("mp4_rtmp")) {
-                        // if (url.startsWith("http://")) {
-                        // Browser rtmp = new Browser();
-                        // rtmp.getPage(stream[1]);
-                        // url = rtmp.getRegex("<default\\-stream\\-url>([^<]+)<").getMatch(0);
-                        // }
-                        // if (url == null) {
-                        // continue;
-                        // }
-                        // }
-                        fmt = "hd";
-                    }
-                }
-                final String fmtUPPR = fmt.toUpperCase(Locale.ENGLISH);
-                final String name = date_formatted + "_zdf_" + show + " - " + title + "@" + fmtUPPR + extension;
-                final DownloadLink link = createDownloadlink(String.format(decrypterurl, fmt));
-                if (this.fastlinkcheck) {
-                    link.setAvailable(true);
-                }
-                link.setFinalFileName(name);
-                link.setContentUrl(PARAMETER_ORIGINAL);
-                link.setProperty("date", date_formatted);
-                link.setProperty("directURL", url);
-                link.setProperty("directName", name);
-                link.setProperty("directQuality", type);
-                link.setProperty("streamingType", "http");
-                link.setProperty("directfmt", fmtUPPR);
-
-                DownloadLink best = bestMap.get(fmt);
-                if (best == null || link.getDownloadSize() > best.getDownloadSize()) {
-                    bestMap.put(fmt, link);
-                }
-                newRet.add(link);
             }
-            if (newRet.size() > 0) {
-                if (BEST) {
-                    /* only keep best quality */
-                    DownloadLink keep = bestMap.get("hd");
-                    if (keep == null) {
-                        keep = bestMap.get("veryhigh");
+            for (final Object priority_o : ressourcelist) {
+                entries = (LinkedHashMap<String, Object>) priority_o;
+                final ArrayList<Object> formitaeten = (ArrayList<Object>) entries.get("formitaeten");
+                for (final Object formitaet_o : formitaeten) {
+                    entries = (LinkedHashMap<String, Object>) formitaet_o;
+                    final boolean isAdaptive = ((Boolean) entries.get("isAdaptive")).booleanValue();
+                    final String type = (String) entries.get("type");
+                    String protocol = "http";
+                    if (isAdaptive && !type.contains("m3u8")) {
+                        /* 2017-02-03: Skip HDS as HLS already contains all segment quelities. */
+                        continue;
+                    } else if (isAdaptive) {
+                        protocol = "hls";
                     }
-                    if (keep == null) {
-                        keep = bestMap.get("high");
+                    String ext;
+                    if (type.contains("vorbis")) {
+                        /* http webm streams. */
+                        ext = "webm";
+                    } else {
+                        /* http mp4- and segment streams. */
+                        ext = "mp4";
                     }
-                    if (keep == null) {
-                        keep = bestMap.get("low");
+                    if (isAdaptive && !grabHLS) {
+                        /* Skip hls if not required by the user. */
+                        continue;
                     }
-                    if (keep != null) {
-                        newRet.clear();
-                        newRet.add(keep);
+                    final ArrayList<Object> qualities = (ArrayList<Object>) entries.get("qualities");
+                    for (final Object qualities_o : qualities) {
+                        /* Extra abort handling within here to abort hls decryption as it also needs http requests. */
+                        if (this.isAbort()) {
+                            return;
+                        }
+                        entries = (LinkedHashMap<String, Object>) qualities_o;
+                        final String quality = (String) entries.get("quality");
+                        if (inValidate(quality)) {
+                            continue;
+                        }
+                        entries = (LinkedHashMap<String, Object>) entries.get("audio");
+                        final ArrayList<Object> tracks = (ArrayList<Object>) entries.get("tracks");
+                        for (final Object tracks_o : tracks) {
+                            entries = (LinkedHashMap<String, Object>) tracks_o;
+                            final String cdn = (String) entries.get("cdn");
+                            final String clss = (String) entries.get("class");
+                            final String language = (String) entries.get("language");
+                            final long filesize = JavaScriptEngineFactory.toLong(entries.get("filesize"), 0);
+                            String uri = (String) entries.get("uri");
+                            if (inValidate(cdn) || inValidate(clss) || inValidate(language) || inValidate(uri)) {
+                                continue;
+                            }
+                            String final_download_url;
+                            String linkid;
+                            String final_filename;
+                            final String linkid_format = "%s_%s_%s_%s_%s_%s";
+                            final String final_filename_format = "%s_%s_%s_%s.%s";
+                            final String quality_selector_string = "%s_%s_%s_%s";
+                            DownloadLink dl;
+                            if (isAdaptive) {
+                                /* Segment download */
+                                final String hls_master_quality_str = new Regex(uri, "m3u8/(\\d+)/").getMatch(0);
+                                if (hls_master_quality_str == null) {
+                                    /*
+                                     * Fatal failure - without this value we cannot know which hls masters we already crawled and which not
+                                     * resulting in unnecessary http requests!
+                                     */
+                                    continue;
+                                }
+                                hlsMasterValueTemp = Short.parseShort(hls_master_quality_str);
+                                if (hlsMasterValueTemp <= highestHlsMasterValue) {
+                                    /* Skip hls masters which we have already decrypted. */
+                                    continue;
+                                }
+                                /* Access (hls) master. */
+                                this.br.getPage(uri);
+                                final List<HlsContainer> allHlsContainers = HlsContainer.getHlsQualities(this.br);
+                                long duration = -1;
+                                for (final HlsContainer hlscontainer : allHlsContainers) {
+                                    if (duration == -1) {
+                                        duration = 0;
+                                        final List<M3U8Playlist> playList = hlscontainer.getM3U8(br.cloneBrowser());
+                                        if (playList != null) {
+                                            for (M3U8Playlist play : playList) {
+                                                duration += play.getEstimatedDuration();
+                                            }
+                                        }
+                                    }
+                                    final String height_for_quality_selection = getHeightForQualitySelection(hlscontainer.getHeight());
+                                    final String resolution = hlscontainer.getResolution();
+                                    final_download_url = hlscontainer.getDownloadurl();
+                                    ext = hlscontainer.getFileExtension().replace(".", "");
+                                    linkid = String.format(linkid_format, id, type, cdn, language, protocol, resolution);
+                                    final_filename = encodeUnicode(String.format(final_filename_format, filename_packagename_base_title, protocol, resolution, language, ext));
+                                    dl = createDownloadlink(final_download_url);
+                                    if (hlscontainer.getBandwidth() > highestHlsBandwidth) {
+                                        /*
+                                         * While adding the URLs, let's find the BEST quality url. In case we need it later we will already
+                                         * know which one is the BEST.
+                                         */
+                                        highestHlsBandwidth = hlscontainer.getBandwidth();
+                                        highestHlsDownload = dl;
+                                    }
+                                    setDownloadlinkProperties(dl, final_filename, type, linkid);
+                                    dl.setProperty("hlsBandwidth", hlscontainer.getBandwidth());
+                                    if (duration > 0 && hlscontainer.getBandwidth() > 0) {
+                                        dl.setDownloadSize(duration / 1000 * hlscontainer.getBandwidth() / 8);
+                                    }
+                                    all_found_downloadlinks.put(generateQualitySelectorString(protocol, ext, height_for_quality_selection, language, all_found_languages), dl);
+                                }
+                                /* Set this so we do not crawl this particular hls master again next round. */
+                                highestHlsMasterValue = hlsMasterValueTemp;
+                            } else {
+                                /* http download */
+                                final_download_url = uri;
+                                linkid = String.format(linkid_format, id, type, cdn, language, protocol, quality);
+                                final_filename = encodeUnicode(String.format(final_filename_format, filename_packagename_base_title, protocol, quality, language, ext));
+                                /* TODO: Check if this might still be useful ... */
+                                // boolean isHBBTV = false;
+                                // final String fixme = new Regex(uri,
+                                // "https?://(?:www\\.)?metafilegenerator\\.de/ondemand/zdf/hbbtv/([A-Za-z0-9]+/zdf/\\d+/\\d+/[^<>\"]+\\.mp4)").getMatch(0);
+                                // if (fixme != null) {
+                                // /* E.g. http://rodl.zdf.de/none/zdf/16/03/160304_top_mom_2328k_p35v12.mp4 */
+                                // /* Fix invalid / unauthorized hbbtv urls so that we get downloadable http urls */
+                                // uri = "http://rodl.zdf.de/" + fixme;
+                                // isHBBTV = true;
+                                // }
+                                dl = createDownloadlink(final_download_url);
+                                /* Usually the filesize is only given for the official downloads. */
+                                if (filesize > 0) {
+                                    dl.setAvailable(true);
+                                    dl.setDownloadSize(filesize);
+                                }
+                                setDownloadlinkProperties(dl, final_filename, type, linkid);
+                                all_found_downloadlinks.put(generateQualitySelectorString(protocol, ext, quality, language, all_found_languages), dl);
+                            }
+                        }
                     }
                 }
             }
-            ret = newRet;
-        } catch (final Throwable e) {
-            logger.severe(e.getMessage());
+            counter++;
+        } while (!finished);
+        /* Finally, check which qualities the user actually wants to have. */
+        if (this.grabBest && highestHlsDownload != null) {
+            /* Best is easy and even if it was an unknown quality, we knew that highest hls == always BEST! */
+            addDownloadLink(highestHlsDownload);
+        } else {
+            boolean atLeastOneSelectedItemExists = false;
+            final boolean grabUnknownQualities = cfg.isAddUnknownQualitiesEnabled();
+            HashMap<String, DownloadLink> all_selected_downloadlinks = new HashMap<String, DownloadLink>();
+            final Iterator<Entry<String, DownloadLink>> iterator_all_found_downloadlinks = all_found_downloadlinks.entrySet().iterator();
+            while (iterator_all_found_downloadlinks.hasNext()) {
+                final Entry<String, DownloadLink> dl_entry = iterator_all_found_downloadlinks.next();
+                final String dl_quality_string = dl_entry.getKey();
+                if (containsQuality(dl_quality_string, all_selected_qualities)) {
+                    atLeastOneSelectedItemExists = true;
+                    all_selected_downloadlinks.put(dl_quality_string, dl_entry.getValue());
+                } else if (!containsQuality(dl_quality_string, all_known_qualities) && grabUnknownQualities) {
+                    logger.info("Found unknown quality: " + dl_quality_string);
+                    if (grabUnknownQualities) {
+                        logger.info("Adding unknown quality: " + dl_quality_string);
+                        all_selected_downloadlinks.put(dl_quality_string, dl_entry.getValue());
+                    }
+                }
+            }
+            if (!atLeastOneSelectedItemExists) {
+                logger.info("Possible user error: User selected only qualities which are not available --> Adding ALL");
+                while (iterator_all_found_downloadlinks.hasNext()) {
+                    final Entry<String, DownloadLink> dl_entry = iterator_all_found_downloadlinks.next();
+                    decryptedLinks.add(dl_entry.getValue());
+                }
+            } else {
+                if (cfg.isOnlyBestVideoQualityOfSelectedQualitiesEnabled()) {
+                    all_selected_downloadlinks = findBESTInsideGivenMap(all_selected_downloadlinks);
+                }
+                /* Finally add selected URLs */
+                final Iterator<Entry<String, DownloadLink>> it = all_selected_downloadlinks.entrySet().iterator();
+                while (it.hasNext()) {
+                    final Entry<String, DownloadLink> entry = it.next();
+                    final DownloadLink dl = entry.getValue();
+                    addDownloadLink(dl);
+                }
+            }
         }
-        for (final DownloadLink dl : ret) {
-            if (grabSubtitles && subtitleURL != null) {
-                final String dlfmt = dl.getStringProperty("directfmt", null);
-                final String startTime = new Regex(subtitleInfo, "<offset>(\\-)?(\\d+)</offset>").getMatch(1);
-                final String name = date_formatted + "_zdf_" + show + " - " + title + "@" + dlfmt + ".xml";
-                final DownloadLink subtitle = createDownloadlink(String.format(decrypterurl, dlfmt + "subtitle"));
-                subtitle.setAvailable(true);
-                subtitle.setFinalFileName(name);
-                subtitle.setProperty("date", date_formatted);
-                subtitle.setProperty("directURL", subtitleURL);
-                subtitle.setProperty("directName", name);
-                subtitle.setProperty("streamingType", "subtitle");
-                subtitle.setProperty("starttime", startTime);
-                subtitle.setContentUrl(PARAMETER_ORIGINAL);
-                subtitle.setLinkID(name);
-                decryptedLinks.add(subtitle);
-            }
-            decryptedLinks.add(dl);
+        if (all_found_downloadlinks.isEmpty()) {
+            logger.info("Failed to find any quality at all");
         }
         if (decryptedLinks.size() > 1) {
             final FilePackage fp = FilePackage.getInstance();
-            fp.setName(date_formatted + "_zdf_" + show + " - " + title);
+            fp.setName(filename_packagename_base_title);
             fp.addLinks(decryptedLinks);
         }
-        return ret;
     }
 
-    private String createZdfLink(final String videoid) {
-        return "http://www.zdf.de/ZDFmediathek/beitrag/video/" + videoid + "/#JDownloader";
+    private String generateQualitySelectorString(final String protocol, final String ext, final String quality, final String language, final List<String> all_found_languages) {
+        final String quality_selector_format = "%s_%s_%s";
+        String quality_selector_string = String.format(quality_selector_format, protocol, ext, quality);
+        if (!all_found_languages.contains(language)) {
+            all_found_languages.add(language);
+            if (all_found_languages.size() > 1) {
+                /*
+                 * Check for multiple languages - this will break quality selection but is a rare case and important to handle because if we
+                 * don't handle this, we have the same quality_selector values for different versions!!
+                 */
+                quality_selector_string += "_" + language;
+            }
+        }
+        return quality_selector_string;
     }
 
-    private String getTitle(Browser br) {
-        String title = br.getRegex("<div class=\"MainBoxHeadline\">([^<]+)</").getMatch(0);
-        String titleUT = br.getRegex("<span class=\"BoxHeadlineUT\">([^<]+)</").getMatch(0);
-        if (title == null) {
-            title = br.getRegex("<title>([^<]+)</title>").getMatch(0);
+    private boolean containsQuality(String qualityID, List<String> qualities) {
+        for (String quality : qualities) {
+            if (StringUtils.startsWithCaseInsensitive(qualityID, quality)) {
+                return true;
+            }
         }
-        if (title == null) {
-            title = br.getRegex("<h2>(.*?)</h2>").getMatch(0);
-        }
-        if (title != null) {
-            title = Encoding.htmlDecode(title + (titleUT != null ? "__" + titleUT.replaceAll(":$", "") : "").trim());
-        }
-        if (title == null) {
-            title = "UnknownTitle_" + System.currentTimeMillis();
-        }
-        title = encodeUnicode(title);
-        return title;
+        return false;
     }
 
-    private String getXML(final String source, final String parameter) {
-        String result = new Regex(source, "<" + parameter + "><\\!\\[CDATA\\[([^<>\"]*?)\\]\\]></" + parameter + ">").getMatch(0);
-        if (result == null) {
-            result = new Regex(source, "<" + parameter + "( type=\"[^<>\"/]*?\")?>([^<>]*?)</" + parameter + ">").getMatch(1);
+    /**
+     * Given width may not always be exactly what we have in our quality selection but we need an exact value to make the user selection
+     * work properly!
+     */
+    private String getHeightForQualitySelection(final int height) {
+        final String heightselect;
+        if (height > 0 && height <= 200) {
+            heightselect = "170";
+        } else if (height > 200 && height <= 300) {
+            heightselect = "270";
+        } else if (height > 300 && height <= 400) {
+            heightselect = "360";
+        } else if (height > 400 && height <= 500) {
+            heightselect = "480";
+        } else if (height > 500 && height <= 600) {
+            heightselect = "570";
+        } else if (height > 600 && height <= 800) {
+            heightselect = "720";
+        } else {
+            /* Either unknown quality or audio (0x0) */
+            heightselect = Integer.toString(height);
         }
-        return result;
+        return heightselect;
     }
 
-    private String getXML(final String parameter) {
-        return getXML(this.br.toString(), parameter);
+    private HashMap<String, DownloadLink> findBESTInsideGivenMap(final HashMap<String, DownloadLink> bestMap) {
+        HashMap<String, DownloadLink> newMap = new HashMap<String, DownloadLink>();
+        DownloadLink keep = null;
+        if (bestMap.size() > 0) {
+            for (final String quality : all_known_qualities) {
+                keep = bestMap.get(quality);
+                if (keep != null) {
+                    newMap.put(quality, keep);
+                    break;
+                }
+            }
+        }
+        if (newMap.isEmpty()) {
+            /* Failover in case of bad user selection or general failure! */
+            newMap = bestMap;
+        }
+        return newMap;
     }
 
-    private String formatDateZDF(String input) {
+    private void addDownloadLink(final DownloadLink dl) {
+        decryptedLinks.add(dl);
+        if (grabSubtitles && this.url_subtitle != null) {
+            final String current_ext = dl.getFinalFileName().substring(dl.getFinalFileName().lastIndexOf("."));
+            final String final_filename = dl.getFinalFileName().replace(current_ext, ".xml");
+            final String linkid = dl.getLinkID() + "_subtitle";
+            final DownloadLink dl_subtitle = this.createDownloadlink(this.url_subtitle);
+            setDownloadlinkProperties(dl_subtitle, final_filename, "subtitle", linkid);
+            if (filesizeSubtitle > 0) {
+                dl_subtitle.setDownloadSize(filesizeSubtitle);
+                dl_subtitle.setAvailable(true);
+            }
+            decryptedLinks.add(dl_subtitle);
+        }
+    }
+
+    private void setDownloadlinkProperties(final DownloadLink dl, final String final_filename, final String type, final String linkid) {
+        dl.setFinalFileName(final_filename);
+        dl.setLinkID(linkid);
+        dl.setProperty("streamingType", type);
+        dl.setContentUrl(PARAMETER_ORIGINAL);
+    }
+
+    private void accessPlayerJson(final String player_url_template, final String playerID) throws IOException {
+        /* E.g. "/tmd/2/{playerId}/vod/ptmd/mediathek/161215_sendungroyale065ddm_nmg" */
+        String player_url = player_url_template.replace("{playerId}", playerID);
+        if (player_url.startsWith("/")) {
+            player_url = API_BASE + player_url;
+        }
+        this.br.getPage(player_url);
+    }
+
+    /**
+     * Validates string to series of conditions, null, whitespace, or "". This saves effort factor within if/for/while statements
+     *
+     * @param s
+     *            Imported String to match against.
+     * @return <b>true</b> on valid rule match. <b>false</b> on invalid rule match.
+     * @author raztoki
+     */
+    protected boolean inValidate(final String s) {
+        if (s == null || s.matches("\\s+") || s.equals("")) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    public static String formatDateZDF(String input) {
         final long date;
         if (input.matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}\\+\\d{2}:\\d{2}")) {
             /* tivi.de */
@@ -741,27 +693,6 @@ public class ZDFMediathekDecrypter extends PluginForDecrypt {
             /* zdf.de/zdfmediathek */
             date = TimeFormatter.getMilliSeconds(input, "dd.MM.yyyy HH:mm", Locale.GERMAN);
         }
-
-        String formattedDate = null;
-        final String targetFormat = "yyyy-MM-dd";
-        Date theDate = new Date(date);
-        try {
-            final SimpleDateFormat formatter = new SimpleDateFormat(targetFormat);
-            formattedDate = formatter.format(theDate);
-        } catch (Exception e) {
-            /* prevent input error killing plugin */
-            formattedDate = input;
-        }
-        return formattedDate;
-    }
-
-    private String formatDatePHOENIX(String input) {
-        /* It contains the day twice --> Fix that */
-        if (input.contains(",")) {
-            input = input.substring(input.lastIndexOf(",") + 2);
-        }
-        // Tue, 23 Jun 2015 11:33:00 +0200
-        final long date = TimeFormatter.getMilliSeconds(input, "dd MMM yyyy HH:mm:ss Z", Locale.ENGLISH);
         String formattedDate = null;
         final String targetFormat = "yyyy-MM-dd";
         Date theDate = new Date(date);
@@ -779,5 +710,4 @@ public class ZDFMediathekDecrypter extends PluginForDecrypt {
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

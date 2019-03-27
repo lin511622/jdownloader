@@ -16,11 +16,10 @@
 
 package jd.plugins.hoster;
 
-import java.io.IOException;
-
 import jd.PluginWrapper;
 import jd.http.Browser;
 import jd.http.Browser.BrowserException;
+import jd.http.Request;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
@@ -31,7 +30,7 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "prochan.com" }, urls = { "http://(?:www\\.)?prochan\\.com/(view\\?p=|embed\\?f=)[A-Za-z0-9\\-_]+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "prochan.com" }, urls = { "https?://(?:\\w+\\.)?prochan\\.com/(view\\?p=|embed\\?f=|v/)[A-Za-z0-9\\-_]+" })
 public class ProchanCom extends PluginForHost {
 
     public ProchanCom(PluginWrapper wrapper) {
@@ -57,30 +56,28 @@ public class ProchanCom extends PluginForHost {
     }
 
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
         dllink = null;
         final String fid = getFID(downloadLink);
         downloadLink.setLinkID(fid);
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         /* Using embed, we can view mature content without having to log in. */
-        this.br.getPage("http://www.prochan.com/embed?f=" + fid);
-        if (br.getHttpConnection().getResponseCode() == 404 || this.br.containsHTML("File not found or deleted")) {
+        br.getPage(Request.getLocation("//www.prochan.com/view?t=" + fid, br.createGetRequest(downloadLink.getPluginPatternMatcher())));
+        if (br.getHttpConnection().getResponseCode() == 404 || br.getHttpConnection().getLongContentLength() == 1 || "thing not found".equals(br.toString()) || br.containsHTML("File not found or deleted")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         String filename = fid;
-        dllink = br.getRegex("\\'(?:file|video)\\'[\t\n\r ]*?:[\t\n\r ]*?\\'(http[^<>\"]*?)\\'").getMatch(0);
+        dllink = br.getRegex("('|\"|\\s*)(?:\\W*file|\\W*url)\\1:(\"|'|\\s*)(http[^\"'<>]*?)\\2").getMatch(2);
         if (dllink == null) {
-            dllink = br.getRegex("(?:file|url):[\t\n\r ]*?(?:\"|\\')(http[^<>\"]*?)(?:\"|\\')").getMatch(0);
-        }
-        if (dllink == null) {
-            dllink = br.getRegex("<source src=\"(https?://[^<>\"]*?)\" type=(?:\"|\\')video/(?:mp4|flv)(?:\"|\\')").getMatch(0);
-        }
-        if (dllink == null) {
-            dllink = br.getRegex("property=\"og:video\" content=\"(http[^<>\"]*?)\"").getMatch(0);
+            dllink = br.getRegex("<source src=('|\"|\\s*)(https?://[^\"'<>]*?)\\1[^>]*type=('|\"|\\s*)video/(?:mp4|flv)\\3").getMatch(1);
+            if (dllink == null) {
+                dllink = br.getRegex("property=\"og:video\" content=\"(http[^\"'<>]*?)\"").getMatch(0);
+            }
         }
         if (filename == null || dllink == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            // they have blank and offline content and don't say so.. do not throw defect.. let users report broken plugin manually.
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         dllink = Encoding.htmlDecode(dllink);
         filename = Encoding.htmlDecode(filename);
@@ -119,7 +116,7 @@ public class ProchanCom extends PluginForHost {
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception {
         requestFileInformation(downloadLink);
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, free_resume, free_maxchunks);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, free_resume, free_maxchunks);
         if (dl.getConnection().getContentType().contains("html")) {
             if (dl.getConnection().getResponseCode() == 403) {
                 throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 60 * 60 * 1000l);

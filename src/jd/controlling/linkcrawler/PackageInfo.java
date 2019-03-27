@@ -6,10 +6,18 @@ import org.jdownloader.controlling.UniqueAlltimeID;
 
 public class PackageInfo {
     private UniqueAlltimeID uniqueId              = null;
-
     private boolean         packagizerRuleMatched = false;
     private Boolean         ignoreVarious         = null;
     private Boolean         allowInheritance      = null;
+    private String          packageKey            = null;
+
+    public String getPackageKey() {
+        return packageKey;
+    }
+
+    public void setPackageKey(String packageKey) {
+        this.packageKey = packageKey;
+    }
 
     public Boolean isAllowInheritance() {
         return allowInheritance;
@@ -35,11 +43,11 @@ public class PackageInfo {
         final PackageInfo ret = new PackageInfo();
         ret.setName(getName());
         ret.setDestinationFolder(getDestinationFolder());
-        ret.setComment(getComment());
         ret.setIgnoreVarious(isIgnoreVarious());
         ret.setPackagizerRuleMatched(isPackagizerRuleMatched());
         ret.setUniqueId(getUniqueId());
         ret.setAllowInheritance(isAllowInheritance());
+        ret.setPackageKey(getPackageKey());
         return ret;
     }
 
@@ -61,47 +69,8 @@ public class PackageInfo {
         this.destinationFolder = destinationFolder;
     }
 
-    public String getComment() {
-        return comment;
-    }
-
-    public void setComment(String comment) {
-        if (StringUtils.isEmpty(comment)) {
-            comment = null;
-        }
-        this.comment = comment;
-    }
-
     private String name              = null;
     private String destinationFolder = null;
-    private String comment           = null;
-
-    /**
-     * Returns a packageID or null, of no id specific values are set. if this method returns a value !=null, it should get an own package,
-     * which is not part of autopackaging.
-     *
-     * @return
-     */
-    public String createPackageID() {
-        StringBuilder sb = new StringBuilder();
-        if (getUniqueId() != null) {
-            if (sb.length() > 0) {
-                sb.append("_");
-            }
-            sb.append(getUniqueId().toString());
-        }
-        // if (!StringUtils.isEmpty(getDestinationFolder())) {
-        // if (sb.length() > 0) sb.append("_");
-        // sb.append(getDestinationFolder());
-        // }
-        if (!StringUtils.isEmpty(getName())) {
-            if (sb.length() > 0) {
-                sb.append("_");
-            }
-            sb.append(getName());
-        }
-        return sb.length() == 0 ? null : sb.toString();
-    }
 
     /**
      * @return the packagizerRuleMatched
@@ -138,7 +107,6 @@ public class PackageInfo {
     }
 
     public boolean isNotEmpty() {
-        return ignoreVarious != null || uniqueId != null || comment != null || destinationFolder != null || name != null || packagizerRuleMatched;
+        return ignoreVarious != null || packageKey != null || uniqueId != null || destinationFolder != null || name != null || packagizerRuleMatched;
     }
-
 }

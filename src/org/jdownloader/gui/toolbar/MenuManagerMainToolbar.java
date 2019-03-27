@@ -45,13 +45,17 @@ import org.jdownloader.gui.mainmenu.container.OptionalContainer;
 import org.jdownloader.gui.mainmenu.container.SettingsMenuContainer;
 import org.jdownloader.gui.toolbar.action.CaptchaModeChangeAction;
 import org.jdownloader.gui.toolbar.action.CaptchaToogle9KWAction;
+import org.jdownloader.gui.toolbar.action.CaptchaToogleAntiCaptchaAction;
 import org.jdownloader.gui.toolbar.action.CaptchaToogleBrowserSolverAction;
 import org.jdownloader.gui.toolbar.action.CaptchaToogleCheapCaptchaAction;
 import org.jdownloader.gui.toolbar.action.CaptchaToogleDBCAction;
 import org.jdownloader.gui.toolbar.action.CaptchaToogleDialogAction;
+import org.jdownloader.gui.toolbar.action.CaptchaToogleEndCaptchaAction;
+import org.jdownloader.gui.toolbar.action.CaptchaToogleImageTyperzAction;
 import org.jdownloader.gui.toolbar.action.CaptchaToogleJACAction;
 import org.jdownloader.gui.toolbar.action.CaptchaToogleMyJDAutoAction;
 import org.jdownloader.gui.toolbar.action.CaptchaToogleMyJDRemoteAction;
+import org.jdownloader.gui.toolbar.action.CaptchaToogleTwoCaptchaAction;
 import org.jdownloader.gui.toolbar.action.CollapseExpandAllAction;
 import org.jdownloader.gui.toolbar.action.GenericDeleteFromTableToolbarAction;
 import org.jdownloader.gui.toolbar.action.MoveDownAction;
@@ -62,11 +66,12 @@ import org.jdownloader.gui.translate._GUI;
 import org.jdownloader.gui.views.SelectionInfo;
 import org.jdownloader.gui.views.components.packagetable.context.RenameAction;
 import org.jdownloader.gui.views.downloads.action.MenuManagerAction;
+import org.jdownloader.gui.views.downloads.action.ResetToolbarAction;
 import org.jdownloader.gui.views.downloads.context.submenu.DeleteMenuContainer;
 import org.jdownloader.gui.views.linkgrabber.actions.AddContainerAction;
+import org.jdownloader.gui.views.linkgrabber.bottombar.AddAtTopToggleAction;
 
 public class MenuManagerMainToolbar extends ContextMenuManager<FilePackage, DownloadLink> {
-
     private static final MenuManagerMainToolbar INSTANCE = new MenuManagerMainToolbar();
 
     /**
@@ -87,7 +92,6 @@ public class MenuManagerMainToolbar extends ContextMenuManager<FilePackage, Down
     public void setMenuData(MenuContainerRoot root) {
         super.setMenuData(root);
         // no delayer here.
-
     }
 
     @Override
@@ -99,15 +103,12 @@ public class MenuManagerMainToolbar extends ContextMenuManager<FilePackage, Down
      * Create a new instance of DownloadListContextMenuManager. This is a singleton class. Access the only existing instance by using
      * {@link #getInstance()}.
      */
-
     private MenuManagerMainToolbar() {
         super();
-
     }
 
     public JPopupMenu build(SelectionInfo<FilePackage, DownloadLink> si) {
         throw new WTFException("Not Supported");
-
     }
 
     public boolean isAcceleratorsEnabled() {
@@ -116,42 +117,37 @@ public class MenuManagerMainToolbar extends ContextMenuManager<FilePackage, Down
 
     public MenuContainerRoot createDefaultStructure() {
         MenuContainerRoot mr = new MenuContainerRoot();
-
         mr.add(StartDownloadsAction.class);
-
         mr.add(PauseDownloadsAction.class);
         mr.add(StopDownloadsAction.class);
         mr.add(optional(new MenuItemData(new ActionData(StopDownloadsButFinishRunningOnesAction.class))));
+        mr.add(optional(new MenuItemData(new ActionData(ResetToolbarAction.class))));
         mr.add(new SeparatorData());
         mr.add(new MenuItemData(new ActionData(MoveToTopAction.class)));
         mr.add(new MenuItemData(new ActionData(MoveUpAction.class)));
         mr.add(new MenuItemData(new ActionData(MoveDownAction.class)));
         mr.add(new MenuItemData(new ActionData(MoveToBottomAction.class)));
         mr.add(new SeparatorData());
-
         mr.add(ClipBoardToggleAction.class);
         mr.add(AutoReconnectToggleAction.class);
         mr.add(GlobalPremiumSwitchToggleAction.class);
         mr.add(SilentModeToggleAction.class);
         mr.add(setVisible(new MenuItemData(SpeedLimiterToggleAction.class), false));
         mr.add(new SeparatorData());
-
         mr.add(ReconnectAction.class);
         mr.add(UpdateAction.class);
-
         // if (!Application.isJared(MainToolbarManager.class)) {
         // MenuContainer opt;
         // mr.add(opt = new MenuContainer("Dialog Debug", "menu"));
         // opt.add(ShowInputDialogDebugAction.class);
         //
         // }
-        OptionalContainer opt;
+        final OptionalContainer opt;
         mr.add(opt = new OptionalContainer(false));
         opt.add(MyJDownloaderStatusAction.class);
         if (!Application.isJared(MainToolBar.class)) {
             opt.add(DoAnyThingForADeveloperAction.class);
         }
-
         opt.add(new MenuItemData(OpenDefaultDownloadFolderAction.class));
         opt.add(new MenuItemData(ShowSettingsAction.class));
         opt.add(new MenuItemData(ExitToolbarAction.class));
@@ -163,13 +159,10 @@ public class MenuManagerMainToolbar extends ContextMenuManager<FilePackage, Down
         opt.add(SetProxySetupAction.class);
         opt.add(RestartAction.class);
         opt.add(SettingsAction.class);
-
         SettingsMenuContainer ret = new SettingsMenuContainer();
         ret.setName(_GUI.T.quicksettings_SettingsMenuContainer());
         opt.add(ret);
-
         ret.add(new ChunksEditorLink());
-
         ret.add(new ParalellDownloadsEditorLink());
         ret.add(new ParallelDownloadsPerHostEditorLink());
         //
@@ -178,17 +171,16 @@ public class MenuManagerMainToolbar extends ContextMenuManager<FilePackage, Down
         opt.add(KnowledgeAction.class);
         opt.add(LogSendAction.class);
         opt.add(RenameAction.class);
-
         CaptchaQuickSettingsContainer ocr;
         opt.add(ocr = new CaptchaQuickSettingsContainer());
         ocr.add(CaptchaModeChangeAction.class);
-
-        // ocr.add(CaptchaExchangeToogleAction.class);
-
-        // ocr.add(RemoteCaptchaToogleAction.class);
+        ocr.add(CaptchaToogleAntiCaptchaAction.class);
+        ocr.add(CaptchaToogleTwoCaptchaAction.class);
         ocr.add(CaptchaToogle9KWAction.class);
         ocr.add(CaptchaToogleDBCAction.class);
         ocr.add(CaptchaToogleCheapCaptchaAction.class);
+        ocr.add(CaptchaToogleImageTyperzAction.class);
+        ocr.add(CaptchaToogleEndCaptchaAction.class);
         ocr.add(CaptchaToogleDialogAction.class);
         ocr.add(CaptchaToogleBrowserSolverAction.class);
         ocr.add(CaptchaToogleJACAction.class);
@@ -196,12 +188,12 @@ public class MenuManagerMainToolbar extends ContextMenuManager<FilePackage, Down
         ocr.add(CaptchaToogleMyJDRemoteAction.class);
         opt.add(setIconKey(new ActionData(GenericDeleteFromTableToolbarAction.class).putSetup(GenericDeleteFromTableToolbarAction.DELETE_ALL, true).putSetup(GenericDeleteFromTableToolbarAction.ONLY_SELECTED_ITEMS, true), IconKey.ICON_DELETE));
         opt.add(createDeleteMenu());
-
         opt.add(CollapseExpandAllAction.class);
         opt.add(ExportMenuItemsAction.class);
         opt.add(ImportMenuItemsAction.class);
         opt.add(ConvertCLRScriptAction.class);
         opt.add(MoveToNewFolderToolbarAction.class);
+        opt.add(AddAtTopToggleAction.class);
         return mr;
     }
 
@@ -223,7 +215,6 @@ public class MenuManagerMainToolbar extends ContextMenuManager<FilePackage, Down
         delete.add(setIconKey(new ActionData(GenericDeleteFromTableToolbarAction.class).putSetup(GenericDeleteFromTableToolbarAction.DELETE_FAILED, true), IconKey.ICON_REMOVE_FAILED));
         delete.add(setIconKey(new ActionData(GenericDeleteFromTableToolbarAction.class).putSetup(GenericDeleteFromTableToolbarAction.DELETE_FINISHED, true), IconKey.ICON_REMOVE_OK));
         delete.add(setIconKey(new ActionData(GenericDeleteFromTableToolbarAction.class).putSetup(GenericDeleteFromTableToolbarAction.DELETE_OFFLINE, true), IconKey.ICON_REMOVE_OFFLINE));
-
         // delete.add(new MenuItemData(new ActionData(DeleteSelectedAndFailedLinksAction.class)));
         // delete.add(new MenuItemData(new ActionData(DeleteSelectedFinishedLinksAction.class)));
         // delete.add(new MenuItemData(new ActionData(DeleteSelectedOfflineLinksAction.class)));
@@ -236,7 +227,6 @@ public class MenuManagerMainToolbar extends ContextMenuManager<FilePackage, Down
     }
 
     public void show() {
-
         new MenuManagerAction().actionPerformed(null);
     }
 
@@ -249,5 +239,4 @@ public class MenuManagerMainToolbar extends ContextMenuManager<FilePackage, Down
     protected void updateGui() {
         MainToolBar.getInstance().updateToolbar();
     }
-
 }

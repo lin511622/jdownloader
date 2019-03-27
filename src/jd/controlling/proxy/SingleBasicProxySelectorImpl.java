@@ -15,23 +15,12 @@ import org.appwork.utils.net.httpconnection.HTTPProxyStorable;
 import org.jdownloader.updatev2.ProxyData;
 
 public class SingleBasicProxySelectorImpl extends AbstractProxySelectorImpl {
-
     private final SelectedProxy   proxy;
     private final List<HTTPProxy> list;
-
-    @Override
-    public String toString() {
-        String ret = proxy.toString();
-        if (StringUtils.isNotEmpty(getUser())) {
-            return getUser() + "@" + ret.toString();
-        }
-        return ret;
-    }
-
-    private String username;
-    private String password;
-    private String tempUser;
-    private String tempPass;
+    private String                username;
+    private String                password;
+    private String                tempUser;
+    private String                tempPass;
 
     public ProxyData toProxyData() {
         ProxyData ret = super.toProxyData();
@@ -42,6 +31,16 @@ public class SingleBasicProxySelectorImpl extends AbstractProxySelectorImpl {
         ret.setProxy(storable);
         ret.setReconnectSupported(isReconnectSupported());
         return ret;
+    }
+
+    @Override
+    public String toDetailsString() {
+        final String ret = proxy.toString();
+        if (StringUtils.isNotEmpty(getUser())) {
+            return getUser() + "@" + ret;
+        } else {
+            return ret;
+        }
     }
 
     @Override
@@ -260,7 +259,6 @@ public class SingleBasicProxySelectorImpl extends AbstractProxySelectorImpl {
             sb.append(getPort());
         }
         return sb.toString();
-
     }
 
     @Override
@@ -297,5 +295,4 @@ public class SingleBasicProxySelectorImpl extends AbstractProxySelectorImpl {
             clearBanList();
         }
     }
-
 }

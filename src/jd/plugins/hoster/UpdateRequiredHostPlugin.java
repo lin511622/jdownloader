@@ -10,14 +10,16 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
+import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
+
 /**
  * This plugin only serves as a FallBack in case another plugin could not be initiated
  *
  * @author daniel
  *
  */
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "UpdateRequired" }, urls = { "LXISAWESOME" }) public class UpdateRequiredHostPlugin extends PluginForHost {
-
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "UpdateRequired" }, urls = { "LXISAWESOME" })
+public class UpdateRequiredHostPlugin extends PluginForHost {
     public UpdateRequiredHostPlugin(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -83,11 +85,15 @@ import jd.plugins.PluginForHost;
     }
 
     @Override
+    public FEATURE[] getFeatures() {
+        return new FEATURE[] { FEATURE.INTERNAL };
+    }
+
+    @Override
     public void reset() {
     }
 
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

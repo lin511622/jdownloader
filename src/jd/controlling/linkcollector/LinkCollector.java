@@ -96,6 +96,8 @@ import org.appwork.utils.swing.dialog.Dialog;
 import org.appwork.utils.swing.dialog.DialogCanceledException;
 import org.appwork.utils.swing.dialog.DialogClosedException;
 import org.appwork.utils.swing.dialog.DialogNoAnswerException;
+import org.jdownloader.captcha.blacklist.BlockAllCrawlerCaptchasEntry;
+import org.jdownloader.captcha.blacklist.CaptchaBlackList;
 import org.jdownloader.controlling.FileCreationManager;
 import org.jdownloader.controlling.Priority;
 import org.jdownloader.controlling.UniqueAlltimeID;
@@ -132,13 +134,10 @@ import org.jdownloader.settings.staticreferences.CFG_LINKGRABBER;
 import org.jdownloader.translate._JDT;
 
 public class LinkCollector extends PackageController<CrawledPackage, CrawledLink> implements LinkCheckerHandler<CrawledLink>, LinkCrawlerHandler, ShutdownVetoListener {
-
     public static final String                        SOURCE_VARIANT_ID = "SOURCE_VARIANT_ID";
-
     private final WeakHashMap<JobLinkCrawler, Object> jobLinkCrawlers   = new WeakHashMap<JobLinkCrawler, Object>();
 
     public static final class JobLinkChecker extends LinkChecker<CrawledLink> {
-
         private final JobLinkCrawler jobLinkCrawler;
 
         public final JobLinkCrawler getJobLinkCrawler() {
@@ -148,7 +147,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
         protected JobLinkChecker(JobLinkCrawler jobLinkCrawler) {
             this.jobLinkCrawler = jobLinkCrawler;
         }
-
     }
 
     public static final class JobLinkCrawler extends LinkCollectorCrawler {
@@ -194,6 +192,7 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
         }
 
         public boolean abort() {
+            CaptchaBlackList.getInstance().add(new BlockAllCrawlerCaptchasEntry(this));
             final boolean aborted = abortedFlag.compareAndSet(false, true);
             final boolean wasCollecting = isCollecting();
             getLinkChecker().stopChecking();
@@ -209,7 +208,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
             this.linkChecker.setLinkCheckHandler(linkCollector);
             final LinkCrawlerHandler defaultHandler = defaulHandlerFactory();
             setHandler(new LinkCrawlerHandler() {
-
                 @Override
                 public void handleUnHandledLink(CrawledLink link) {
                     linkCollector.handleUnHandledLink(link);
@@ -259,7 +257,7 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
         }
 
         @Override
-        protected CrawledLink crawledLinkFactorybyURL(String url) {
+        protected CrawledLink crawledLinkFactorybyURL(CharSequence url) {
             final CrawledLink ret = new CrawledLink(url);
             final LinkCollectingJob job = getJob();
             if (job != null) {
@@ -291,7 +289,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
             linkCollector.onCrawlerFinished(this);
             super.crawlerFinished();
         }
-
     }
 
     private static class CrawledPackageMappingID {
@@ -324,7 +321,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
         private final String packageName;
         private final String downloadFolder;
         private final String downloadFolderRaw;
-
         private final String internalID;
 
         private static CrawledPackageMappingID get(String combined) {
@@ -391,7 +387,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
             }
             return false;
         }
-
     }
 
     public static LinkCollector getInstance() {
@@ -410,6 +405,7 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
     public void onCrawlerFinished(LinkCollectorCrawler crawledLinkCrawler) {
         getEventsender().removeListener(crawledLinkCrawler);
         eventsender.fireEvent(new LinkCollectorEvent(this, LinkCollectorEvent.TYPE.CRAWLER_FINISHED, crawledLinkCrawler, QueuePriority.NORM));
+        autoStartManager.onCrawlerFinished(crawledLinkCrawler);
     }
 
     public void onCrawlerStarted(LinkCollectorCrawler crawledLinkCrawler) {
@@ -420,44 +416,31 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
     private transient LinkCollectorEventSender                                  eventsender        = new LinkCollectorEventSender();
     public final ScheduledExecutorService                                       TIMINGQUEUE        = DelayedRunnable.getNewScheduledExecutorService();
     public static SingleReachableState                                          CRAWLERLIST_LOADED = new SingleReachableState("CRAWLERLIST_COMPLETE");
-
     private static LinkCollector                                                INSTANCE           = new LinkCollector();
-
     private volatile LinkChecker<CrawledLink>                                   defaultLinkChecker = null;
     /**
      * NOTE: only access these fields inside the IOEQ
      */
     private final HashMap<String, WeakReference<CrawledLink>>                   dupeCheckMap       = new HashMap<String, WeakReference<CrawledLink>>();
     private final HashMap<CrawledPackageMappingID, CrawledPackage>              packageMap         = new HashMap<CrawledPackageMappingID, CrawledPackage>();
-
     private final List<CrawledLink>                                             filteredStuff      = new CopyOnWriteArrayList<CrawledLink>();
-
-    private volatile LinkCrawlerFilter                                          crawlerFilter      = null;
-
     private volatile ExtractionExtension                                        archiver;
     private final DelayedRunnable                                               asyncSaving;
-
     protected volatile CrawledPackage                                           offlinePackage;
-
     protected volatile CrawledPackage                                           variousPackage;
-
     protected volatile CrawledPackage                                           permanentofflinePackage;
-
     private final CopyOnWriteArrayList<File>                                    linkcollectorLists = new CopyOnWriteArrayList<File>();
-
     private final HashMap<CrawledPackageMappingID, java.util.List<CrawledLink>> offlineMap         = new HashMap<CrawledPackageMappingID, java.util.List<CrawledLink>>();
     private final HashMap<CrawledPackageMappingID, java.util.List<CrawledLink>> variousMap         = new HashMap<CrawledPackageMappingID, java.util.List<CrawledLink>>();
     private final HashMap<CrawledPackageMappingID, java.util.List<CrawledLink>> badMappingMap      = new HashMap<CrawledPackageMappingID, java.util.List<CrawledLink>>();
     private final WeakHashMap<CrawledPackage, HashMap<Object, Object>>          autoRenameCache    = new WeakHashMap<CrawledPackage, HashMap<Object, Object>>();
-
     private final DelayedRunnable                                               asyncCacheCleanup;
-
     private final AutoStartManager                                              autoStartManager;
+    private final boolean                                                       isDupeManagerEnabled;
 
     private LinkCollector() {
         autoStartManager = new AutoStartManager();
         ShutdownController.getInstance().addShutdownVetoListener(this);
-
         ShutdownController.getInstance().addShutdownEvent(new ShutdownEvent() {
             @Override
             public long getMaxDuration() {
@@ -468,7 +451,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
             public void onShutdown(final ShutdownRequest shutdownRequest) {
                 LinkCollector.this.abort();
                 QUEUE.addWait(new QueueAction<Void, RuntimeException>(Queue.QueuePriority.HIGH) {
-
                     @Override
                     protected Void run() throws RuntimeException {
                         saveLinkCollectorLinks(true);
@@ -483,6 +465,7 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
             }
         });
         final LinkCollectorConfig cfg = JsonConfig.create(LinkCollectorConfig.class);
+        this.isDupeManagerEnabled = cfg.isDupeManagerEnabled();
         final long minimumDelay = Math.max(5000, cfg.getMinimumSaveDelay());
         long maximumDelay = cfg.getMaximumSaveDelay();
         if (maximumDelay <= 0) {
@@ -491,10 +474,11 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
             maximumDelay = Math.max(maximumDelay, minimumDelay);
         }
         asyncSaving = new DelayedRunnable(TIMINGQUEUE, minimumDelay, maximumDelay) {
+            private final boolean ignoreShutDown = false;
 
             @Override
             public void run() {
-                if (allowSaving()) {
+                if (isSavingAllowed(ignoreShutDown)) {
                     super.run();
                 }
             }
@@ -506,18 +490,16 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
 
             @Override
             public void delayedrun() {
-                if (allowSaving()) {
+                if (isSavingAllowed(ignoreShutDown)) {
                     QUEUE.addWait(new QueueAction<Void, RuntimeException>() {
-
                         @Override
                         protected Void run() throws RuntimeException {
-                            saveLinkCollectorLinks();
+                            saveLinkCollectorLinks(ignoreShutDown);
                             return null;
                         }
                     });
                 }
             }
-
         };
         asyncCacheCleanup = new DelayedRunnable(TIMINGQUEUE, 30000l, 120000l) {
             @Override
@@ -528,20 +510,15 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
             @Override
             public void delayedrun() {
                 QUEUE.add(new QueueAction<Void, RuntimeException>() {
-
                     @Override
                     protected Void run() throws RuntimeException {
                         autoRenameCache.clear();
                         return null;
                     }
                 });
-
             }
-
         };
-
         this.eventsender.addListener(new LinkCollectorListener() {
-
             public void onLinkCollectorAbort(LinkCollectorEvent event) {
                 asyncSaving.run();
             }
@@ -598,7 +575,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
             @Override
             public void onLinkCrawlerFinished() {
             }
-
         });
     }
 
@@ -769,7 +745,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
     @Override
     public void moveOrAddAt(CrawledPackage pkg, final List<CrawledLink> movechildren, int moveChildrenindex, int pkgIndex) {
         QUEUE.add(new QueueAction<Void, RuntimeException>() {
-
             @Override
             protected Void run() throws RuntimeException {
                 for (CrawledLink l : movechildren) {
@@ -777,7 +752,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                 }
                 return null;
             }
-
         });
         super.moveOrAddAt(pkg, movechildren, moveChildrenindex, pkgIndex);
     }
@@ -800,7 +774,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
         } else {
             /* try to find good matching package or create new one */
             QUEUE.add(new QueueAction<Void, RuntimeException>() {
-
                 private LinkCollectingInformation lci = info;
 
                 @Override
@@ -1040,6 +1013,9 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                                         crawledPackageID = null;
                                     }
                                 }
+                                if (StringUtils.isNotEmpty(dpi.getPackageKey())) {
+                                    crawledPackageID = dpi.getPackageKey();
+                                }
                             } else {
                                 downloadFolder = null;
                             }
@@ -1057,10 +1033,10 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                                     } else {
                                         final ExtensionsFilterInterface extension = link.getLinkInfo().getExtension();
                                         if (!"".equalsIgnoreCase(extension.name())) {
-                                            if (!DocumentExtensions.HTML.equals(extension)) {
+                                            if (!DocumentExtensions.HTML.equals(extension.getSource()) && !DocumentExtensions.PHP.equals(extension.getSource())) {
                                                 crawledPackageName = fileName;
                                             } else {
-                                                final String tmpFileName = fileName.replaceFirst("\\.html?$", "");
+                                                final String tmpFileName = fileName.replaceFirst("\\.(html?|php)$", "");
                                                 final ExtensionsFilterInterface tmpExtension = CompiledFiletypeFilter.getExtensionsFilterInterface(Files.getExtension(tmpFileName));
                                                 if (tmpExtension != null) {
                                                     crawledPackageName = tmpFileName;
@@ -1089,7 +1065,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                                 }
                             }
                             final CrawledPackageMappingID crawledPackageMapID = new CrawledPackageMappingID(crawledPackageID, crawledPackageName, downloadFolder);
-
                             String newPackageName = crawledPackageName;
                             if (newPackageName == null) {
                                 newPackageName = link.getName();
@@ -1221,7 +1196,7 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                 throw new IllegalArgumentException("job is null");
             }
             getEventsender().fireEvent(new LinkCollectorEvent(LinkCollector.this, LinkCollectorEvent.TYPE.NEW_CRAWLER_JOB, job, QueuePriority.NORM));
-            logger.info("Added CrawlerJob " + job);
+            logger.info("Added CrawlerJob:" + job);
             final JobLinkCrawler lc = newJobLinkCrawler(job);
             /*
              * we don't want to keep reference on text during the whole link grabbing/checking/collecting way
@@ -1253,7 +1228,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
             return;
         } else {
             QUEUE.add(new QueueAction<Void, RuntimeException>() {
-
                 @Override
                 protected void onEnqueu(Queue queue) {
                     if (info != null) {
@@ -1273,7 +1247,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                     String linkID = filtered.getLinkID();
                     if (checkDupe) {
                         CrawledLink existingLink = getCrawledLinkByLinkID(linkID);
-
                         // give the hPLugin a chance to fix this;
                         while (existingLink != null) {
                             PluginForHost hPlugin = filtered.gethPlugin();
@@ -1283,7 +1256,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                             linkID = filtered.getLinkID();
                             existingLink = getCrawledLinkByLinkID(linkID);
                         }
-
                         if (existingLink != null) {
                             /* clear references */
                             clearCrawledLinkReferences(filtered);
@@ -1298,7 +1270,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                 }
             });
         }
-
     }
 
     // clean up offline/various/dupeCheck maps
@@ -1318,7 +1289,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
 
     public void clearFilteredLinks() {
         QUEUE.add(new QueueAction<Void, RuntimeException>() {
-
             @Override
             protected Void run() throws RuntimeException {
                 cleanupMaps(filteredStuff);
@@ -1332,7 +1302,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
     @Override
     public void clear() {
         QUEUE.add(new QueueAction<Void, RuntimeException>() {
-
             @Override
             protected Void run() throws RuntimeException {
                 LinkCollector.super.clear();
@@ -1366,13 +1335,10 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
         /* set values */
         ret.setName(pkg.getName());
         /* FilePackage contains full absolute path! */
-
         ret.setDownloadDirectory(LinkTreeUtils.getDownloadDirectory(pkg).getAbsolutePath());
-
         ret.setCreated(pkg.getCreated());
         ret.setExpanded(pkg.isExpanded());
         ret.setComment(pkg.getComment());
-
         List<CrawledLink> pkgLinks = null;
         if (plinks != null && plinks.size() > 0) {
             pkgLinks = new ArrayList<CrawledLink>(plinks);
@@ -1389,7 +1355,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
         for (CrawledLink link : pkgLinks) {
             /* extract DownloadLink from CrawledLink */
             DownloadLink dl = link.getDownloadLink();
-
             if (dl != null) {
                 /* remove reference to crawledLink */
                 dl.setNodeChangeListener(null);
@@ -1407,10 +1372,8 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                 dl.setParentNode(ret);
             }
         }
-
         /* add all children to FilePackage */
         ret.getChildren().addAll(links);
-
         return ret;
     }
 
@@ -1423,7 +1386,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
 
     public java.util.List<CrawledLink> getFilteredStuff(final boolean clearAfterGet) {
         return QUEUE.addWait(new QueueAction<java.util.List<CrawledLink>, RuntimeException>() {
-
             @Override
             protected java.util.List<CrawledLink> run() throws RuntimeException {
                 final List<CrawledLink> ret2 = new ArrayList<CrawledLink>(filteredStuff);
@@ -1461,6 +1423,7 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
             link.setCustomCrawledLinkModifier(null);
             link.setUnknownHandler(null);
             link.setDesiredPackageInfo(null);
+            link.setSourceLink(null);
             link.setCollectingInfo(null);
             link.setSourceJob(null);
             link.setMatchingFilter(null);
@@ -1502,7 +1465,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                             /* update dupeCheck map */
                             String linkID = link.getLinkID();
                             CrawledLink existingLink = getCrawledLinkByLinkID(linkID);
-
                             // give the hPLugin a chance to fix this;
                             while (existingLink != null) {
                                 PluginForHost hPlugin = link.gethPlugin();
@@ -1526,7 +1488,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                 });
             } else {
                 QUEUE.add(new QueueAction<Void, RuntimeException>(Queue.QueuePriority.LOW) {
-
                     private LinkCollectingInformation lci = info;
 
                     @Override
@@ -1580,7 +1541,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                 return;
             }
             QUEUE.add(new QueueAction<Void, RuntimeException>(Queue.QueuePriority.LOW) {
-
                 @Override
                 protected Void run() throws RuntimeException {
                     applyJobCrawledLinkModifier(link, true);
@@ -1601,18 +1561,13 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
         if (link != null) {
             final LinkCollectingJob job = link.getSourceJob();
             if (job != null) {
-                try {
-                    final CrawledLinkModifier modifier;
-                    if (prePackagizer) {
-                        modifier = job.getCrawledLinkModifierPrePackagizer();
-                    } else {
-                        modifier = job.getCrawledLinkModifierPostPackagizer();
-                    }
-                    if (modifier != null) {
+                final List<CrawledLinkModifier> modifiers = prePackagizer ? job.getPrePackagizerModifier() : job.getPostPackagizerModifier();
+                for (final CrawledLinkModifier modifier : modifiers) {
+                    try {
                         modifier.modifyCrawledLink(link);
+                    } catch (final Throwable e) {
+                        logger.log(e);
                     }
-                } catch (final Throwable e) {
-                    logger.log(e);
                 }
             }
         }
@@ -1627,7 +1582,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                 variants.addAll(converts);
                 if (variants.size() > 1) {
                     return Boolean.TRUE.equals(getQueue().addWait(new QueueAction<Boolean, RuntimeException>() {
-
                         @Override
                         protected Boolean run() throws RuntimeException {
                             downloadLink.setProperty("GENERIC_VARIANTS", true);
@@ -1641,7 +1595,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                             downloadLink.setVariantSupport(true);
                             return Boolean.TRUE;
                         }
-
                     }));
                 }
             }
@@ -1654,7 +1607,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
             return null;
         }
         return QUEUE.addWait(new QueueAction<List<FilePackage>, RuntimeException>() {
-
             @Override
             protected List<FilePackage> run() throws RuntimeException {
                 final List<FilePackage> ret = new ArrayList<FilePackage>();
@@ -1685,7 +1637,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                 }
                 return ret;
             }
-
         });
     }
 
@@ -1761,7 +1712,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
      */
     public void initLinkCollector() {
         QUEUE.add(new QueueAction<Void, RuntimeException>(Queue.QueuePriority.HIGH) {
-
             @Override
             protected Void run() throws RuntimeException {
                 final ArrayList<File> availableCollectorLists = findAvailableCollectorLists();
@@ -1826,10 +1776,9 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
 
     public void importList(final LinkedList<CrawledPackage> lpackages, final Map<CrawledPackage, CrawledPackageStorable> restoreMap) {
         QUEUE.add(new QueueAction<Void, RuntimeException>(Queue.QueuePriority.HIGH) {
-
             @Override
             protected Void run() throws RuntimeException {
-                if (lpackages != null && restoreMap != null) {
+                if (lpackages != null) {
                     preProcessCrawledPackages(lpackages);
                     try {
                         writeLock();
@@ -1841,51 +1790,53 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                                 }
                             }
                             filePackage.setControlledBy(LinkCollector.this);
-                            final CrawledPackageStorable storable = restoreMap.get(filePackage);
-                            switch (filePackage.getType()) {
-                            case NORMAL:
-                                if (storable.getPackageID() != null) {
-                                    final CrawledPackageMappingID packageID = CrawledPackageMappingID.get(storable.getPackageID());
-                                    if (packageID != null) {
-                                        packageMap.put(packageID, filePackage);
-                                    }
-                                }
-                                break;
-                            case VARIOUS:
-                                if (variousPackage == null) {
-                                    variousPackage = filePackage;
-                                }
-                                for (final CrawledLinkStorable link : storable.getLinks()) {
-                                    final String id = link.getID();
-                                    if (id != null) {
-                                        final CrawledPackageMappingID packageID = CrawledPackageMappingID.get(id);
+                            if (restoreMap != null) {
+                                final CrawledPackageStorable storable = restoreMap.get(filePackage);
+                                switch (filePackage.getType()) {
+                                case NORMAL:
+                                    if (storable.getPackageID() != null) {
+                                        final CrawledPackageMappingID packageID = CrawledPackageMappingID.get(storable.getPackageID());
                                         if (packageID != null) {
-                                            final List<CrawledLink> list = getIdentifiedMap(packageID, variousMap);
-                                            list.add(link._getCrawledLink());
+                                            packageMap.put(packageID, filePackage);
                                         }
                                     }
-                                }
-                                break;
-                            case OFFLINE:
-                                if (offlinePackage == null) {
-                                    offlinePackage = filePackage;
-                                }
-                                for (final CrawledLinkStorable link : storable.getLinks()) {
-                                    final String id = link.getID();
-                                    if (id != null) {
-                                        final CrawledPackageMappingID packageID = CrawledPackageMappingID.get(id);
-                                        if (packageID != null) {
-                                            final List<CrawledLink> list = getIdentifiedMap(packageID, offlineMap);
-                                            list.add(link._getCrawledLink());
+                                    break;
+                                case VARIOUS:
+                                    if (variousPackage == null) {
+                                        variousPackage = filePackage;
+                                    }
+                                    for (final CrawledLinkStorable link : storable.getLinks()) {
+                                        final String id = link.getID();
+                                        if (id != null) {
+                                            final CrawledPackageMappingID packageID = CrawledPackageMappingID.get(id);
+                                            if (packageID != null) {
+                                                final List<CrawledLink> list = getIdentifiedMap(packageID, variousMap);
+                                                list.add(link._getCrawledLink());
+                                            }
                                         }
                                     }
+                                    break;
+                                case OFFLINE:
+                                    if (offlinePackage == null) {
+                                        offlinePackage = filePackage;
+                                    }
+                                    for (final CrawledLinkStorable link : storable.getLinks()) {
+                                        final String id = link.getID();
+                                        if (id != null) {
+                                            final CrawledPackageMappingID packageID = CrawledPackageMappingID.get(id);
+                                            if (packageID != null) {
+                                                final List<CrawledLink> list = getIdentifiedMap(packageID, offlineMap);
+                                                list.add(link._getCrawledLink());
+                                            }
+                                        }
+                                    }
+                                    break;
+                                case POFFLINE:
+                                    if (permanentofflinePackage == null) {
+                                        permanentofflinePackage = filePackage;
+                                    }
+                                    break;
                                 }
-                                break;
-                            case POFFLINE:
-                                if (permanentofflinePackage == null) {
-                                    permanentofflinePackage = filePackage;
-                                }
-                                break;
                             }
                         }
                         updateUniqueAlltimeIDMaps(lpackages);
@@ -1921,7 +1872,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                 while (it.hasNext()) {
                     final CrawledLink localLink = it.next();
                     final DownloadLink dlLink = localLink.getDownloadLink();
-
                     if (dlLink == null) {
                         /* remove crawledLinks without DownloadLink */
                         it.remove();
@@ -1947,7 +1897,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                 @Override
                 protected Void run() throws RuntimeException {
                     getChildrenByFilter(new AbstractPackageChildrenNodeFilter<CrawledLink>() {
-
                         @Override
                         public int returnMaxResults() {
                             return 0;
@@ -2019,7 +1968,7 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
 
     private LinkedList<CrawledPackage> load(File file, HashMap<CrawledPackage, CrawledPackageStorable> restoreMap) {
         try {
-            return loadFile(file, restoreMap);
+            return loadFile(file, restoreMap, false);
         } catch (Throwable e) {
             if (file != null) {
                 final File backupTo = new File(file.getAbsolutePath() + ".backup");
@@ -2058,7 +2007,7 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
         return null;
     }
 
-    public LinkedList<CrawledPackage> loadFile(File file, Map<CrawledPackage, CrawledPackageStorable> restoreMap) throws IOException {
+    public LinkedList<CrawledPackage> loadFile(File file, Map<CrawledPackage, CrawledPackageStorable> restoreMap, boolean rescueMode) throws IOException {
         LinkedList<CrawledPackage> ret = null;
         if (file != null && file.exists()) {
             FileInputStream fis = null;
@@ -2078,7 +2027,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                 ZipEntry entry = null;
                 final ZipInputStream finalZis = zis;
                 final InputStream entryInputStream = new InputStream() {
-
                     @Override
                     public int read() throws IOException {
                         return finalZis.read();
@@ -2161,7 +2109,11 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                         if (entry != null) {
                             logger.info("Entry:" + entry + "|Size:" + entry.getSize() + "|Compressed Size:" + entry.getCompressedSize());
                         }
-                        throw e;
+                        if (rescueMode) {
+                            break;
+                        } else {
+                            throw e;
+                        }
                     }
                 }
                 if (entries == 0) {
@@ -2220,21 +2172,11 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                 }
                 ret = new LinkedList<CrawledPackage>(ret2);
             } catch (final Throwable e) {
-                try {
-                    if (zis != null) {
-                        zis.close();
-                        zis = null;
-                        fis = null;
-                    } else if (fis != null) {
-                        fis.close();
-                        fis = null;
-                    }
-                } catch (final Throwable ignore) {
-                }
                 if (e instanceof IOException) {
                     throw (IOException) e;
+                } else {
+                    throw new IOException(e);
                 }
-                throw new IOException(e);
             } finally {
                 try {
                     if (zis != null) {
@@ -2257,7 +2199,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
      */
     private void save(final java.util.List<CrawledPackage> packages, final File destFile) {
         QUEUE.add(new QueueAction<Void, RuntimeException>(Queue.QueuePriority.HIGH) {
-
             @Override
             protected Void run() throws RuntimeException {
                 File file = destFile;
@@ -2325,7 +2266,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                         zos = new ZipOutputStream(new BufferedOutputStream(fos, bufferSize));
                         final ZipOutputStream finalZos = zos;
                         final OutputStream entryOutputStream = new OutputStream() {
-
                             @Override
                             public void write(int b) throws IOException {
                                 finalZos.write(b);
@@ -2345,57 +2285,58 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                             public void flush() throws IOException {
                                 finalZos.flush();
                             }
-
                         };
                         int packageIndex = 0;
                         for (final CrawledPackage pkg : packages) {
-                            final String packageEntryID = String.format(packageFormat, packageIndex++);
-                            {
-                                /* convert FilePackage to JSon */
-                                final CrawledPackageStorable packageStorable = new CrawledPackageStorable(pkg, false);
-                                /* save packageID */
-                                final CrawledPackageMappingID crawledPackageMappingID = LinkCollector.this.getPackageMapID(pkg);
-                                if (crawledPackageMappingID != null) {
-                                    packageStorable.setPackageID(crawledPackageMappingID.getMappingID());
-                                }
-                                final ZipEntry packageEntry = new ZipEntry(packageEntryID);
-                                packageEntry.setMethod(ZipEntry.DEFLATED);
-                                zos.putNextEntry(packageEntry);
-                                JSonStorage.getMapper().writeObject(entryOutputStream, packageStorable);
-                                zos.closeEntry();
-                            }
                             final boolean readL = pkg.getModifyLock().readLock();
                             try {
                                 final int childrenSize = pkg.getChildren().size();
-                                final String childFormat;
-                                if (childrenSize >= 10) {
-                                    childFormat = String.format("%%0%dd", (int) Math.log10(childrenSize) + 1);
-                                } else {
-                                    childFormat = "%02d";
-                                }
-                                int childIndex = 0;
-                                for (final CrawledLink link : pkg.getChildren()) {
-                                    final CrawledLinkStorable linkStorable = new CrawledLinkStorable(link);
-                                    CrawledPackageMappingID id = null;
-                                    switch (pkg.getType()) {
-                                    case VARIOUS:
-                                        id = getIDFromMap(variousMap, link);
-                                        break;
-                                    case OFFLINE:
-                                        id = getIDFromMap(offlineMap, link);
-                                        break;
-                                    default:
-                                        break;
+                                if (childrenSize > 0) {
+                                    final String packageEntryID = String.format(packageFormat, packageIndex++);
+                                    {
+                                        /* convert FilePackage to JSon */
+                                        final CrawledPackageStorable packageStorable = new CrawledPackageStorable(pkg, false);
+                                        /* save packageID */
+                                        final CrawledPackageMappingID crawledPackageMappingID = LinkCollector.this.getPackageMapID(pkg);
+                                        if (crawledPackageMappingID != null) {
+                                            packageStorable.setPackageID(crawledPackageMappingID.getMappingID());
+                                        }
+                                        final ZipEntry packageEntry = new ZipEntry(packageEntryID);
+                                        packageEntry.setMethod(ZipEntry.DEFLATED);
+                                        zos.putNextEntry(packageEntry);
+                                        JSonStorage.getMapper().writeObject(entryOutputStream, packageStorable);
+                                        zos.closeEntry();
                                     }
-                                    if (id != null) {
-                                        linkStorable.setID(id.getMappingID());
+                                    final String childFormat;
+                                    if (childrenSize >= 10) {
+                                        childFormat = String.format("%%0%dd", (int) Math.log10(childrenSize) + 1);
+                                    } else {
+                                        childFormat = "%02d";
                                     }
-                                    final String childEntryID = String.format(childFormat, childIndex++);
-                                    final ZipEntry linkEntry = new ZipEntry(packageEntryID + "_" + childEntryID);
-                                    linkEntry.setMethod(ZipEntry.DEFLATED);
-                                    zos.putNextEntry(linkEntry);
-                                    JSonStorage.getMapper().writeObject(entryOutputStream, linkStorable);
-                                    zos.closeEntry();
+                                    int childIndex = 0;
+                                    for (final CrawledLink link : pkg.getChildren()) {
+                                        final CrawledLinkStorable linkStorable = new CrawledLinkStorable(link);
+                                        CrawledPackageMappingID id = null;
+                                        switch (pkg.getType()) {
+                                        case VARIOUS:
+                                            id = getIDFromMap(variousMap, link);
+                                            break;
+                                        case OFFLINE:
+                                            id = getIDFromMap(offlineMap, link);
+                                            break;
+                                        default:
+                                            break;
+                                        }
+                                        if (id != null) {
+                                            linkStorable.setID(id.getMappingID());
+                                        }
+                                        final String childEntryID = String.format(childFormat, childIndex++);
+                                        final ZipEntry linkEntry = new ZipEntry(packageEntryID + "_" + childEntryID);
+                                        linkEntry.setMethod(ZipEntry.DEFLATED);
+                                        zos.putNextEntry(linkEntry);
+                                        JSonStorage.getMapper().writeObject(entryOutputStream, linkStorable);
+                                        zos.closeEntry();
+                                    }
                                 }
                             } finally {
                                 pkg.getModifyLock().readUnlock(readL);
@@ -2416,7 +2357,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                         zos.putNextEntry(linkCollectorEntry);
                         JSonStorage.getMapper().writeObject(entryOutputStream, lcs);
                         zos.closeEntry();
-
                         zos.close();
                         zos = null;
                         fos = null;
@@ -2435,14 +2375,12 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                                 }
                             }
                         } catch (final Throwable e) {
-                            e.printStackTrace();
                             logger.log(e);
                         } finally {
                             linkcollectorLists.add(0, file);
                         }
                         return null;
                     } catch (final Throwable e) {
-                        e.printStackTrace();
                         logger.log(e);
                     } finally {
                         try {
@@ -2452,7 +2390,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                                 fos.close();
                             }
                         } catch (final Throwable e) {
-                            e.printStackTrace();
                             logger.log(e);
                         }
                         if (deleteFile && file.exists()) {
@@ -2465,19 +2402,15 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
         });
     }
 
-    private boolean allowSaving() {
-        return !ShutdownController.getInstance().isShuttingDown() && CRAWLERLIST_LOADED.isReached() && JsonConfig.create(GeneralSettings.class).isSaveLinkgrabberListEnabled();
-    }
-
-    public void saveLinkCollectorLinks() {
-        saveLinkCollectorLinks(false);
+    private boolean isSavingAllowed(final boolean ignoreShutDown) {
+        return CRAWLERLIST_LOADED.isReached() && (ignoreShutDown || !ShutdownController.getInstance().isShuttingDown()) && JsonConfig.create(GeneralSettings.class).isSaveLinkgrabberListEnabled();
     }
 
     /**
      * save the current CrawledPackages/CrawledLinks controlled by this LinkCollector
      */
-    public void saveLinkCollectorLinks(final boolean force) {
-        if (allowSaving() || force) {
+    private void saveLinkCollectorLinks(final boolean ignoreShutdown) {
+        if (isSavingAllowed(ignoreShutdown)) {
             /* save as new Json ZipFile */
             try {
                 save(getPackagesCopy(), null);
@@ -2535,27 +2468,22 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
         if (request.hasVetos()) {
             return;
         }
-
         if (request.isSilent()) {
             synchronized (shutdownLock) {
                 if (LinkChecker.isChecking() || LinkCrawler.isCrawling()) {
                     throw new ShutdownVetoException("LinkCollector is still running", this);
                 }
-
             }
         } else {
             synchronized (shutdownLock) {
-
                 if (LinkChecker.isChecking() || LinkCrawler.isCrawling()) {
                     if (JDGui.bugme(WarnLevel.NORMAL)) {
                         if (UIOManager.I().showConfirmDialog(Dialog.STYLE_SHOW_DO_NOT_DISPLAY_AGAIN | UIOManager.LOGIC_DONT_SHOW_AGAIN_IGNORES_CANCEL, _JDT.T.LinkCollector_onShutdownRequest_(), _JDT.T.LinkCollector_onShutdownRequest_msg(), new AbstractIcon(IconKey.ICON_LINKGRABBER, 32), _JDT.T.literally_yes(), null)) {
                         } else {
                             throw new ShutdownVetoException("LinkCollector is still running", this);
-
                         }
                         return;
                     }
-
                 }
             }
         }
@@ -2657,17 +2585,14 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                 finalAutoStart = autoStartLinks;
             }
         }
-
         DownloadController.getInstance().addAllAt(filePackagesToAdd, addTop ? 0 : -(filePackagesToAdd.size() + 10));
         DownloadController.getInstance().getQueue().add(new QueueAction<Void, RuntimeException>() {
-
             @Override
             protected Void run() throws RuntimeException {
                 if (force.size() > 0) {
                     DownloadWatchDog.getInstance().forceDownload(force);
                     if (finalAutoStart) {
                         DownloadWatchDog.getInstance().enqueueJob(new DownloadWatchDogJob() {
-
                             @Override
                             public void interrupt() {
                             }
@@ -2692,10 +2617,8 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
     }
 
     public void removeChildren(final List<CrawledLink> removechildren) {
-
         if (removechildren != null && removechildren.size() > 0) {
             QUEUE.add(new QueueAction<Void, RuntimeException>() {
-
                 @Override
                 protected Void run() throws RuntimeException {
                     internalRemoveChildren(removechildren);
@@ -2709,9 +2632,7 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
 
     public Thread getAddLinksThread(final LinkCollectingJob job, final AtomicReference<LinkCrawler> lcReference) {
         return new Thread("AddLinksThread:" + job.getOrigin().getOrigin()) {
-
             private final HashSet<String> autoExtensionLearnBlackList = new HashSet<String>();
-
             {
                 autoExtensionLearnBlackList.add("shtml");
                 autoExtensionLearnBlackList.add("phtml");
@@ -2761,25 +2682,14 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                             if (autoExtensionLearning) {
                                 final LinkCrawlerDeepInspector defaultDeepInspector = lc.defaultDeepInspector();
                                 lc.setDeepInspector(new LinkCrawlerDeepInspector() {
-
-                                    private final boolean looksLikeDownloadableContent(final URLConnectionAdapter urlConnection) {
-                                        if (urlConnection.getResponseCode() == 200) {
-                                            if (urlConnection.isContentDisposition()) {
-                                                return true;
-                                            } else if (StringUtils.contains(urlConnection.getContentType(), "octet-stream")) {
-                                                return true;
-                                            } else if (urlConnection.getLongContentLength() > 2 * 1024 * 1024l && !StringUtils.contains(urlConnection.getContentType(), "text")) {
-                                                return true;
-                                            }
-                                        }
-                                        return false;
-                                    }
-
-                                    private final boolean hasDirectHTTPRule(final URLConnectionAdapter urlConnection) {
-                                        final String url = urlConnection.getURL().toString();
-                                        for (final LinkCrawlerRule rule : LinkCrawler.listLinkCrawlerRules()) {
-                                            if (RULE.DIRECTHTTP.equals(rule.getRule()) && rule.matches(url)) {
-                                                return true;
+                                    private final boolean hasDirectHTTPRule(LinkCrawler lc, final URLConnectionAdapter urlConnection) {
+                                        final List<LinkCrawlerRule> rules = lc.getLinkCrawlerRules();
+                                        if (rules != null) {
+                                            final String url = urlConnection.getURL().toString();
+                                            for (final LinkCrawlerRule rule : rules) {
+                                                if (RULE.DIRECTHTTP.equals(rule.getRule()) && rule.matches(url)) {
+                                                    return true;
+                                                }
                                             }
                                         }
                                         return false;
@@ -2789,40 +2699,49 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                                     public List<CrawledLink> deepInspect(LinkCrawler lc, final LinkCrawler.LinkCrawlerGeneration generation, Browser br, URLConnectionAdapter urlConnection, CrawledLink link) throws Exception {
                                         if (urlConnection.getResponseCode() == 200 && urlConnection.getRequest().getLocation() == null) {
                                             final LinkCrawlerRule matchingRule = link.getMatchingRule();
-                                            if (matchingRule == null) {
+                                            if (matchingRule == null && looksLikeDownloadableContent(urlConnection)) {
                                                 final URL url = urlConnection.getURL();
-                                                if (looksLikeDownloadableContent(urlConnection) && StringUtils.endsWithCaseInsensitive(url.getPath(), ".php") && url.getQuery() != null) {
+                                                if (url.getPath() != null && url.getPath().matches(".*\\.(php|aspx)$") && url.getQuery() != null) {
                                                     // hoster.domain/script.php?somevalue=somekey.....->Download
-                                                    if (!hasDirectHTTPRule(urlConnection)) {
+                                                    if (!hasDirectHTTPRule(lc, urlConnection)) {
                                                         final String domain = Browser.getHost(url, false);
                                                         final LinkCrawlerRule rule = new LinkCrawlerRule();
                                                         rule.setName("Learned php script download: " + domain + url.getPath());
                                                         rule.setPattern("(?i)https?://.*?" + Pattern.quote(domain) + Pattern.quote(url.getPath()) + "\\?.+");
                                                         rule.setRule(RULE.DIRECTHTTP);
-                                                        LinkCrawler.addLinkCrawlerRule(rule);
+                                                        lc.addLinkCrawlerRule(rule);
                                                     }
                                                     try {
                                                         urlConnection.disconnect();
                                                     } catch (Throwable e) {
                                                     }
-                                                    return lc.find(generation, "directhttp://" + url, null, false, false);
-                                                }
-                                                if (!StringUtils.containsIgnoreCase(urlConnection.getContentType(), "text")) {
+                                                    final ArrayList<CrawledLink> ret = new ArrayList<CrawledLink>();
+                                                    final CrawledLink direct = lc.createDirectHTTPCrawledLink(urlConnection);
+                                                    if (direct != null) {
+                                                        ret.add(direct);
+                                                    }
+                                                    return ret;
+                                                } else {
                                                     final String fileName = Plugin.getFileNameFromURL(url);
                                                     final String fileExtension = Files.getExtension(fileName);
                                                     if (StringUtils.isNotEmpty(fileExtension) && !autoExtensionLearnBlackList.contains(fileExtension)) {
-                                                        if (!hasDirectHTTPRule(urlConnection)) {
+                                                        if (!hasDirectHTTPRule(lc, urlConnection)) {
                                                             final LinkCrawlerRule rule = new LinkCrawlerRule();
                                                             rule.setName("Learned file extension: " + fileExtension);
-                                                            rule.setPattern("(?i).*\\." + fileExtension + "($|\\?.*$)");
+                                                            rule.setPattern("(?i)https?://.*\\." + fileExtension + "($|\\?.*$)");
                                                             rule.setRule(RULE.DIRECTHTTP);
-                                                            LinkCrawler.addLinkCrawlerRule(rule);
+                                                            lc.addLinkCrawlerRule(rule);
                                                         }
                                                         try {
                                                             urlConnection.disconnect();
                                                         } catch (Throwable e) {
                                                         }
-                                                        return lc.find(generation, "directhttp://" + url, null, false, false);
+                                                        final ArrayList<CrawledLink> ret = new ArrayList<CrawledLink>();
+                                                        final CrawledLink direct = lc.createDirectHTTPCrawledLink(urlConnection);
+                                                        if (direct != null) {
+                                                            ret.add(direct);
+                                                        }
+                                                        return ret;
                                                     }
                                                 }
                                             }
@@ -2840,24 +2759,22 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
     }
 
     public static void requestDeleteLinks(final List<CrawledLink> nodesToDelete, final boolean containsOnline, final String string, final boolean byPassDialog, final boolean isCancelLinkcrawlerJobs, final boolean isResetTableSorter, final boolean isClearSearchFilter, final boolean isClearFilteredLinks) {
-
         TaskQueue.getQueue().add(new QueueAction<Void, RuntimeException>() {
-
             @Override
             protected Void run() throws RuntimeException {
-
                 boolean taskToDo = false;
                 taskToDo = taskToDo || (nodesToDelete.size() > 0);
-                taskToDo = taskToDo || ((isClearSearchFilter) && !LinkgrabberSearchField.getInstance().isEmpty());
+                if (!Application.isHeadless()) {
+                    taskToDo = taskToDo || ((isClearSearchFilter) && !LinkgrabberSearchField.getInstance().isEmpty());
+                }
                 taskToDo = taskToDo || ((isResetTableSorter) && LinkGrabberTableModel.getInstance().getSortColumn() != null);
                 taskToDo = taskToDo || ((isClearFilteredLinks) && LinkCollector.getInstance().isCollecting());
                 taskToDo = taskToDo || ((isCancelLinkcrawlerJobs) && LinkCollector.getInstance().getfilteredStuffSize() > 0);
-
                 if (!taskToDo) {
-
-                    Toolkit.getDefaultToolkit().beep();
+                    if (!Application.isHeadless()) {
+                        Toolkit.getDefaultToolkit().beep();
+                    }
                     return null;
-
                 }
                 final WarnLevel level;
                 if (containsOnline) {
@@ -2875,14 +2792,11 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                     GenericResetLinkgrabberRlyDialog dialog = new GenericResetLinkgrabberRlyDialog(nodesToDelete, containsOnline, string, isCancelLinkcrawlerJobs, isClearFilteredLinks, isClearSearchFilter, isResetTableSorter);
                     try {
                         Dialog.getInstance().showDialog(dialog);
-
                         if (dialog.isCancelCrawler()) {
                             LinkCollector.getInstance().abort();
                         }
-
                         if (dialog.isResetSort()) {
                             new EDTRunner() {
-
                                 @Override
                                 protected void runInEDT() {
                                     final LinkGrabberTable table = MenuManagerLinkgrabberTableContext.getInstance().getTable();
@@ -2893,35 +2807,26 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                             };
                         }
                         if (dialog.isResetSearch()) {
-
                             LinkgrabberSearchField.getInstance().setText("");
                             LinkgrabberSearchField.getInstance().onChanged();
-
                         }
-
                         if (dialog.isDeleteLinks()) {
-
                             LinkCollector.getInstance().removeChildren(nodesToDelete);
                         }
                         if (dialog.isClearFiltered()) {
                             LinkCollector.getInstance().clearFilteredLinks();
                         }
-
                     } catch (DialogClosedException e) {
                         e.printStackTrace();
                     } catch (DialogCanceledException e) {
                         e.printStackTrace();
                     }
-
                 } else {
-
                     if (isCancelLinkcrawlerJobs) {
                         LinkCollector.getInstance().abort();
                     }
-
                     if (isResetTableSorter) {
                         new EDTRunner() {
-
                             @Override
                             protected void runInEDT() {
                                 final LinkGrabberTable table = MenuManagerLinkgrabberTableContext.getInstance().getTable();
@@ -2934,30 +2839,21 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                     if (isClearSearchFilter) {
                         LinkgrabberSearchField.getInstance().setText("");
                         LinkgrabberSearchField.getInstance().onChanged();
-
                     }
-
                     if (isClearFilteredLinks) {
                         LinkCollector.getInstance().clearFilteredLinks();
                     }
-
                     if (nodesToDelete.size() > 0) {
-
                         LinkCollector.getInstance().removeChildren(nodesToDelete);
                     }
-
                 }
-
                 return null;
             }
         });
-
     }
 
     public void setActiveVariantForLink(final CrawledLink crawledLink, final LinkVariant linkVariant) {
-
         getQueue().add(new QueueAction<Void, RuntimeException>() {
-
             @Override
             protected Void run() throws RuntimeException {
                 CrawledPackage parent = crawledLink.getParentNode();
@@ -2969,25 +2865,18 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                     /* link does not support variants */
                     return null;
                 }
-                // reset any custom names.
-                crawledLink.setName(null);
                 setActiveVariantForLink(crawledLink.getDownloadLink(), linkVariant);
                 java.util.List<CheckableLink> checkableLinks = new ArrayList<CheckableLink>(1);
                 checkableLinks.add(crawledLink);
                 LinkChecker<CheckableLink> linkChecker = new LinkChecker<CheckableLink>(true);
                 linkChecker.check(checkableLinks);
-
                 return null;
             }
-
         });
-
     }
 
     public void setActiveVariantForLink(final DownloadLink link, final LinkVariant variant) {
-
         getQueue().add(new QueueAction<Void, RuntimeException>() {
-
             @Override
             protected Void run() throws RuntimeException {
                 final LinkVariant oldVariant = link.getDefaultPlugin().getActiveVariantByLink(link);
@@ -3003,7 +2892,6 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                 }
                 return null;
             }
-
         });
     }
 
@@ -3044,19 +2932,21 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
     }
 
     private CrawledLink putCrawledLinkByLinkID(final String linkID, final CrawledLink link) {
-        final WeakReference<CrawledLink> item = dupeCheckMap.put(linkID, new WeakReference<CrawledLink>(link));
-        if (item != null) {
-            final CrawledLink itemLink = item.get();
-            if (itemLink != null) {
-                final String itemLinkID = itemLink.getLinkID();
-                if (itemLink == link) {
-                    return null;
-                } else if (StringUtils.equals(itemLinkID, linkID)) {
-                    return itemLink;
-                } else {
-                    logger.warning("DupeCheckMap pollution detected: " + linkID);
-                    if (putCrawledLinkByLinkID(itemLinkID, itemLink) != null) {
-                        logger.warning("Failed to clean DupeCheckMap pollution: " + itemLinkID);
+        if (isDupeManagerEnabled) {
+            final WeakReference<CrawledLink> item = dupeCheckMap.put(linkID, new WeakReference<CrawledLink>(link));
+            if (item != null) {
+                final CrawledLink itemLink = item.get();
+                if (itemLink != null) {
+                    final String itemLinkID = itemLink.getLinkID();
+                    if (itemLink == link) {
+                        return null;
+                    } else if (StringUtils.equals(itemLinkID, linkID)) {
+                        return itemLink;
+                    } else {
+                        logger.warning("DupeCheckMap pollution detected: " + linkID);
+                        if (putCrawledLinkByLinkID(itemLinkID, itemLink) != null) {
+                            logger.warning("Failed to clean DupeCheckMap pollution: " + itemLinkID);
+                        }
                     }
                 }
             }
@@ -3066,32 +2956,25 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
 
     public boolean containsLinkId(final String linkID) {
         return linkID != null && Boolean.TRUE.equals(getQueue().addWait(new QueueAction<Boolean, RuntimeException>() {
-
             @Override
             protected Boolean run() throws RuntimeException {
                 return getCrawledLinkByLinkID(linkID) != null;
             }
-
         }));
     }
 
     public CrawledLink addAdditional(final CrawledLink link, final LinkVariant o) {
-
         final DownloadLink dllink = new DownloadLink(link.getDownloadLink().getDefaultPlugin(), link.getDownloadLink().getView().getDisplayName(), link.getDownloadLink().getHost(), link.getDownloadLink().getPluginPatternMatcher(), true);
-
         dllink.setProperties(link.getDownloadLink().getProperties());
         dllink.setProperty(SOURCE_VARIANT_ID, link.getUniqueID().getID());
         // so plugins like youtube set inherent browserurl (not the youtubev2:// link)
         dllink.setOriginUrl(link.getDownloadLink().getOriginUrl());
         dllink.setContentUrl(link.getDownloadLink().getContainerUrl());
         dllink.setReferrerUrl(link.getDownloadLink().getReferrerUrl());
-
         final CrawledLink cl = new CrawledLink(dllink);
         dllink.setNodeChangeListener(cl);
         cl.getDownloadLink().getDefaultPlugin().setActiveVariantByLink(cl.getDownloadLink(), o);
-
         return LinkCollector.getInstance().getQueue().addWait(new QueueAction<CrawledLink, RuntimeException>() {
-
             @Override
             protected CrawledLink run() throws RuntimeException {
                 if (LinkCollector.getInstance().containsLinkId(cl.getLinkID())) {
@@ -3099,13 +2982,9 @@ public class LinkCollector extends PackageController<CrawledPackage, CrawledLink
                 }
                 final ArrayList<CrawledLink> list = new ArrayList<CrawledLink>();
                 list.add(cl);
-
                 LinkCollector.getInstance().moveOrAddAt(link.getParentNode(), list, link.getParentNode().indexOf(link) + 1);
-
                 return cl;
             }
         });
-
     }
-
 }

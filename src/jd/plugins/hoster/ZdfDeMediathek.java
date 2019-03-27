@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.BufferedWriter;
@@ -24,8 +23,6 @@ import java.io.IOException;
 import java.util.Scanner;
 
 import jd.PluginWrapper;
-import jd.config.ConfigContainer;
-import jd.config.ConfigEntry;
 import jd.http.Browser;
 import jd.http.URLConnectionAdapter;
 import jd.parser.Regex;
@@ -36,17 +33,22 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.download.DownloadInterface;
-import jd.utils.locale.JDL;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "zdf.de", "phoenix.de", "tivi.de" }, urls = { "decrypted://(www\\.)?zdf\\.de/ZDFmediathek/[^<>\"]*?beitrag/video/\\d+\\&quality=\\w+", "decrypted://phoenix\\.de/content/\\d+\\&quality=\\w+", "decrypted://tivi\\.de/content/\\d+\\&quality=\\w+" })
+import org.appwork.storage.config.annotations.AboutConfig;
+import org.appwork.storage.config.annotations.DefaultBooleanValue;
+import org.jdownloader.downloader.hls.HLSDownloader;
+import org.jdownloader.downloader.hls.M3U8Playlist;
+import org.jdownloader.plugins.config.Order;
+import org.jdownloader.plugins.config.PluginConfigInterface;
+import org.jdownloader.translate._JDT;
+
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "zdf.de" }, urls = { "decryptedmediathek://.+" })
 public class ZdfDeMediathek extends PluginForHost {
-
     private String  dllink        = null;
     private boolean server_issues = false;
 
     public ZdfDeMediathek(PluginWrapper wrapper) {
         super(wrapper);
-        setConfigElements();
     }
 
     @SuppressWarnings("deprecation")
@@ -67,27 +69,43 @@ public class ZdfDeMediathek extends PluginForHost {
     }
 
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         server_issues = false;
-        final String filename = link.getStringProperty("directName", null);
+        final String filename;
         prepBR(this.br);
-        dllink = link.getStringProperty("directURL", null);
-        if (filename == null || dllink == null) {
+        /* New urls 2016-12-21 */
+        dllink = link.getDownloadURL().replace("decryptedmediathek://", "http://");
+        if (dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         link.setFinalFileName(link.getStringProperty("directName", null));
-        URLConnectionAdapter con = null;
-        try {
-            con = br.openHeadConnection(dllink);
-            if (!con.getContentType().contains("html")) {
-                link.setDownloadSize(con.getLongContentLength());
-            } else {
-                server_issues = true;
+        if (dllink.contains("m3u8")) {
+            checkFFProbe(link, "Download a HLS Stream");
+            final HLSDownloader downloader = new HLSDownloader(link, br, dllink);
+            final int hlsBandwidth = link.getIntegerProperty("hlsBandwidth", -1);
+            if (hlsBandwidth > 0) {
+                for (M3U8Playlist playList : downloader.getPlayLists()) {
+                    playList.setAverageBandwidth(hlsBandwidth);
+                }
             }
-        } finally {
+            final long estimatedSize = downloader.getEstimatedSize();
+            if (estimatedSize > 0) {
+                link.setDownloadSize(estimatedSize);
+            }
+        } else {
+            URLConnectionAdapter con = null;
             try {
-                con.disconnect();
-            } catch (final Throwable e) {
+                con = this.br.openHeadConnection(dllink);
+                if (!con.getContentType().contains("html")) {
+                    link.setDownloadSize(con.getLongContentLength());
+                } else {
+                    server_issues = true;
+                }
+            } finally {
+                try {
+                    con.disconnect();
+                } catch (final Throwable e) {
+                }
             }
         }
         return AvailableStatus.TRUE;
@@ -107,7 +125,6 @@ public class ZdfDeMediathek extends PluginForHost {
     }
 
     private void download(final DownloadLink downloadLink) throws Exception {
-        final String dllink = downloadLink.getStringProperty("directURL", null);
         if (server_issues) {
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown server error", 10 * 60 * 1000l);
         } else if (dllink == null) {
@@ -120,6 +137,10 @@ public class ZdfDeMediathek extends PluginForHost {
             dl = new RTMPDownload(this, downloadLink, dllink);
             setupRTMPConnection(dllink, dl);
             ((RTMPDownload) dl).startDownload();
+        } else if (dllink.contains("m3u8")) {
+            checkFFmpeg(downloadLink, "Download a HLS Stream");
+            dl = new HLSDownloader(downloadLink, br, dllink);
+            dl.startDownload();
         } else {
             boolean resume = true;
             int maxChunks = 0;
@@ -151,9 +172,36 @@ public class ZdfDeMediathek extends PluginForHost {
             if (!convertSubtitle(downloadLink)) {
                 logger.severe("Subtitle conversion failed!");
             } else {
-                downloadLink.setFinalFileName(downloadLink.getStringProperty("directName", null).replace(".xml", ".srt"));
+                downloadLink.setFinalFileName(downloadLink.getName().replace(".xml", ".srt"));
             }
         }
+    }
+
+    private boolean convertSubtitle(final DownloadLink downloadlink) {
+        final File source = new File(downloadlink.getFileOutput());
+        final StringBuilder xml = new StringBuilder();
+        final String lineseparator = System.getProperty("line.separator");
+        Scanner in = null;
+        try {
+            in = new Scanner(new FileReader(source));
+            while (in.hasNext()) {
+                xml.append(in.nextLine() + lineseparator);
+            }
+        } catch (Exception e) {
+            return false;
+        } finally {
+            in.close();
+        }
+        boolean success;
+        final String xmlContent = xml.toString();
+        /* They got two different subtitle formats */
+        if (xmlContent.contains("<ebuttm:documentEbuttVersion>")) {
+            success = jd.plugins.hoster.BrDe.convertSubtitleBrOnlineDe(downloadlink, xmlContent, 0);
+        } else {
+            /* Unknown subtitle type */
+            success = false;
+        }
+        return success;
     }
 
     /**
@@ -161,9 +209,8 @@ public class ZdfDeMediathek extends PluginForHost {
      *
      * @return The success of the conversion.
      */
-    public static boolean convertSubtitle(final DownloadLink downloadlink) {
+    public static boolean convertSubtitleWdr(final DownloadLink downloadlink) {
         final File source = new File(downloadlink.getFileOutput());
-
         BufferedWriter dest = null;
         try {
             File output = new File(source.getAbsolutePath().replace(".xml", ".srt"));
@@ -175,11 +222,9 @@ public class ZdfDeMediathek extends PluginForHost {
             } catch (IOException e1) {
                 return false;
             }
-
             final StringBuilder xml = new StringBuilder();
             int counter = 1;
             final String lineseparator = System.getProperty("line.separator");
-
             Scanner in = null;
             try {
                 in = new Scanner(new FileReader(source));
@@ -197,11 +242,9 @@ public class ZdfDeMediathek extends PluginForHost {
                 final int starttime = Integer.parseInt(downloadlink.getStringProperty("starttime", null));
                 for (String[] match : matches) {
                     dest.write(counter++ + lineseparator);
-
                     final Double start = Double.valueOf(match[0]) + starttime;
                     final Double end = Double.valueOf(match[1]) + starttime;
                     dest.write(convertSubtitleTime(start) + " --> " + convertSubtitleTime(end) + lineseparator);
-
                     String text = match[2].trim();
                     text = text.replaceAll(lineseparator, " ");
                     text = text.replaceAll("&amp;", "&");
@@ -211,7 +254,6 @@ public class ZdfDeMediathek extends PluginForHost {
                     text = text.replaceAll("<br />", lineseparator);
                     text = text.replace("</p>", "");
                     text = text.replace("<span ", "").replace("</span>", "");
-
                     final String[][] textReplaces = new Regex(text, "(tts:color=\"#([A-Z0-9]+)\">(.*?)($|tts:))").getMatches();
                     if (textReplaces != null && textReplaces.length != 0) {
                         for (final String[] singleText : textReplaces) {
@@ -223,7 +265,6 @@ public class ZdfDeMediathek extends PluginForHost {
                         }
                     }
                     dest.write(text + lineseparator + lineseparator);
-
                 }
             } catch (Exception e) {
                 return false;
@@ -235,7 +276,6 @@ public class ZdfDeMediathek extends PluginForHost {
             }
         }
         source.delete();
-
         return true;
     }
 
@@ -251,9 +291,7 @@ public class ZdfDeMediathek extends PluginForHost {
         String minute = "00";
         String second = "00";
         String millisecond = "0";
-
         Integer itime = Integer.valueOf(time.intValue());
-
         // Hour
         Integer timeHour = Integer.valueOf(itime.intValue() / 3600);
         if (timeHour < 10) {
@@ -261,7 +299,6 @@ public class ZdfDeMediathek extends PluginForHost {
         } else {
             hour = timeHour.toString();
         }
-
         // Minute
         Integer timeMinute = Integer.valueOf((itime.intValue() % 3600) / 60);
         if (timeMinute < 10) {
@@ -269,7 +306,6 @@ public class ZdfDeMediathek extends PluginForHost {
         } else {
             minute = timeMinute.toString();
         }
-
         // Second
         Integer timeSecond = Integer.valueOf(itime.intValue() % 60);
         if (timeSecond < 10) {
@@ -277,7 +313,6 @@ public class ZdfDeMediathek extends PluginForHost {
         } else {
             second = timeSecond.toString();
         }
-
         // Millisecond
         millisecond = String.valueOf(time - itime).split("\\.")[1];
         if (millisecond.length() == 1) {
@@ -289,10 +324,8 @@ public class ZdfDeMediathek extends PluginForHost {
         if (millisecond.length() > 2) {
             millisecond = millisecond.substring(0, 3);
         }
-
         // Result
         String result = hour + ":" + minute + ":" + second + "," + millisecond;
-
         return result;
     }
 
@@ -316,31 +349,173 @@ public class ZdfDeMediathek extends PluginForHost {
 
     @Override
     public String getDescription() {
-        return "JDownloader's ZDF Plugin helps downloading videoclips from zdf.de. ZDF provides different video qualities.";
+        return "Lade Video- und Audioinhalte aus der ZDFMediathek herunter";
     }
 
-    private static final String Q_SUBTITLES                                         = "Q_SUBTITLES";
-    private static final String Q_BEST                                              = "Q_BEST";
-    private static final String Q_LOW                                               = "Q_LOW";
-    private static final String Q_HIGH                                              = "Q_HIGH";
-    private static final String Q_VERYHIGH                                          = "Q_VERYHIGH";
-    private static final String Q_HD                                                = "Q_HD";
-    private static final String FASTLINKCHECK                                       = "FASTLINKCHECK";
-    public static final String  NEOMAGAZINROYALE_DE_ADD_ONLY_CURRENT_EPISODE        = "NEOMAGAZINROYALE_DE_ADD_ONLY_CURRENT_EPISODE";
-    public static final boolean defaultNEOMAGAZINROYALE_DE_ADD_ONLY_CURRENT_EPISODE = false;
-
-    private void setConfigElements() {
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), Q_SUBTITLES, JDL.L("plugins.hoster.zdf.subtitles", "Download subtitle whenever possible")).setDefaultValue(false));
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_SEPARATOR));
-        final ConfigEntry bestonly = new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), Q_BEST, JDL.L("plugins.hoster.zdf.best", "Load best version ONLY")).setDefaultValue(false);
-        getConfig().addEntry(bestonly);
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_SEPARATOR));
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), Q_LOW, JDL.L("plugins.hoster.zdf.loadlow", "Load low version")).setDefaultValue(true).setEnabledCondidtion(bestonly, false));
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), Q_HIGH, JDL.L("plugins.hoster.zdf.loadhigh", "Load high version")).setDefaultValue(true).setEnabledCondidtion(bestonly, false));
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), Q_VERYHIGH, JDL.L("plugins.hoster.zdf.loadveryhigh", "Load veryhigh version")).setDefaultValue(true).setEnabledCondidtion(bestonly, false));
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), Q_HD, JDL.L("plugins.hoster.zdf.loadhd", "Load HD version")).setDefaultValue(true).setEnabledCondidtion(bestonly, false));
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), FASTLINKCHECK, JDL.L("plugins.hoster.zdf.fastlinkcheck", "Aktiviere schnellen Linkcheck?\r\nFalls aktiv: Dateigrößen sind erst beim Downloadstart sichtbar!")).setDefaultValue(false));
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), NEOMAGAZINROYALE_DE_ADD_ONLY_CURRENT_EPISODE, JDL.L("plugins.hoster.zdf.neomagazin_royale_de_current_episode", "Füge nur die aktuelle Folge 'Neo Magazin Royale' beim Einfügen von 'http://www.neo-magazin-royale.de/zdi/' ein?")).setDefaultValue(defaultNEOMAGAZINROYALE_DE_ADD_ONLY_CURRENT_EPISODE));
+    @Override
+    public Class<? extends PluginConfigInterface> getConfigInterface() {
+        return ZdfmediathekConfigInterface.class;
     }
 
+    public static interface ZdfmediathekConfigInterface extends PluginConfigInterface {
+        public static class TRANSLATION {
+            public String getFastLinkcheckEnabled_label() {
+                return _JDT.T.lit_enable_fast_linkcheck();
+            }
+
+            public String getGrabSubtitleEnabled_label() {
+                return _JDT.T.lit_add_subtitles();
+            }
+
+            public String getGrabAudio_label() {
+                return _JDT.T.lit_add_audio();
+            }
+
+            public String getGrabBESTEnabled_label() {
+                return _JDT.T.lit_add_only_the_best_video_quality();
+            }
+
+            public String getOnlyBestVideoQualityOfSelectedQualitiesEnabled_label() {
+                return _JDT.T.lit_add_only_the_best_video_quality_within_user_selected_formats();
+            }
+
+            public String getNeoMagazinRoyaleDeOnlyGrabCurrentEpisode_label() {
+                /* Translation not required for this */
+                return "Füge nur die aktuelle Folge 'Neo Magazin Royale' beim Einfügen von 'http://www.neo-magazin-royale.de/zdi/' ein?";
+            }
+
+            public String getAddUnknownQualitiesEnabled_label() {
+                return _JDT.T.lit_add_unknown_formats();
+            }
+        }
+
+        public static final TRANSLATION TRANSLATION = new TRANSLATION();
+
+        @DefaultBooleanValue(true)
+        @Order(8)
+        boolean isNeoMagazinRoyaleDeOnlyGrabCurrentEpisode();
+
+        void setNeoMagazinRoyaleDeOnlyGrabCurrentEpisode(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(9)
+        boolean isFastLinkcheckEnabled();
+
+        void setFastLinkcheckEnabled(boolean b);
+
+        @DefaultBooleanValue(false)
+        @Order(10)
+        boolean isGrabSubtitleEnabled();
+
+        void setGrabSubtitleEnabled(boolean b);
+
+        @DefaultBooleanValue(false)
+        @Order(11)
+        boolean isGrabAudio();
+
+        void setGrabAudio(boolean b);
+
+        @DefaultBooleanValue(false)
+        @Order(20)
+        boolean isGrabBESTEnabled();
+
+        void setGrabBESTEnabled(boolean b);
+
+        @AboutConfig
+        @DefaultBooleanValue(false)
+        @Order(21)
+        boolean isOnlyBestVideoQualityOfSelectedQualitiesEnabled();
+
+        void setOnlyBestVideoQualityOfSelectedQualitiesEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(21)
+        boolean isAddUnknownQualitiesEnabled();
+
+        void setAddUnknownQualitiesEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(30)
+        boolean isGrabHLS170pVideoEnabled();
+
+        void setGrabHLS170pVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(40)
+        boolean isGrabHLS270pVideoEnabled();
+
+        void setGrabHLS270pVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(50)
+        boolean isGrabHLS360pVideoEnabled();
+
+        void setGrabHLS360pVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(60)
+        boolean isGrabHLS480pVideoEnabled();
+
+        void setGrabHLS480pVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(70)
+        boolean isGrabHLS570pVideoEnabled();
+
+        void setGrabHLS570pVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(80)
+        boolean isGrabHLS720pVideoEnabled();
+
+        void setGrabHLS720pVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(90)
+        boolean isGrabHTTPMp4_170pVideoEnabled();
+
+        void setGrabHTTPMp4_170pVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(100)
+        boolean isGrabHTTPMp4_270pVideoEnabled();
+
+        void setGrabHTTPMp4_270pVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(110)
+        boolean isGrabHTTPMp4_480pVideoEnabled();
+
+        void setGrabHTTPMp4_480pVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(120)
+        boolean isGrabHTTPMp4HDVideoEnabled();
+
+        void setGrabHTTPMp4HDVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(130)
+        boolean isGrabHTTPWebmLowVideoEnabled();
+
+        void setGrabHTTPWebmLowVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(140)
+        boolean isGrabHTTPWebmHighVideoEnabled();
+
+        void setGrabHTTPWebmHighVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(150)
+        boolean isGrabHTTPWebmVeryHighVideoEnabled();
+
+        void setGrabHTTPWebmVeryHighVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(160)
+        boolean isGrabHTTPWebmHDVideoEnabled();
+
+        void setGrabHTTPWebmHDVideoEnabled(boolean b);
+    }
 }

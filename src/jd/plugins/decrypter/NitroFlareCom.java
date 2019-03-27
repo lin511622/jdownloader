@@ -18,6 +18,8 @@ package jd.plugins.decrypter;
 
 import java.util.ArrayList;
 
+import org.jdownloader.plugins.components.antiDDoSForDecrypt;
+
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
 import jd.nutils.encoding.Encoding;
@@ -26,24 +28,28 @@ import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
-import jd.plugins.PluginForDecrypt;
 import jd.plugins.components.PluginJSonUtils;
 
-@DecrypterPlugin(revision = "$Revision: 20458 $", interfaceVersion = 2, names = { "nitroflare.com" }, urls = { "https?://(?:www\\.)?nitroflare\\.com/folder/(\\d+)/([A-Za-z0-9=]+)" })
-public class NitroFlareCom extends PluginForDecrypt {
+/**
+ *
+ * @author raztoki
+ *
+ */
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "nitroflare.com" }, urls = { "https?://(?:www\\.)?nitroflare\\.com/folder/(\\d+)/([A-Za-z0-9=]+)" })
+public class NitroFlareCom extends antiDDoSForDecrypt {
 
     public NitroFlareCom(PluginWrapper wrapper) {
         super(wrapper);
     }
 
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
-        ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
-        String parameter = param.toString();
-        String userid = new Regex(parameter, this.getSupportedLinks().pattern()).getMatch(0);
-        String folderid = new Regex(parameter, this.getSupportedLinks().pattern()).getMatch(1);
-        br.postPage("https://nitroflare.com/ajax/folder.php", "userId=" + userid + "&folder=" + Encoding.urlEncode(folderid) + "&fetchAll=1");
-        String fpName = PluginJSonUtils.getJsonValue(br, "name");
-        String filesArray = PluginJSonUtils.getJsonArray(br, "files");
+        final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
+        final String parameter = param.toString();
+        final String userid = new Regex(parameter, this.getSupportedLinks().pattern()).getMatch(0);
+        final String folderid = new Regex(parameter, this.getSupportedLinks().pattern()).getMatch(1);
+        postPage("https://nitroflare.com/ajax/folder.php", "userId=" + userid + "&folder=" + Encoding.urlEncode(folderid) + "&fetchAll=1");
+        final String fpName = PluginJSonUtils.getJsonValue(br, "name");
+        final String filesArray = PluginJSonUtils.getJsonArray(br, "files");
         if (!inValidate(filesArray)) {
             String[] files = new Regex(filesArray, "\\{\"name\":.*?\\}(?:,|\\])").getColumn(-1);
             if (files != null && files.length > 0) {
@@ -67,22 +73,6 @@ public class NitroFlareCom extends PluginForDecrypt {
             fp.addLinks(decryptedLinks);
         }
         return decryptedLinks;
-    }
-
-    /**
-     * Validates string to series of conditions, null, whitespace, or "". This saves effort factor within if/for/while statements
-     *
-     * @param s
-     *            Imported String to match against.
-     * @return <b>true</b> on valid rule match. <b>false</b> on invalid rule match.
-     * @author raztoki
-     */
-    private boolean inValidate(final String s) {
-        if (s == null || s != null && (s.matches("[\r\n\t ]+") || s.equals(""))) {
-            return true;
-        } else {
-            return false;
-        }
     }
 
     /* NO OVERRIDE!! */

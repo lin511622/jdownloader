@@ -26,7 +26,6 @@ import org.jdownloader.captcha.blacklist.CaptchaBlackList;
 import org.jdownloader.captcha.v2.ChallengeResponseController;
 import org.jdownloader.captcha.v2.solver.browser.BrowserViewport;
 import org.jdownloader.captcha.v2.solver.browser.BrowserWindow;
-import org.jdownloader.captcha.v2.solverjob.SolverJob;
 import org.jdownloader.gui.IconKey;
 import org.jdownloader.gui.helpdialogs.HelpDialog;
 import org.jdownloader.gui.translate._GUI;
@@ -35,7 +34,6 @@ import org.jdownloader.plugins.CaptchaStepProgress;
 import org.jdownloader.settings.staticreferences.CFG_GUI;
 
 public class CaptchaHelperHostPluginConfidentCaptcha extends AbstractCaptchaHelperConfidentCaptcha<PluginForHost> {
-
     public CaptchaHelperHostPluginConfidentCaptcha(final PluginForHost plugin, final Browser br, final String siteKey) {
         super(plugin, br, siteKey);
     }
@@ -64,13 +62,12 @@ public class CaptchaHelperHostPluginConfidentCaptcha extends AbstractCaptchaHelp
             link.addPluginProgress(progress);
             final boolean insideAccountChecker = Thread.currentThread() instanceof AccountCheckerThread;
             final ConfidentCaptchaChallenge c = new ConfidentCaptchaChallenge(plugin, sitekey) {
-
                 @Override
                 public BrowserViewport getBrowserViewport(BrowserWindow screenResource, Rectangle elementBounds) {
                     return null;
                 }
             };
-            c.setTimeout(plugin.getCaptchaTimeout());
+            c.setTimeout(plugin.getChallengeTimeout(c));
             if (insideAccountChecker || FilePackage.isDefaultFilePackage(link.getFilePackage())) {
                 /**
                  * account login -> do not use anticaptcha services
@@ -83,12 +80,12 @@ public class CaptchaHelperHostPluginConfidentCaptcha extends AbstractCaptchaHelp
                 }
             }
             plugin.invalidateLastChallengeResponse();
-            final BlacklistEntry blackListEntry = CaptchaBlackList.getInstance().matches(c);
+            final BlacklistEntry<?> blackListEntry = CaptchaBlackList.getInstance().matches(c);
             if (blackListEntry != null) {
                 logger.warning("Cancel. Blacklist Matching");
                 throw new CaptchaException(blackListEntry);
             }
-            final SolverJob<String> job = ChallengeResponseController.getInstance().handle(c);
+            ChallengeResponseController.getInstance().handle(c);
             if (!c.isSolved()) {
                 throw new PluginException(LinkStatus.ERROR_CAPTCHA);
             }
@@ -102,7 +99,6 @@ public class CaptchaHelperHostPluginConfidentCaptcha extends AbstractCaptchaHelp
                 switch (e.getSkipRequest()) {
                 case BLOCK_ALL_CAPTCHAS:
                     CaptchaBlackList.getInstance().add(new BlockAllDownloadCaptchasEntry());
-
                     if (CFG_GUI.HELP_DIALOGS_ENABLED.isEnabled()) {
                         HelpDialog.show(false, true, HelpDialog.getMouseLocation(), "SKIPPEDHOSTER", Dialog.STYLE_SHOW_DO_NOT_DISPLAY_AGAIN, _GUI.T.ChallengeDialogHandler_viaGUI_skipped_help_title(), _GUI.T.ChallengeDialogHandler_viaGUI_skipped_help_msg(), new AbstractIcon(IconKey.ICON_SKIPPED, 32));
                     }
@@ -113,7 +109,6 @@ public class CaptchaHelperHostPluginConfidentCaptcha extends AbstractCaptchaHelp
                         HelpDialog.show(false, true, HelpDialog.getMouseLocation(), "SKIPPEDHOSTER", Dialog.STYLE_SHOW_DO_NOT_DISPLAY_AGAIN, _GUI.T.ChallengeDialogHandler_viaGUI_skipped_help_title(), _GUI.T.ChallengeDialogHandler_viaGUI_skipped_help_msg(), new AbstractIcon(IconKey.ICON_SKIPPED, 32));
                     }
                     break;
-
                 case BLOCK_PACKAGE:
                     CaptchaBlackList.getInstance().add(new BlockDownloadCaptchasByPackage(link.getParentNode()));
                     if (CFG_GUI.HELP_DIALOGS_ENABLED.isEnabled()) {
@@ -144,5 +139,4 @@ public class CaptchaHelperHostPluginConfidentCaptcha extends AbstractCaptchaHelp
             link.removePluginProgress(progress);
         }
     }
-
 }

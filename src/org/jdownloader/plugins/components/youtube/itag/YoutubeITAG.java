@@ -9,6 +9,12 @@ import java.util.List;
 import org.appwork.utils.parser.UrlQuery;
 
 public enum YoutubeITAG {
+    DASH_VIDEO_144p_AV1(394, StreamContainer.DASH_VIDEO, VideoResolution.P_144, VideoCodec.AV1, VideoFrameRate.FPS_30),
+    DASH_VIDEO_240p_AV1(395, StreamContainer.DASH_VIDEO, VideoResolution.P_240, VideoCodec.AV1, VideoFrameRate.FPS_30),
+    DASH_VIDEO_360p_AV1(396, StreamContainer.DASH_VIDEO, VideoResolution.P_360, VideoCodec.AV1, VideoFrameRate.FPS_30),
+    DASH_VIDEO_480p_AV1(397, StreamContainer.DASH_VIDEO, VideoResolution.P_480, VideoCodec.AV1, VideoFrameRate.FPS_30),
+    DASH_VIDEO_720p_AV1(398, StreamContainer.DASH_VIDEO, VideoResolution.P_720, VideoCodec.AV1, VideoFrameRate.FPS_30),
+    DASH_VIDEO_1080p_AV1(399, StreamContainer.DASH_VIDEO, VideoResolution.P_1920, VideoCodec.AV1, VideoFrameRate.FPS_30),
     DASH_AUDIO_128K_AAC(140, StreamContainer.DASH_AUDIO, AudioCodec.AAC, AudioBitrate.KBIT_128),
     // DASH_AUDIO_48K_OPUS(249, null, null, "Opus", "38kbit", YoutubeITAG.OPUS_48),
     DASH_AUDIO_128K_WEBM(171, StreamContainer.DASH_AUDIO, AudioCodec.VORBIS, AudioBitrate.KBIT_128),
@@ -28,9 +34,10 @@ public enum YoutubeITAG {
     DASH_AUDIO_256K_AAC(141, StreamContainer.DASH_AUDIO, AudioCodec.AAC, AudioBitrate.KBIT_256),
     DASH_AUDIO_48K_AAC(139, StreamContainer.DASH_AUDIO, AudioCodec.AAC, AudioBitrate.KBIT_48),
     // Opus Audio (ID 251) was changed from 160 kbit to 128 kbit https://board.jdownloader.org/showpost.php?p=371689&postcount=2238
+    DASH_AUDIO_512K_OPUS_SPATIAL(338, StreamContainer.DASH_AUDIO, AudioCodec.OPUS_SPATIAL, AudioBitrate.KBIT_512),
     DASH_AUDIO_OPUS_160KBIT(251, StreamContainer.DASH_AUDIO, AudioCodec.OPUS, AudioBitrate.KBIT_128),
-    DASH_AUDIO_OPUS_48KBIT(249, StreamContainer.DASH_AUDIO, AudioCodec.OPUS, AudioBitrate.KBIT_48),
     DASH_AUDIO_OPUS_64KBIT(250, StreamContainer.DASH_AUDIO, AudioCodec.OPUS, AudioBitrate.KBIT_64),
+    DASH_AUDIO_OPUS_48KBIT(249, StreamContainer.DASH_AUDIO, AudioCodec.OPUS, AudioBitrate.KBIT_48),
     DASH_VIDEO_1080_H264_FPS60(299, StreamContainer.DASH_VIDEO, VideoResolution.P_1080, VideoCodec.H264, VideoFrameRate.FPS_60),
     DASH_VIDEO_1080P_H264(137, StreamContainer.DASH_VIDEO, VideoResolution.P_1080, VideoCodec.H264, VideoFrameRate.FPS_30),
     // http://www.youtube.com/watch?v=gBabKoHSErI
@@ -46,15 +53,14 @@ public enum YoutubeITAG {
     DASH_VIDEO_360P_H264(134, StreamContainer.DASH_VIDEO, VideoResolution.P_360, VideoCodec.H264, VideoFrameRate.FPS_30),
     DASH_VIDEO_480P_H264(135, StreamContainer.DASH_VIDEO, VideoResolution.P_480, VideoCodec.H264, VideoFrameRate.FPS_30),
     /*
-     *
-     *
+     * 
+     * 
      * Video ID : 1 Format : AVC Format/Info : Advanced Video Codec Format profile : Main@L3 Format settings, CABAC : Yes Format settings,
      * ReFrames : 3 frames Codec ID : avc1 Codec ID/Info : Advanced Video Coding Duration : 6s 773ms Bit rate : 1 063 Kbps Width : 720
      * pixels Height : 480 pixels Display aspect ratio : 3:2 Frame rate mode : Variable Frame rate : 29.970 fps Minimum frame rate : 29.970
      * fps Maximum frame rate : 30.364 fps Standard : NTSC Color space : YUV Chroma subsampling : 4:2:0 Bit depth : 8 bits Scan type :
      * Progressive Bits/(Pixel*Frame) : 0.103 Stream size : 879 KiB (100%) Encoded date : UTC 2013-02-23 01:52:16 Tagged date : UTC
      * 2013-02-23 01:52:16
-     *
      */
     // in my testcase ?v=Qw9oX-kZ_9k 212 had a higher bitrate than 135. It seems that 212 is kind of old
     DASH_VIDEO_480P_H264_2(212, StreamContainer.DASH_VIDEO, VideoResolution.P_480, VideoCodec.H264, VideoFrameRate.FPS_30),
@@ -69,6 +75,22 @@ public enum YoutubeITAG {
     // Handy/Portrait Format https://www.youtube.com/watch?v=kiZse2vZXfw
     DASH_VIDEO_ITAG315_VP9_1920P_60FPS(315, StreamContainer.DASH_VIDEO, VideoResolution.P_1920, VideoCodec.VP9, VideoFrameRate.FPS_60),
     DASH_VIDEO_ITAG315_VP9_2160P_60FPS(315, StreamContainer.DASH_VIDEO, VideoResolution.P_2160, VideoCodec.VP9, VideoFrameRate.FPS_60),
+    // HDR
+    // bitrate 20mb
+    DASH_VIDEO_VP9_2160P_60FPS(337, StreamContainer.DASH_VIDEO, VideoResolution.P_2160, VideoCodec.VP9_HDR, VideoFrameRate.FPS_60),
+    // br 11166389
+    DASH_VIDEO_VP9_1440P_60FPS(336, StreamContainer.DASH_VIDEO, VideoResolution.P_1440, VideoCodec.VP9_HDR, VideoFrameRate.FPS_60),
+    // br 3201533
+    DASH_VIDEO_VP9_1080P_60FPS(335, StreamContainer.DASH_VIDEO, VideoResolution.P_1080, VideoCodec.VP9_HDR, VideoFrameRate.FPS_60),
+    // br 1991504
+    DASH_VIDEO_VP9_720P_60FPS(334, StreamContainer.DASH_VIDEO, VideoResolution.P_720, VideoCodec.VP9_HDR, VideoFrameRate.FPS_60),
+    // br 909472
+    DASH_VIDEO_VP9_480P_60FPS(333, StreamContainer.DASH_VIDEO, VideoResolution.P_480, VideoCodec.VP9_HDR, VideoFrameRate.FPS_60),
+    DASH_VIDEO_VP9_360P_60FPS(332, StreamContainer.DASH_VIDEO, VideoResolution.P_360, VideoCodec.VP9_HDR, VideoFrameRate.FPS_60),
+    // br 256302
+    DASH_VIDEO_VP9_240P_60FPS(331, StreamContainer.DASH_VIDEO, VideoResolution.P_240, VideoCodec.VP9_HDR, VideoFrameRate.FPS_60),
+    // br 156637
+    DASH_VIDEO_VP9_144P_60FPS(330, StreamContainer.DASH_VIDEO, VideoResolution.P_144, VideoCodec.VP9_HDR, VideoFrameRate.FPS_60),
     // has usually a lower quality than DASH_VIDEO_2160_H264_FPS_60
     DASH_VIDEO_ORIGINAL_H264_GENERIC_4K(138, StreamContainer.DASH_VIDEO, VideoResolution.P_2160, VideoCodec.H264, VideoFrameRate.FPS_30),
     DASH_VIDEO_ORIGINAL_H264_GENERIC_1080P(138, StreamContainer.DASH_VIDEO, VideoResolution.P_1080, VideoCodec.H264, VideoFrameRate.FPS_30),
@@ -169,7 +191,6 @@ public enum YoutubeITAG {
     HLS_VIDEO_MP4_720P_AUDIO_AAC_300(300, StreamContainer.MP4, VideoResolution.P_720, VideoCodec.H264, VideoFrameRate.FPS_30, AudioCodec.AAC, AudioBitrate.KBIT_256),
     HLS_VIDEO_MP4_1080P_AUDIO_AAC(96, StreamContainer.MP4, VideoResolution.P_1080, VideoCodec.H264, VideoFrameRate.FPS_30, AudioCodec.AAC, AudioBitrate.KBIT_256);
     private static HashMap<Integer, List<YoutubeITAG>> TAG_MAP = new HashMap<Integer, List<YoutubeITAG>>();
-
     static {
         for (YoutubeITAG tag : values()) {
             List<YoutubeITAG> lst = TAG_MAP.get(tag.getITAG());

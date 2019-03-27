@@ -9,10 +9,13 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 import java.util.WeakHashMap;
 
 import jd.http.Browser;
@@ -45,8 +48,29 @@ public class ScriptThread extends Thread implements JSShutterDelegate {
     private Global                       scope;
     private Context                      cx;
     private final LogSource              logger;
-
     private final EventScripterExtension extension;
+    private boolean                      checkPermissions = true;
+    private Set<String>                  permissions      = new HashSet<String>();
+
+    public boolean isPermissionSet(String permission) {
+        synchronized (permission) {
+            return permissions.contains(permission);
+        }
+    }
+
+    public void setPermissionSet(String permission) {
+        synchronized (permission) {
+            permissions.add(permission);
+        }
+    }
+
+    public boolean isCheckPermissions() {
+        return checkPermissions;
+    }
+
+    public void setCheckPermissions(boolean checkPermissions) {
+        this.checkPermissions = checkPermissions;
+    }
 
     public LogSource getLogger() {
         return logger;
@@ -62,7 +86,7 @@ public class ScriptThread extends Thread implements JSShutterDelegate {
     @Override
     public void start() {
         super.start();
-        if (script.getEventTrigger().isSynchronous()) {
+        if (isSynchronous()) {
             try {
                 join();
             } catch (InterruptedException e) {
@@ -86,38 +110,51 @@ public class ScriptThread extends Thread implements JSShutterDelegate {
         }
     }
 
+    public boolean isSynchronous() {
+        return false;
+    }
+
     @Override
     public void run() {
-        final Object scriptLock = getScriptLock(script);
-        synchronized (scriptLock) {
-            if (!script.isEnabled()) {
-                return;
+        if (isSynchronous()) {
+            final Object scriptLock = getScriptLock(script);
+            synchronized (scriptLock) {
+                if (script.isEnabled()) {
+                    executeScipt();
+                }
             }
-            scope = new Global();
-            cx = Context.enter();
+        } else {
+            if (script.isEnabled()) {
+                executeScipt();
+            }
+        }
+    }
+
+    private synchronized void executeScipt() {
+        scope = new Global();
+        cx = Context.enter();
+        try {
             cx.setOptimizationLevel(-1);
             scope.init(cx);
             cx.setOptimizationLevel(-1);
             cx.setLanguageVersion(Context.VERSION_1_5);
+            String preloadClasses = preInitClasses();
+            evalTrusted(preloadClasses);
+            // required by some libraries
+            evalTrusted("global=this;");
+            initEnvironment();
+            cleanupClasses();
             try {
-                String preloadClasses = preInitClasses();
-                evalTrusted(preloadClasses);
-                // required by some libraries
-                evalTrusted("global=this;");
-                initEnvironment();
-                cleanupClasses();
-                try {
-                    evalUNtrusted(script.getScript());
-                } finally {
-                    finalizeEnvironment();
-                }
-                // ProcessBuilderFactory.runCommand(commandline);
-            } catch (Throwable e) {
-                logger.log(e);
-                notifyAboutException(e);
+                evalUNtrusted(script.getScript());
             } finally {
-                Context.exit();
+                finalizeEnvironment();
             }
+            // ProcessBuilderFactory.runCommand(commandline);
+        } catch (Throwable e) {
+            logger.log(e);
+            notifyAboutException(e);
+        } finally {
+            Context.exit();
         }
     }
 
@@ -134,7 +171,7 @@ public class ScriptThread extends Thread implements JSShutterDelegate {
         dupes.add("net.sourceforge.htmlunit.corejs.javascript.Function");
         dupes.add("void");
         StringBuilder preloadClasses = new StringBuilder("");
-        for (Class<?> c : new Class[] { Boolean.class, Integer.class, Long.class, String.class, Double.class, Float.class, net.sourceforge.htmlunit.corejs.javascript.EcmaError.class, ScriptEnvironment.class, EnvironmentException.class }) {
+        for (Class<?> c : new Class[] { Boolean.class, Integer.class, Byte.class, Long.class, String.class, Double.class, Float.class, ArrayList.class, List.class, LinkedList.class, Map.class, HashMap.class, Set.class, HashSet.class, net.sourceforge.htmlunit.corejs.javascript.EcmaError.class, ScriptEnvironment.class, EnvironmentException.class }) {
             if (c.isArray()) {
                 c = c.getComponentType();
             }

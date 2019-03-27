@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import org.jdownloader.plugins.components.antiDDoSForHost;
@@ -31,14 +30,13 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 
-@HostPlugin(revision = "$Revision: 30002 $", interfaceVersion = 3, names = { "pxhst.co" }, urls = { "http://(?:www\\.)?(?:pixhst\\.com|pxhst\\.co|avxhome\\.se)/pictures/\\d+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "pxhst.co" }, urls = { "https?://(?:www\\.)?(?:pixhst\\.com|pxhst\\.co|avxhome\\.se)/pictures/\\d+" })
 public class PixhstCom extends antiDDoSForHost {
-
     public PixhstCom(PluginWrapper wrapper) {
         super(wrapper);
     }
 
-    // note: pixhst.com is parked.
+    // note: pixhst.com is parked, related to: PixhostTo (pixhost.to)
     @Override
     public void correctDownloadLink(DownloadLink link) throws Exception {
         // some times pxhost redirects to avxhome other times not!
@@ -51,7 +49,7 @@ public class PixhstCom extends antiDDoSForHost {
 
     @Override
     public String getAGBLink() {
-        return "http://pixhst.com/dmca.html";
+        return "https://pixhst.com/dmca.html";
     }
 
     @SuppressWarnings("deprecation")
@@ -61,6 +59,9 @@ public class PixhstCom extends antiDDoSForHost {
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         getPage(downloadLink.getDownloadURL());
+        if (br.getHttpConnection().getResponseCode() == 404) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        }
         final String linkid = new Regex(downloadLink.getDownloadURL(), "(\\d+)$").getMatch(0);
         downloadLink.setLinkID(linkid);
         String filename = br.getRegex("<td colspan='3'>([^<>\"]*?)</td>").getMatch(0);

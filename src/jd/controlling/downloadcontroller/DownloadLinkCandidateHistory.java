@@ -12,7 +12,6 @@ import jd.controlling.downloadcontroller.AccountCache.CachedAccount;
 import jd.plugins.DownloadLink;
 
 import org.appwork.exceptions.WTFException;
-import org.jdownloader.plugins.SkipReason;
 
 public class DownloadLinkCandidateHistory {
 
@@ -128,8 +127,8 @@ public class DownloadLinkCandidateHistory {
 
     public DownloadLinkCandidateResult getBlockingHistory(DownloadLinkCandidateSelector selector, DownloadLinkCandidate candidate) {
         if (selector != null && candidate != null) {
-            final List<DownloadLinkCandidateResult> ret = getResults(candidate.getCachedAccount());
-            final Iterator<DownloadLinkCandidateResult> it = ret.iterator();
+            final List<DownloadLinkCandidateResult> results = getResults(candidate.getCachedAccount());
+            final Iterator<DownloadLinkCandidateResult> it = results.iterator();
             while (it.hasNext()) {
                 final DownloadLinkCandidateResult next = it.next();
                 switch (next.getResult()) {
@@ -151,7 +150,6 @@ public class DownloadLinkCandidateHistory {
                 case FAILED_EXISTS:
                 case OFFLINE_TRUSTED:
                     /* these results(above) should have ended in removal of DownloadLinkHistory */
-
                 case PROXY_UNAVAILABLE:
                 case CONNECTION_TEMP_UNAVAILABLE:
                     /* if we end up here(results above) -> find the bug :) */
@@ -173,9 +171,9 @@ public class DownloadLinkCandidateHistory {
                     break;
                 }
             }
-            final int maxNumberOfDownloadLinkCandidates = selector.getMaxNumberOfDownloadLinkCandidatesResults(candidate);
-            if (maxNumberOfDownloadLinkCandidates > 0 && size() > maxNumberOfDownloadLinkCandidates) {
-                return new DownloadLinkCandidateResult(SkipReason.TOO_MANY_RETRIES, null, null);
+            final DownloadLinkCandidateResult block = selector.getBlockingDownloadLinkCandidateResult(candidate, results, this);
+            if (block != null) {
+                return block;
             }
         }
         return null;

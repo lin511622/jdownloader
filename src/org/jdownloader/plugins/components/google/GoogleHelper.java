@@ -18,6 +18,19 @@ import javax.xml.xpath.XPath;
 import javax.xml.xpath.XPathConstants;
 import javax.xml.xpath.XPathExpressionException;
 
+import jd.controlling.AccountController;
+import jd.controlling.accountchecker.AccountCheckerThread;
+import jd.http.Browser;
+import jd.http.Cookie;
+import jd.http.Cookies;
+import jd.nutils.encoding.Encoding;
+import jd.parser.html.Form;
+import jd.parser.html.InputField;
+import jd.plugins.Account;
+import jd.plugins.LinkStatus;
+import jd.plugins.PluginException;
+import jd.plugins.components.GoogleService;
+
 import org.appwork.swing.components.ExtTextField;
 import org.appwork.swing.components.TextComponentInterface;
 import org.appwork.uio.InputDialogInterface;
@@ -33,23 +46,9 @@ import org.jdownloader.dialogs.NewPasswordDialogInterface;
 import org.jdownloader.gui.IconKey;
 import org.jdownloader.gui.translate._GUI;
 import org.jdownloader.images.AbstractIcon;
-import org.jdownloader.statistics.StatsManager;
 import org.jdownloader.translate._JDT;
 import org.w3c.dom.Document;
 import org.w3c.dom.Node;
-
-import jd.controlling.AccountController;
-import jd.controlling.accountchecker.AccountCheckerThread;
-import jd.http.Browser;
-import jd.http.Cookie;
-import jd.http.Cookies;
-import jd.nutils.encoding.Encoding;
-import jd.parser.html.Form;
-import jd.parser.html.InputField;
-import jd.plugins.Account;
-import jd.plugins.LinkStatus;
-import jd.plugins.PluginException;
-import jd.plugins.components.GoogleService;
 
 public class GoogleHelper {
     private static final String COOKIES2                                      = "googleComCookies";
@@ -237,7 +236,7 @@ public class GoogleHelper {
                 if (br.containsHTML("Please change your password")) {
                     Form changePassword = br.getFormbyAction("https://accounts.google.com/ChangePassword");
                     if (changePassword != null) {
-                        CrossSystem.openURLOrShowMessage("http://www.google.com/support/accounts/bin/answer.py?answer=46526");
+                        CrossSystem.openURL("http://www.google.com/support/accounts/bin/answer.py?answer=46526");
                         NewPasswordDialog d = new NewPasswordDialog(UIOManager.LOGIC_COUNTDOWN, _JDT.T.google_password_change_title(), _JDT.T.google_password_change_message(account.getUser()), null, _GUI.T.lit_continue(), null);
                         d.setTimeout(5 * 60 * 1000);
                         NewPasswordDialogInterface handler = UIOManager.I().show(NewPasswordDialogInterface.class, d);
@@ -261,7 +260,7 @@ public class GoogleHelper {
                 if (verifyItsYouByEmail != null) {
                     String example = br.getRegex("<label.*?id=\"RecoveryEmailChallengeLabel\">.*?<span.*?>([^<]+)</span>.*?</label>").getMatch(0);
                     if (example == null) {
-                        CrossSystem.openURLOrShowMessage(br.getURL());
+                        CrossSystem.openURL(br.getURL());
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "Verify it's you: Email", PluginException.VALUE_ID_PREMIUM_TEMP_DISABLE);
                     } else {
                         InputDialog d = new InputDialog(0, _JDT.T.google_email_verification_title(), _JDT.T.google_email_verification_message(example.trim()), null, null, _GUI.T.lit_continue(), null) {
@@ -284,14 +283,14 @@ public class GoogleHelper {
                 }
                 if (br.containsHTML("privacyreminder")) {
                     // google wants you to accept the new privacy policy
-                    CrossSystem.openURLOrShowMessage("https://accounts.google.com/ServiceLogin?uilel=3&service=" + Encoding.urlEncode(getService().serviceName) + "&passive=true&continue=" + Encoding.urlEncode(getService().continueAfterServiceLogin) + "&hl=en_US&ltmpl=sso");
+                    CrossSystem.openURL("https://accounts.google.com/ServiceLogin?uilel=3&service=" + Encoding.urlEncode(getService().serviceName) + "&passive=true&continue=" + Encoding.urlEncode(getService().continueAfterServiceLogin) + "&hl=en_US&ltmpl=sso");
                     if (!UIOManager.I().showConfirmDialog(UIOManager.BUTTONS_HIDE_CANCEL, _JDT.T.google_helper_privacy_update_title(), _JDT.T.google_helper_privacy_update_message(account.getUser()), null, _GUI.T.lit_continue(), null)) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "Privacy Reminder Required", PluginException.VALUE_ID_PREMIUM_TEMP_DISABLE);
                     }
                     while (true) {
                         postPageFollowRedirects(br, "https://accounts.google.com/ServiceLoginAuth", post);
                         if (br.containsHTML("privacyreminder")) {
-                            CrossSystem.openURLOrShowMessage("https://accounts.google.com/ServiceLogin?uilel=3&service=" + Encoding.urlEncode(getService().serviceName) + "&passive=true&continue=" + Encoding.urlEncode(getService().continueAfterServiceLogin) + "&hl=en_US&ltmpl=sso");
+                            CrossSystem.openURL("https://accounts.google.com/ServiceLogin?uilel=3&service=" + Encoding.urlEncode(getService().serviceName) + "&passive=true&continue=" + Encoding.urlEncode(getService().continueAfterServiceLogin) + "&hl=en_US&ltmpl=sso");
                             if (!UIOManager.I().showConfirmDialog(UIOManager.BUTTONS_HIDE_CANCEL, _JDT.T.google_helper_privacy_update_title(), _JDT.T.google_helper_privacy_update_message_retry(account.getUser()), null, _GUI.T.lit_continue(), null)) {
                                 throw new PluginException(LinkStatus.ERROR_PREMIUM, "Privacy Reminder Required", PluginException.VALUE_ID_PREMIUM_TEMP_DISABLE);
                             }
@@ -391,7 +390,6 @@ public class GoogleHelper {
         }
         String number = br.getRegex("<span\\s+class\\s*=\\s*\"twostepphone\".*?>(.*?)</span>").getMatch(0);
         if (number != null) {
-            StatsManager.I().track("google/twofactor/1");
             InputDialog d = new InputDialog(0, _JDT.T.Google_helper_2factor_sms_dialog_title(), _JDT.T.Google_helper_2factor_sms_dialog_msg(number.trim()), null, new AbstractIcon(IconKey.ICON_TEXT, 32), null, null);
             InputDialogInterface handler = UIOManager.I().show(InputDialogInterface.class, d);
             handler.throwCloseExceptions();
@@ -404,7 +402,6 @@ public class GoogleHelper {
             submitForm(br, form);
         } else {
             // new version implemented on 31th july 2015
-            StatsManager.I().track("google/twofactor/2");
             number = br.getRegex("<span\\s+class\\s*=\\s*\"twostepphone\".*?>(.*?)</span>").getMatch(0);
             InputDialog d = new InputDialog(0, _JDT.T.Google_helper_2factor_sms_dialog_title(), _JDT.T.Google_helper_2factor_sms_dialog_msg(number.trim()), null, new AbstractIcon(IconKey.ICON_TEXT, 32), null, null);
             InputDialogInterface handler = UIOManager.I().show(InputDialogInterface.class, d);
@@ -422,7 +419,6 @@ public class GoogleHelper {
 
     private void handle2FactorAuthSmsNew2(Form form) throws Exception {
         // //*[@id="verifyText"]
-        StatsManager.I().track("activecheck/googlehelper/handle2FactorAuthSmsNew2");
         if (br.containsHTML("idv-delivery-error-container")) {
             // <div class="infobanner">
             // <p class="error-msg infobanner-content"
@@ -497,7 +493,6 @@ public class GoogleHelper {
 
     private void handle2FactorAuthSmsNew(Form form) throws Exception {
         // //*[@id="verifyText"]
-        StatsManager.I().track("activecheck/googlehelper/handle2FactorAuthSmsNew");
         if (br.containsHTML("idv-delivery-error-container")) {
             // <div class="infobanner">
             // <p class="error-msg infobanner-content"

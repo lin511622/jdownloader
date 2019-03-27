@@ -1,25 +1,47 @@
 package org.jdownloader.gui.views.linkgrabber.addlinksdialog;
 
+import java.awt.Image;
+import java.awt.Point;
 import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.DataFlavor;
+import java.awt.datatransfer.StringSelection;
 import java.awt.datatransfer.Transferable;
+import java.awt.datatransfer.UnsupportedFlavorException;
 import java.awt.event.InputEvent;
+import java.io.IOException;
 import java.lang.reflect.Method;
 
 import javax.swing.Icon;
 import javax.swing.JComponent;
 import javax.swing.TransferHandler;
 
+import jd.controlling.ClipboardMonitoring;
+import jd.controlling.ClipboardMonitoring.HTMLFragment;
+import jd.parser.html.HTMLParser;
+
 import org.appwork.swing.components.ExtTextArea;
 
 public class DragAndDropDelegater extends TransferHandler {
-
     private final TransferHandler org;
-    private final AddLinksDialog  dialog;
 
-    public DragAndDropDelegater(AddLinksDialog addLinksDialog, ExtTextArea input) {
+    public DragAndDropDelegater(ExtTextArea input) {
         org = input.getTransferHandler();
-        dialog = addLinksDialog;
+    }
+
+    public void setDragImage(Image img) {
+        org.setDragImage(img);
+    }
+
+    public Image getDragImage() {
+        return org.getDragImage();
+    }
+
+    public void setDragImageOffset(Point p) {
+        org.setDragImageOffset(p);
+    }
+
+    public Point getDragImageOffset() {
+        return org.getDragImageOffset();
     }
 
     @Override
@@ -34,8 +56,31 @@ public class DragAndDropDelegater extends TransferHandler {
 
     @Override
     public boolean importData(TransferSupport support) {
-        dialog.asyncImportData(support);
-        return true;
+        try {
+            final HTMLFragment htmlFragment = ClipboardMonitoring.getHTMLFragment(support.getTransferable(), support.getDataFlavors());
+            if (htmlFragment != null) {
+                final String[] links = HTMLParser.getHttpLinks(htmlFragment.getFragment(), htmlFragment.getSourceURL());
+                if (links != null && links.length > 0) {
+                    final StringBuilder sb = new StringBuilder();
+                    for (final String link : links) {
+                        if (sb.length() > 0) {
+                            sb.append("\r\n");
+                        }
+                        sb.append(link);
+                    }
+                    final TransferSupport ret = new TransferSupport(support.getComponent(), new StringSelection(sb.toString()));
+                    if (support.isDrop()) {
+                        ret.setDropAction(support.getDropAction());
+                    }
+                    return org.importData(ret);
+                }
+            }
+        } catch (UnsupportedFlavorException e) {
+            e.printStackTrace();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return org.importData(support);
     }
 
     @Override
@@ -86,5 +131,4 @@ public class DragAndDropDelegater extends TransferHandler {
             return;
         }
     }
-
 }

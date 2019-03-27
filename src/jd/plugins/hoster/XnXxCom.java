@@ -13,15 +13,14 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
-
-import java.io.IOException;
 
 import jd.PluginWrapper;
 import jd.config.ConfigContainer;
 import jd.config.ConfigEntry;
-import jd.nutils.encoding.Encoding;
+import jd.http.Browser;
+import jd.http.URLConnectionAdapter;
+import jd.parser.Regex;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
@@ -30,9 +29,8 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.utils.locale.JDL;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "xnxx.com" }, urls = { "http://[\\w\\.]*?(video\\.)?xnxx\\.com/video[a-z0-9\\-]+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "xnxx.com" }, urls = { "https?://[\\w\\.]*?xnxx\\.(?:com|hot1000\\.ru)/video[a-z0-9\\-]+" })
 public class XnXxCom extends PluginForHost {
-
     public XnXxCom(PluginWrapper wrapper) {
         super(wrapper);
         setConfigElements();
@@ -42,6 +40,7 @@ public class XnXxCom extends PluginForHost {
     /* Porn_plugin */
     private static final String  ALLOW_MULTIHOST_USAGE           = "ALLOW_MULTIHOST_USAGE";
     private static final boolean default_allow_multihoster_usage = false;
+    private String               dllink                          = null;
 
     private void setConfigElements() {
         String user_text;
@@ -83,28 +82,17 @@ public class XnXxCom extends PluginForHost {
     }
 
     @Override
-    public void handleFree(DownloadLink downloadLink) throws Exception {
-        requestFileInformation(downloadLink);
-        String dllink = br.getRegex("flv_url=(http.*?)\\&amp;").getMatch(0);
-        if (dllink == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-        }
-        dllink = Encoding.htmlDecode(dllink);
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 0);
-        dl.startDownload();
-    }
-
-    @Override
-    public AvailableStatus requestFileInformation(DownloadLink downloadLink) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
         this.setBrowserExclusive();
         // The regex only takes the short urls but these ones redirect to the real ones to if follow redirects is false the plugin doesn't
         // work at all!
         br.setFollowRedirects(true);
         br.getPage(downloadLink.getDownloadURL() + "/");
-        if (br.containsHTML("(Page not found|This page may be in preparation, please check back in a few minutes)")) {
+        if (br.getHttpConnection().getResponseCode() == 404 || br.containsHTML("(Page not found|This page may be in preparation, please check back in a few minutes)")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-        String filename = br.getRegex("<title>(.+) - XNXX\\.COM</title>").getMatch(0);
+        final String filename_url = new Regex(downloadLink.getDownloadURL(), "/video([a-z0-9\\-]+)").getMatch(0);
+        String filename = br.getRegex("<title>(.+) \\- [A-Za-z0-9\\.]+\\.[A-Za-z0-9]{3,8}</title>").getMatch(0);
         if (filename == null) {
             br.getRegex("<span class=\"style5\"><strong>(.*?)</strong>").getMatch(0);
             if (filename == null) {
@@ -112,14 +100,57 @@ public class XnXxCom extends PluginForHost {
             }
         }
         if (filename == null) {
-            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            /* Fallback */
+            filename = filename_url;
         }
         if (!br.containsHTML(".mp4")) {
             downloadLink.setFinalFileName(filename.trim() + ".flv");
         } else {
             downloadLink.setFinalFileName(filename.trim() + ".mp4");
         }
+        dllink = br.getRegex("setVideoUrlHigh\\('(http.*?)'").getMatch(0);
+        if (dllink != null) {
+            checkDllink(downloadLink, dllink);
+        }
+        if (dllink == null) {
+            dllink = br.getRegex("setVideoUrlLow\\('(http.*?)'").getMatch(0);
+            if (dllink != null) {
+                checkDllink(downloadLink, dllink);
+            }
+        }
+        if (dllink == null) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
         return AvailableStatus.TRUE;
+    }
+
+    private String checkDllink(final DownloadLink link, final String flink) throws Exception {
+        final Browser br2 = br.cloneBrowser();
+        br2.setFollowRedirects(true);
+        URLConnectionAdapter con = null;
+        try {
+            con = br2.openHeadConnection(flink);
+            if (!con.getContentType().contains("html")) {
+                link.setDownloadSize(con.getLongContentLength());
+                dllink = flink;
+            } else {
+                dllink = null;
+            }
+        } catch (final Exception e) {
+        } finally {
+            try {
+                con.disconnect();
+            } catch (final Throwable e) {
+            }
+        }
+        return dllink;
+    }
+
+    @Override
+    public void handleFree(DownloadLink downloadLink) throws Exception {
+        requestFileInformation(downloadLink);
+        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 0);
+        dl.startDownload();
     }
 
     @Override

@@ -19,7 +19,6 @@ package jd.plugins.hoster;
 import java.io.IOException;
 
 import jd.PluginWrapper;
-import jd.http.Browser.BrowserException;
 import jd.parser.html.Form;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
@@ -32,14 +31,14 @@ import jd.plugins.PluginForHost;
 import org.appwork.utils.formatter.SizeFormatter;
 
 //rghost.ru by pspzockerscene
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "rghost.ru" }, urls = { "http://([a-z0-9]+\\.)?rghost\\.(?:net|ru)/.+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "rgho.st" }, urls = { "https?://(?:[a-z0-9]+\\.)?(?:rghost\\.(?:net|ru)|rgho\\.st)/.+" })
 public class RGhostRu extends PluginForHost {
 
     private static final String PWTEXT              = "id=\"password_field\"";
 
-    private static final String type_private_all    = "http://([a-z0-9]+\\.)?rghost\\.net/private/.+";
-    private static final String type_private_direct = "http://([a-z0-9]+\\.)?rghost\\.net/private/[A-Za-z0-9]+/[a-f0-9]{32}/.+";
-    private static final String type_normal_direct  = "http://([a-z0-9]+\\.)?rghost\\.net/[A-Za-z0-9]+/.+";
+    private static final String type_private_all    = "http://([a-z0-9]+\\.)?[^/]+/private/.+";
+    private static final String type_private_direct = "http://([a-z0-9]+\\.)?[^/]+/private/[A-Za-z0-9]+/[a-f0-9]{32}/.+";
+    private static final String type_normal_direct  = "http://([a-z0-9]+\\.)?[^/]+/[A-Za-z0-9]+/.+";
 
     public RGhostRu(PluginWrapper wrapper) {
         super(wrapper);
@@ -50,7 +49,7 @@ public class RGhostRu extends PluginForHost {
 
     @Override
     public String getAGBLink() {
-        return "http://rghost.ru/tos";
+        return "http://rgho.st/tos";
     }
 
     @Override
@@ -58,9 +57,19 @@ public class RGhostRu extends PluginForHost {
         return -1;
     }
 
+    @Override
+    public String rewriteHost(String host) {
+        if ("rghost.net".equals(getHost()) || "rghost.ru".equals(getHost())) {
+            if (host == null || "rghost.net".equals(host) || "rghost.ru".equals(host)) {
+                return "rgho.st";
+            }
+        }
+        return super.rewriteHost(host);
+    }
+
     @SuppressWarnings("deprecation")
     public void correctDownloadLink(DownloadLink link) {
-        String newlink = link.getDownloadURL().replaceAll("((tr|pl)\\.)?rghost\\.(?:net|ru)/", "rghost.net/");
+        String newlink = link.getDownloadURL().replaceAll("((tr|pl)\\.)?rghost\\.(?:net|ru)/", "rgho.st/");
         if (newlink.matches(type_private_direct) || (newlink.matches(type_normal_direct) && !newlink.matches(type_private_all))) {
             /* Directlinks --> Change to normal links */
             newlink = newlink.substring(0, newlink.lastIndexOf("/"));
@@ -71,6 +80,75 @@ public class RGhostRu extends PluginForHost {
             }
         }
         link.setUrlDownload(newlink);
+    }
+
+    @SuppressWarnings("deprecation")
+    @Override
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
+        this.setBrowserExclusive();
+        br.setFollowRedirects(true);
+        br.setAllowedResponseCodes(new int[] { 409, 503 });
+        br.getPage(link.getDownloadURL());
+        if (br.getHttpConnection().getResponseCode() == 404) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        } else if (br.getHttpConnection().getResponseCode() == 409) {
+            /* Cloudflare DNS issue --> In this case definitly offline! */
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        } else if (br.getHttpConnection().getResponseCode() == 503) {
+            link.getLinkStatus().setStatusText("Server maintenance");
+            return AvailableStatus.UNCHECKABLE;
+        }
+        String filename = br.getRegex("class=\"filename\" title=\"([^<>\"]+)\"").getMatch(0);
+        if (filename == null) {
+            filename = br.getRegex("<title>([^<>\"]+)— RGhost — файлообменник</title>").getMatch(0);
+        }
+        String filesize = br.getRegex("<i class=\"nowrap\">\\(([^<>\"]+)\\)<").getMatch(0);
+        // will pick up the first filesize mentioned.. as last resort fail over.
+        if (filesize == null) {
+            filesize = br.getRegex("(?i)([\\d\\.]+ ?(KB|MB|GB))").getMatch(0);
+        }
+        String md5 = br.getRegex("<b>MD5</b></td><td>(.*?)</td></tr>").getMatch(0);
+        if (md5 == null) {
+            md5 = br.getRegex("(?i)MD5((<[^>]+>)+?([\r\n\t ]+)?)+?([a-z0-9]{32})").getMatch(3);
+        }
+        if (md5 == null) {
+            md5 = br.getRegex("(?i)MD5.*?([a-z0-9]{32})").getMatch(0);
+        }
+        if (md5 != null) {
+            link.setMD5Hash(md5.trim());
+        }
+        String sha1 = br.getRegex("<b>SHA1</b></td><td>(.*?)</td></tr>").getMatch(0);
+        if (sha1 == null) {
+            sha1 = br.getRegex("(?i)SHA1((<[^>]+>)+?([\r\n\t ]+)?)+?([a-z0-9]{40})").getMatch(3);
+        }
+        if (sha1 == null) {
+            sha1 = br.getRegex("(?i)SHA1.*?([a-z0-9]{32})").getMatch(0);
+        }
+        if (sha1 != null) {
+            link.setSha1Hash(sha1.trim());
+        }
+        if (filename != null) {
+            link.setName(filename);
+        }
+        link.setDownloadSize(SizeFormatter.getSize(filesize));
+
+        /* Leave this here - filename- and filesize can be present although the url is offline! */
+        if (this.br.containsHTML(">File is deleted")) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        }
+        /* Final errorhandling for missing filename */
+        if (filename == null) {
+            if (!this.br.containsHTML("class=\"file\\-info\\-title\"")) {
+                /* Not a file url */
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
+
+        if (br.containsHTML(PWTEXT)) {
+            link.getLinkStatus().setStatusText("This file is password protected");
+        }
+        return AvailableStatus.TRUE;
     }
 
     @Override
@@ -132,74 +210,8 @@ public class RGhostRu extends PluginForHost {
     }
 
     private String getDownloadlink() {
-        String dllink = br.getRegex("\"(http://rghost\\.net/download/[^<>\"]*?)\"").getMatch(0);
+        String dllink = br.getRegex("\"(http://[^/]+/download/[^<>\"]*?)\"").getMatch(0);
         return dllink;
-    }
-
-    private void offlineCheck() throws PluginException {
-        if (br.containsHTML("(Access to the file (is|was) restricted|the action is prohibited, this is a private file and your key is incorrect|<title>404|File was deleted|>File is deleted<)")) {
-            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-        }
-    }
-
-    @SuppressWarnings("deprecation")
-    @Override
-    public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
-        this.setBrowserExclusive();
-        br.setFollowRedirects(true);
-        try {
-            br.getPage(link.getDownloadURL());
-        } catch (final BrowserException e) {
-            if (br.getHttpConnection().getResponseCode() == 409) {
-                /* Cloudflare DNS issue --> In this case definitly offline! */
-                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-            } else if (br.getHttpConnection().getResponseCode() == 503) {
-                link.getLinkStatus().setStatusText("Server maintenance");
-                return AvailableStatus.UNCHECKABLE;
-            }
-            throw e;
-        }
-        // error clause for offline links
-        if (br.containsHTML(">[\r\n]+File is deleted\\.[\r\n]+<") || !br.containsHTML("id=\"actions\"")) {
-            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-        }
-        String filename = br.getRegex("rel=\"alternate\" title=\"Comments for the file ([^<>\"]*?)\"").getMatch(0);
-        if (filename == null) {
-            filename = br.getRegex("title=\"Comments for the file (.*?)\"").getMatch(0);
-        }
-        String filesize = br.getRegex("<small>([\r\n]+)?\\((.*?)\\)([\r\n]+)?</small>").getMatch(1);
-        if (filesize == null) {
-            filesize = br.getRegex("class=\"filesize\">\\((.*?)\\)</span>").getMatch(0);
-        }
-        // will pick up the first filesize mentioned.. as last resort fail over.
-        if (filesize == null) {
-            filesize = br.getRegex("(?i)([\\d\\.]+ ?(KB|MB|GB))").getMatch(0);
-        }
-        if (filename == null) {
-            offlineCheck();
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-        }
-        String md5 = br.getRegex("<b>MD5</b></td><td>(.*?)</td></tr>").getMatch(0);
-        if (md5 == null) {
-            md5 = br.getRegex("(?i)MD5((<[^>]+>)+?([\r\n\t ]+)?)+?([a-z0-9]{32})").getMatch(3);
-        }
-        if (md5 != null) {
-            link.setMD5Hash(md5.trim());
-        }
-        String sha1 = br.getRegex("<b>SHA1</b></td><td>(.*?)</td></tr>").getMatch(0);
-        if (sha1 == null) {
-            sha1 = br.getRegex("(?i)SHA1((<[^>]+>)+?([\r\n\t ]+)?)+?([a-z0-9]{40})").getMatch(3);
-        }
-        if (sha1 != null) {
-            link.setSha1Hash(sha1.trim());
-        }
-        link.setName(filename);
-        link.setDownloadSize(SizeFormatter.getSize(filesize));
-        offlineCheck();
-        if (br.containsHTML(PWTEXT)) {
-            link.getLinkStatus().setStatusText("This file is password protected");
-        }
-        return AvailableStatus.TRUE;
     }
 
     @Override

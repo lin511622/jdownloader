@@ -16,6 +16,8 @@
 
 package jd.plugins.hoster;
 
+import java.util.Arrays;
+
 import jd.PluginWrapper;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
@@ -23,15 +25,15 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
-import jd.plugins.download.DownloadInterface;
+import jd.plugins.decrypter.BrightcoveDecrypter.BrightcoveEdgeContainer;
+import jd.plugins.decrypter.BrightcoveDecrypter.BrightcoveEdgeContainer.Protocol;
 
 import org.jdownloader.downloader.hls.HLSDownloader;
-import org.jdownloader.plugins.components.hls.HlsContainer;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "about.com" }, urls = { "http://(www\\.)?video\\.about\\.com/\\w+/[\\w\\-]+\\.htm" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "about.com" }, urls = { "https?://[A-Za-z0-9\\-]+\\.about\\.com/video/[\\w\\-]+\\.htm" })
 public class AboutCom extends PluginForHost {
 
-    private String DLLINK = null;
+    private String dllink = null;
 
     public AboutCom(final PluginWrapper wrapper) {
         super(wrapper);
@@ -39,7 +41,7 @@ public class AboutCom extends PluginForHost {
 
     @Override
     public String getAGBLink() {
-        return "http://www.about.com/gi/pages/uagree.htm";
+        return "http://www.about.com/legal.htm";
     }
 
     @Override
@@ -51,87 +53,68 @@ public class AboutCom extends PluginForHost {
     @SuppressWarnings("deprecation")
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
+        dllink = null;
+
         setBrowserExclusive();
         String dlink = link.getDownloadURL();
         br.getPage(dlink);
-        if (br.containsHTML("404 Document Not Found")) {
+        if (br.getHttpConnection().getResponseCode() == 404) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
 
-        String filename = br.getRegex("<meta itemprop=\"name\" content=\"([^\"]+)\"").getMatch(0);
-        if (filename == null) {
-            filename = this.br.getRegex("itemprop=\"name\" content=\"([^<>\"]*?)\"").getMatch(0);
+        final BrightcoveEdgeContainer bestQuality = jd.plugins.decrypter.BrightcoveDecrypter.findBESTBrightcoveEdgeContainerAuto(this.br, Arrays.asList(new Protocol[] { Protocol.HLS, Protocol.HTTP }));
+        if (bestQuality == null) {
+            /* We assume that the page does not contain any video-content --> Offline */
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-        // String publisherID = br.getRegex("name=\"publisherID\" value=\"([^<>\"]*?)\"").getMatch(0);
-        // if (publisherID == null) {
-        // publisherID = "4013";
-        // }
-        if (filename == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-        }
+        dllink = bestQuality.getDownloadURL();
+        bestQuality.setInformationOnDownloadLink(link);
 
-        link.setFinalFileName(filename);
         return AvailableStatus.TRUE;
     }
 
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception, PluginException {
         requestFileInformation(downloadLink);
-        final String videoid = br.getRegex("name=\"@videoPlayer\" value=\"(\\d+)\"").getMatch(0);
-        if (videoid == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-        }
-        br.getPage(jd.plugins.decrypter.BrightcoveDecrypter.getBrightcoveMobileHLSUrl() + videoid);
-        final HlsContainer hlsbest = HlsContainer.findBestVideoByBandwidth(HlsContainer.getHlsQualities(this.br));
-        if (hlsbest == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-        }
-        DLLINK = hlsbest.downloadurl;
         download(downloadLink);
     }
 
     private void download(final DownloadLink downloadLink) throws Exception {
-        if (DLLINK.startsWith("rtmp")) {
-            /* 2015-07-13 - rtmp is unused from now on */
-            dl = new RTMPDownload(this, downloadLink, DLLINK);
-            setupRTMPConnection(dl);
-            ((RTMPDownload) dl).startDownload();
-
-        } else if (DLLINK.contains(".m3u8")) {
+        br.setFollowRedirects(true);
+        if (dllink != null && dllink.contains(".m3u8")) {
             checkFFmpeg(downloadLink, "Download a HLS Stream");
-            dl = new HLSDownloader(downloadLink, br, DLLINK);
+            dl = new HLSDownloader(downloadLink, br, dllink);
+            dl.startDownload();
         } else {
-            br.setFollowRedirects(true);
-            if (DLLINK == null) {
+            if (dllink == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-            if (DLLINK.startsWith("mms")) {
-                throw new PluginException(LinkStatus.ERROR_FATAL, "Protocol (mms://) not supported!");
-            }
-            dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, DLLINK, true, 0);
+            dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 0);
             if (dl.getConnection().getContentType().contains("html")) {
-                br.followConnection();
                 if (dl.getConnection().getResponseCode() == 403) {
-                    throw new PluginException(LinkStatus.ERROR_FATAL, "This Content is not longer available!");
+                    throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 60 * 60 * 1000l);
+                } else if (dl.getConnection().getResponseCode() == 404) {
+                    throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 404", 60 * 60 * 1000l);
                 }
-                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                br.followConnection();
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown server error", 5 * 60 * 1000l);
             }
             dl.startDownload();
         }
     }
 
-    private void setupRTMPConnection(DownloadInterface dl) {
-        jd.network.rtmp.url.RtmpUrlConnection rtmp = ((RTMPDownload) dl).getRtmpConnection();
-        String[] tmpRtmpUrl = DLLINK.split("@");
-        rtmp.setUrl(tmpRtmpUrl[0] + tmpRtmpUrl[1]);
-        rtmp.setApp(tmpRtmpUrl[1] + tmpRtmpUrl[3] + tmpRtmpUrl[4]);
-        rtmp.setPlayPath(tmpRtmpUrl[2] + tmpRtmpUrl[3] + tmpRtmpUrl[4]);
-        // rtmp.setConn("B:0");
-        // rtmp.setConn("S:" + tmpRtmpUrl[2] + tmpRtmpUrl[3]);
-        rtmp.setSwfVfy("http://admin.brightcove.com/viewer/us20121102.1044/federatedVideo/BrightcovePlayer.swf");
-        rtmp.setResume(true);
-        rtmp.setRealTime();
-    }
+    // private void setupRTMPConnection(DownloadInterface dl) {
+    // jd.network.rtmp.url.RtmpUrlConnection rtmp = ((RTMPDownload) dl).getRtmpConnection();
+    // String[] tmpRtmpUrl = dllink.split("@");
+    // rtmp.setUrl(tmpRtmpUrl[0] + tmpRtmpUrl[1]);
+    // rtmp.setApp(tmpRtmpUrl[1] + tmpRtmpUrl[3] + tmpRtmpUrl[4]);
+    // rtmp.setPlayPath(tmpRtmpUrl[2] + tmpRtmpUrl[3] + tmpRtmpUrl[4]);
+    // // rtmp.setConn("B:0");
+    // // rtmp.setConn("S:" + tmpRtmpUrl[2] + tmpRtmpUrl[3]);
+    // rtmp.setSwfVfy("http://admin.brightcove.com/viewer/us20121102.1044/federatedVideo/BrightcovePlayer.swf");
+    // rtmp.setResume(true);
+    // rtmp.setRealTime();
+    // }
 
     @Override
     public void reset() {

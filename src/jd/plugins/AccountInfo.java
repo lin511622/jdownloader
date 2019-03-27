@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins;
 
 import java.text.SimpleDateFormat;
@@ -35,6 +34,7 @@ import jd.nutils.NaturalOrderComparator;
 import org.appwork.utils.StringUtils;
 import org.appwork.utils.formatter.SizeFormatter;
 import org.appwork.utils.formatter.TimeFormatter;
+import org.appwork.utils.logging2.LogInterface;
 import org.appwork.utils.logging2.LogSource;
 import org.jdownloader.logging.LogController;
 import org.jdownloader.plugins.controller.UpdateRequiredClassNotFoundException;
@@ -43,26 +43,20 @@ import org.jdownloader.plugins.controller.host.LazyHostPlugin;
 import org.jdownloader.plugins.controller.host.PluginFinder;
 
 public class AccountInfo extends Property {
-
     private static final long serialVersionUID       = 1825140346023286206L;
-
     private long              account_validUntil     = -1;
-
     private long              account_trafficLeft    = -1;
     private long              account_trafficMax     = -1;
-
     private long              account_filesNum       = -1;
     private long              account_premiumPoints  = -1;
     private long              account_accountBalance = -1;
     private long              account_usedSpace      = -1;
-
     private String            account_status;
     private long              account_createTime     = 0;
     /**
      * indicator that host, account has special traffic handling, do not temp disable if traffic =0
      */
     private boolean           specialTraffic         = false;
-
     private boolean           account_trafficRefill  = true;
 
     public boolean isTrafficRefill() {
@@ -311,43 +305,46 @@ public class AccountInfo extends Property {
      * @param multiHostPlugin
      * @since JD2
      */
-
-    public void setMultiHostSupport(final PluginForHost multiHostPlugin, final List<String> multiHostSupport) {
+    public List<String> setMultiHostSupport(final PluginForHost multiHostPlugin, final List<String> multiHostSupport) {
         if (multiHostPlugin != null && multiHostPlugin.getLogger() != null) {
-            setMultiHostSupport(multiHostPlugin, multiHostSupport, new PluginFinder(multiHostPlugin.getLogger()));
+            return setMultiHostSupport(multiHostPlugin, multiHostSupport, new PluginFinder(LogController.TRASH));
         } else {
             final LogSource logSource = LogController.getFastPluginLogger(Thread.currentThread().getName());
             try {
-                setMultiHostSupport(multiHostPlugin, multiHostSupport, new PluginFinder(logSource));
+                return setMultiHostSupport(multiHostPlugin, multiHostSupport, new PluginFinder(logSource));
             } finally {
                 logSource.close();
             }
         }
-
     }
 
-    public void setMultiHostSupport(final PluginForHost multiHostPlugin, final List<String> multiHostSupportList, final PluginFinder pluginFinder) {
+    public List<String> setMultiHostSupport(final PluginForHost multiHostPlugin, final List<String> multiHostSupportList, final PluginFinder pluginFinder) {
         if (multiHostSupportList != null && multiHostSupportList.size() > 0) {
             final HostPluginController hpc = HostPluginController.getInstance();
-            final HashSet<String> supportedHostsSet = new HashSet<String>();
+            final HashSet<String> assignedMultiHostSupport = new HashSet<String>();
+            final HashMap<String, String> mapping = new HashMap<String, String>();
             {
                 final HashSet<String> nonTldHosts = new HashSet<String>();
                 // lets do some preConfiguring, and match hosts which do not contain tld
                 for (final String host : multiHostSupportList) {
                     final String cleanup = host.trim().toLowerCase(Locale.ENGLISH);
-                    if (cleanup.matches("http|https|file|up|upload|video|torrent|ftp")) {
+                    mapping.put(host, cleanup);
+                    if (StringUtils.isEmpty(cleanup)) {
+                        // blank entry will match every plugin! -raztoki20170315
+                        continue;
+                    } else if (cleanup.matches("http|https|file|up|upload|video|torrent|ftp")) {
                         // we need to ignore/blacklist common phrases, else too many false positives
                         continue;
                     } else if ("usenet".equals(cleanup)) {
                         // special cases
-                        supportedHostsSet.add(cleanup);
+                        assignedMultiHostSupport.add(cleanup);
                     } else if (cleanup.indexOf('.') == -1) {
                         /*
                          * if the multihoster doesn't include full host name with tld, we can search and add all partial matches!
                          */
                         nonTldHosts.add(cleanup);
                     } else {
-                        supportedHostsSet.add(cleanup);
+                        assignedMultiHostSupport.add(cleanup);
                     }
                 }
                 if (!nonTldHosts.isEmpty()) {
@@ -387,7 +384,7 @@ public class AccountInfo extends Property {
                         }
                         final String pattern = lazyHostPlugin.getPatternSource();
                         for (final String nonTldHost : nonTldHosts) {
-                            if (StringUtils.containsIgnoreCase(pattern, nonTldHost)) {
+                            if (StringUtils.containsIgnoreCase(pattern, nonTldHost) || (nonTldHost.contains("-") && StringUtils.containsIgnoreCase(pattern, nonTldHost.replace("-", "\\-")))) {
                                 List<LazyHostPlugin> list = map.get(nonTldHost);
                                 if (list == null) {
                                     list = new ArrayList<LazyHostPlugin>();
@@ -397,55 +394,159 @@ public class AccountInfo extends Property {
                             }
                         }
                     }
-                    for (Entry<String, List<LazyHostPlugin>> entry : map.entrySet()) {
+                    for (final Entry<String, List<LazyHostPlugin>> entry : map.entrySet()) {
+                        final String host = entry.getKey().trim().toLowerCase(Locale.ENGLISH);
                         final List<LazyHostPlugin> list = entry.getValue();
-                        for (final LazyHostPlugin lazyHostPlugin : list) {
+                        LazyHostPlugin plugin = null;
+                        if (list.size() == 1) {
+                            final LazyHostPlugin lazyHostPlugin = list.get(0);
                             if (!lazyHostPlugin.isOfflinePlugin()) {
-                                supportedHostsSet.add(lazyHostPlugin.getHost());
+                                plugin = lazyHostPlugin;
                             }
+                        } else if (list.size() > 1) {
+                            for (final LazyHostPlugin lazyHostPlugin : list) {
+                                if (!lazyHostPlugin.isOfflinePlugin()) {
+                                    if (plugin == null) {
+                                        plugin = lazyHostPlugin;
+                                    } else {
+                                        final boolean a = StringUtils.containsIgnoreCase(plugin.getHost(), host + ".");
+                                        final boolean b = StringUtils.containsIgnoreCase(lazyHostPlugin.getHost(), host + ".");
+                                        if (a && !b) {
+                                            continue;
+                                        } else if (!a && b) {
+                                            plugin = lazyHostPlugin;
+                                            continue;
+                                        } else {
+                                            plugin = null;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (plugin != null) {
+                            // update mapping
+                            mapping.put(host, plugin.getHost());
+                            assignedMultiHostSupport.add(plugin.getHost());
                         }
                     }
                 }
             }
-            final List<String> multiHostSupport = new ArrayList<String>(supportedHostsSet);
-            supportedHostsSet.clear();
-            for (final String host : multiHostSupport) {
-                if (host != null && !supportedHostsSet.contains(host)) {
+            final List<String> unassignedMultiHostSupport = new ArrayList<String>(assignedMultiHostSupport);
+            assignedMultiHostSupport.clear();
+            Iterator<String> it = unassignedMultiHostSupport.iterator();
+            while (it.hasNext()) {
+                final String host = it.next();
+                if (assignedMultiHostSupport.contains(host)) {
+                    it.remove();
+                    mapping.put(host, host);
+                } else if (host != null) {
                     final String assignedHost;
                     if (pluginFinder == null) {
                         assignedHost = host;
                     } else {
                         assignedHost = pluginFinder.assignHost(host);
                     }
-                    if (assignedHost != null && !supportedHostsSet.contains(assignedHost)) {
-                        final LazyHostPlugin lazyPlugin = hpc.get(assignedHost);
-                        if (lazyPlugin != null && !lazyPlugin.isOfflinePlugin() && !lazyPlugin.isFallbackPlugin() && !supportedHostsSet.contains(lazyPlugin.getHost())) {
-                            try {
-                                if (!lazyPlugin.isHasAllowHandle()) {
-                                    supportedHostsSet.add(lazyPlugin.getHost());
-                                } else {
-                                    final DownloadLink link = new DownloadLink(null, "", lazyPlugin.getHost(), "", false);
-                                    if (lazyPlugin.getPrototype(null).allowHandle(link, multiHostPlugin)) {
-                                        supportedHostsSet.add(lazyPlugin.getHost());
+                    if (assignedHost != null) {
+                        it.remove();
+                        if (assignedMultiHostSupport.contains(assignedHost)) {
+                            mapping.put(host, assignedHost);
+                        } else {
+                            final LazyHostPlugin lazyPlugin = hpc.get(assignedHost);
+                            if (lazyPlugin != null && !lazyPlugin.isOfflinePlugin() && !lazyPlugin.isFallbackPlugin() && !assignedMultiHostSupport.contains(lazyPlugin.getHost())) {
+                                try {
+                                    if (!lazyPlugin.isHasAllowHandle()) {
+                                        assignedMultiHostSupport.add(lazyPlugin.getHost());
+                                        mapping.put(host, lazyPlugin.getHost());
+                                    } else {
+                                        final DownloadLink link = new DownloadLink(null, "", lazyPlugin.getHost(), "", false);
+                                        if (lazyPlugin.getPrototype(null).allowHandle(link, multiHostPlugin)) {
+                                            assignedMultiHostSupport.add(lazyPlugin.getHost());
+                                            mapping.put(host, lazyPlugin.getHost());
+                                        }
                                     }
+                                } catch (final Throwable e) {
+                                    LogController.CL().log(e);
                                 }
-                            } catch (final Throwable e) {
-                                LogController.CL().log(e);
                             }
                         }
                     }
                 }
             }
-            if (supportedHostsSet.size() > 0) {
+            it = unassignedMultiHostSupport.iterator();
+            while (it.hasNext()) {
+                final String host = it.next();
+                final String hostParts[] = host.split("\\.");
+                if (hostParts.length == 2) {
+                    final String matcher = ".*(\\\\.|/|\\?:?|\\(|\\|)" + hostParts[0] + "(\\|[^/]*?)?\\\\.(" + hostParts[1] + "|[^\\/)]*" + hostParts[1] + "|[^\\)/]*[a-zA-Z\\.]+\\)[\\?\\.]*" + hostParts[1] + ").*";
+                    final String matcher2;
+                    if (hostParts[0].contains("-")) {
+                        matcher2 = ".*(\\\\.|/|\\?:?|\\(|\\|)" + hostParts[0].replace("-", "\\-") + "(\\|[^/]*?)?\\\\.(" + hostParts[1] + "|[^\\/)]*" + hostParts[1] + "|[^\\)/]*[a-zA-Z\\.]+\\)[\\?\\.]*" + hostParts[1] + ").*";
+                    } else {
+                        matcher2 = null;
+                    }
+                    for (final LazyHostPlugin lazyHostPlugin : hpc.list()) {
+                        if (lazyHostPlugin.isFallbackPlugin() || lazyHostPlugin.isOfflinePlugin()) {
+                            continue;
+                        } else {
+                            final String pattern = lazyHostPlugin.getPatternSource();
+                            if (StringUtils.containsIgnoreCase(pattern, hostParts[0]) && (pattern.matches(matcher) || (matcher2 != null && pattern.matches(matcher2)))) {
+                                assignedMultiHostSupport.add(lazyHostPlugin.getHost());
+                                mapping.put(host, lazyHostPlugin.getHost());
+                                it.remove();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (unassignedMultiHostSupport.size() > 0 && multiHostPlugin != null) {
+                final LogInterface logger = multiHostPlugin.getLogger();
+                if (logger != null) {
+                    for (final String host : unassignedMultiHostSupport) {
+                        logger.info("Could not assign any host for:" + host);
+                    }
+                }
+            }
+            if (assignedMultiHostSupport.size() > 0) {
                 // sorting will now work properly since they are all pre-corrected to lowercase.
-                final List<String> list = new ArrayList<String>(supportedHostsSet);
+                final List<String> list = new ArrayList<String>(assignedMultiHostSupport);
                 Collections.sort(list, new NaturalOrderComparator());
                 this.setProperty("multiHostSupport", new CopyOnWriteArrayList<String>(list));
-                return;
+                final List<String> ret = new ArrayList<String>();
+                for (final String host : multiHostSupportList) {
+                    final String map = mapping.get(host);
+                    if (assignedMultiHostSupport.contains(map)) {
+                        ret.add(map);
+                    } else {
+                        ret.add(null);
+                    }
+                }
+                return ret;
             }
         }
         this.setProperty("multiHostSupport", Property.NULL);
+        return null;
+    }
 
+    public boolean removeMultiHostSupport(final String host) {
+        final Object ret = getProperty("multiHostSupport", null);
+        if (ret != null && ret instanceof List) {
+            final List<String> list = (List<String>) ret;
+            if (list.contains(host)) {
+                if (list.size() > 1) {
+                    final List<String> newList = new CopyOnWriteArrayList<String>(list);
+                    if (newList.remove(host)) {
+                        this.setProperty("multiHostSupport", newList);
+                        return true;
+                    }
+                } else {
+                    this.setProperty("multiHostSupport", Property.NULL);
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     public List<String> getMultiHostSupport() {

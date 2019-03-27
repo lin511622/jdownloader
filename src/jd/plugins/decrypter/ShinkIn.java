@@ -13,10 +13,12 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
+
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperCrawlerPluginRecaptchaV2;
+import org.jdownloader.plugins.components.antiDDoSForDecrypt;
 
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
@@ -26,9 +28,7 @@ import jd.parser.html.Form;
 import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
-
-import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperCrawlerPluginRecaptchaV2;
-import org.jdownloader.plugins.components.antiDDoSForDecrypt;
+import jd.plugins.components.SiteType.SiteTemplate;
 
 /**
  * NOTE: <br />
@@ -41,9 +41,8 @@ import org.jdownloader.plugins.components.antiDDoSForDecrypt;
  * @author raztoki
  *
  */
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "shink.in" }, urls = { "http://(www\\.)?shink\\.in/(?-i)[a-zA-Z0-9]{5}" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "shink.in" }, urls = { "https?://(?:www\\.)?shink\\.(in|me)/(s/)?(?-i)[a-zA-Z0-9]{5}" })
 public class ShinkIn extends antiDDoSForDecrypt {
-
     private static Object CTRLLOCK = new Object();
 
     public ShinkIn(PluginWrapper wrapper) {
@@ -52,8 +51,8 @@ public class ShinkIn extends antiDDoSForDecrypt {
 
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
         ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
-        final String parameter = param.toString();
-        br.setFollowRedirects(false);
+        final String parameter = param.toString().replace(".in/", ".me/");
+        br.setFollowRedirects(true);
         Form dform = null;
         // they seem to only show recaptchav2 once!! they track ip session (as restarting client doesn't get recaptchav2, the only cookies
         // that are cached are cloudflare and they are only kept in memory, and restarting will flush it)
@@ -78,7 +77,13 @@ public class ShinkIn extends antiDDoSForDecrypt {
                 dform.put("g-recaptcha-response", Encoding.urlEncode(recaptchaV2Response));
             }
         }
+        br.setFollowRedirects(false);
         submitForm(dform);
+        // now a form
+        final Form f = br.getFormbyActionRegex("/redirect/");
+        if (f != null) {
+            submitForm(f);
+        }
         String finallink = br.getRedirectLocation();
         if (inValidate(finallink)) {
             finallink = br.getRegex("<a [^>]*href=('|\")(.*?)\\1[^>]*>GET LINK</a>").getMatch(1);
@@ -102,4 +107,8 @@ public class ShinkIn extends antiDDoSForDecrypt {
         return false;
     }
 
+    @Override
+    public SiteTemplate siteTemplateType() {
+        return SiteTemplate.OuoIoCryptor;
+    }
 }

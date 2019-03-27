@@ -5,6 +5,8 @@ import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.awt.event.MouseEvent;
 import java.text.DateFormat;
+import java.text.DecimalFormat;
+import java.text.FieldPosition;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -23,12 +25,8 @@ import jd.controlling.AccountControllerListener;
 import jd.controlling.accountchecker.AccountChecker;
 import jd.controlling.accountchecker.AccountCheckerEventListener;
 import jd.gui.swing.jdgui.GUIUtils;
-import jd.gui.swing.jdgui.JDGui;
 import jd.gui.swing.jdgui.interfaces.SwitchPanelEvent;
 import jd.gui.swing.jdgui.interfaces.SwitchPanelListener;
-import jd.gui.swing.jdgui.views.settings.ConfigurationView;
-import jd.gui.swing.jdgui.views.settings.panels.pluginsettings.PluginSettings;
-import jd.nutils.Formatter;
 import jd.plugins.Account;
 import jd.plugins.AccountInfo;
 import jd.plugins.PluginForHost;
@@ -56,13 +54,15 @@ import org.jdownloader.gui.translate._GUI;
 import org.jdownloader.images.AbstractIcon;
 import org.jdownloader.images.NewTheme;
 import org.jdownloader.settings.GraphicalUserInterfaceSettings;
+import org.jdownloader.settings.GraphicalUserInterfaceSettings.SIZEUNIT;
 import org.jdownloader.settings.staticreferences.CFG_GUI;
 
 public class PremiumAccountTableModel extends ExtTableModel<AccountEntry> implements AccountCheckerEventListener {
     public static class TrafficColumn extends ExtProgressColumn<AccountEntry> {
-        private static final long        serialVersionUID = -8376056840172682617L;
-        private PremiumAccountTableModel tableModel;
-
+        private static final long              serialVersionUID = -8376056840172682617L;
+        private final PremiumAccountTableModel tableModel;
+        private final DecimalFormat            formatter;
+        private final SIZEUNIT                 maxSizeUnit;
         {
             setRowSorter(new ExtDefaultRowSorter<AccountEntry>() {
                 private int compareLong(long x, long y) {
@@ -98,6 +98,20 @@ public class PremiumAccountTableModel extends ExtTableModel<AccountEntry> implem
         public TrafficColumn(PremiumAccountTableModel tableModel, String title) {
             super(title);
             this.tableModel = tableModel;
+            maxSizeUnit = JsonConfig.create(GraphicalUserInterfaceSettings.class).getMaxSizeUnit();
+            this.formatter = new DecimalFormat("0.00") {
+                final StringBuffer        sb               = new StringBuffer();
+                /**
+                 *
+                 */
+                private static final long serialVersionUID = 1L;
+
+                @Override
+                public StringBuffer format(final double number, final StringBuffer result, final FieldPosition pos) {
+                    sb.setLength(0);
+                    return super.format(number, sb, pos);
+                }
+            };
         }
 
         @Override
@@ -140,7 +154,7 @@ public class PremiumAccountTableModel extends ExtTableModel<AccountEntry> implem
                 if (ai.isUnlimitedTraffic()) {
                     return _GUI.T.premiumaccounttablemodel_column_trafficleft_unlimited();
                 } else {
-                    return _GUI.T.premiumaccounttablemodel_column_trafficleft_left_(Formatter.formatReadable(ai.getTrafficLeft()), Formatter.formatReadable(ai.getTrafficMax()));
+                    return _GUI.T.premiumaccounttablemodel_column_trafficleft_left_(SIZEUNIT.formatValue(maxSizeUnit, formatter, ai.getTrafficLeft()), SIZEUNIT.formatValue(maxSizeUnit, formatter, ai.getTrafficMax()));
                 }
             }
         }
@@ -348,7 +362,6 @@ public class PremiumAccountTableModel extends ExtTableModel<AccountEntry> implem
             {
                 replaceSorter(this);
             }
-
             private static final long serialVersionUID = -8070328156326837828L;
 
             @Override
@@ -410,7 +423,6 @@ public class PremiumAccountTableModel extends ExtTableModel<AccountEntry> implem
     protected void addStatusColumn() {
         this.addColumn(new ExtTextColumn<AccountEntry>(_GUI.T.premiumaccounttablemodel_column_status()) {
             private static final long serialVersionUID = -3693931358975303164L;
-
             {
                 replaceSorter(this);
             }
@@ -549,27 +561,20 @@ public class PremiumAccountTableModel extends ExtTableModel<AccountEntry> implem
         });
     }
 
-    protected void onSettingsClick(AccountEntry editing) {
-        JsonConfig.create(GraphicalUserInterfaceSettings.class).setConfigViewVisible(true);
-        JDGui.getInstance().setContent(ConfigurationView.getInstance(), true);
-        ConfigurationView.getInstance().setSelectedSubPanel(PluginSettings.class);
-        ConfigurationView.getInstance().getSubPanel(PluginSettings.class).setPlugin(editing.getAccount().getPlugin().getClass());
-        ConfigurationView.getInstance().getSubPanel(PluginSettings.class).scrollToAccount(editing.getAccount());
-    }
-
     protected void addColumnSettingsButton() {
         this.addColumn(new ExtComponentColumn<AccountEntry>(_GUI.T.lit_settings()) {
             private ColumnButton button;
             private ColumnButton rbutton;
             private AccountEntry editing;
-
             {
                 button = new ColumnButton(new AbstractIcon(IconKey.ICON_SETTINGS, 16));
                 rbutton = new ColumnButton(new AbstractIcon(IconKey.ICON_SETTINGS, 16));
                 rbutton.addActionListener(new ActionListener() {
                     @Override
                     public void actionPerformed(ActionEvent e) {
-                        onSettingsClick(editing);
+                        if (editing != null) {
+                            editing.showConfiguration();
+                        }
                     }
                 });
             }
@@ -665,7 +670,6 @@ public class PremiumAccountTableModel extends ExtTableModel<AccountEntry> implem
             {
                 replaceSorter(this);
             }
-
             private static final long serialVersionUID = -3693931358975303164L;
 
             @Override

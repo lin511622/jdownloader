@@ -13,10 +13,7 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
-
-import java.io.IOException;
 
 import jd.PluginWrapper;
 import jd.config.Property;
@@ -31,11 +28,11 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
+import org.appwork.utils.StringUtils;
 import org.appwork.utils.formatter.SizeFormatter;
 
 @HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "vivo.sx" }, urls = { "https?://(www\\.)?vivo\\.sx/[a-z0-9]{10}" })
 public class VivoSx extends PluginForHost {
-
     public VivoSx(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -50,16 +47,21 @@ public class VivoSx extends PluginForHost {
 
     @SuppressWarnings("deprecation")
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         br.getPage(link.getDownloadURL());
         if (br.getHttpConnection().getResponseCode() == 404 || br.containsHTML(">The file you have requested does not exist")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
+        final String streamContent = br.getRegex("\"stream-content\"\\s*data-name\\s*=\\s*\"(.*?)\"").getMatch(0);
+        final String dataType = br.getRegex("data\\-type=\"video\">(Watch|Listen to) ([^<>\"]*?)(\\&hellip;)?(\\&nbsp;)?<strong>").getMatch(1);
         String filename = br.getRegex("og:description\" content=\"(Watch|Listen to) (\\&#34;)?([^<>\"]*?)(\\&#34;)? on").getMatch(2);
         if (filename == null) {
-            filename = br.getRegex("data\\-type=\"video\">(Watch|Listen to) ([^<>\"]*?)(\\&nbsp;)?<strong>").getMatch(1);
+            filename = dataType;
+        }
+        if (StringUtils.startsWithCaseInsensitive(streamContent, filename) || StringUtils.startsWithCaseInsensitive(streamContent, dataType)) {
+            filename = streamContent;
         }
         final String filesize = br.getRegex("<strong>\\((\\d+(\\.\\d{2})? (KB|MB|GB))\\)</strong>").getMatch(0);
         if (filename == null || filesize == null) {
@@ -79,14 +81,15 @@ public class VivoSx extends PluginForHost {
         requestFileInformation(downloadLink);
         String dllink = checkDirectLink(downloadLink, "directlink");
         if (dllink == null) {
-            dllink = this.br.getRegex("(https?://[^<>\"]+/get/[^<>\"]+)").getMatch(0);
+            dllink = br.getRegex("(https?://[^<>\"]+/get/[^<>\"]+)").getMatch(0);
             if (dllink == null) {
                 /* 2016-10-24 */
-                dllink = this.br.getRegex("Core\\.InitializeStream\\s*?\\(\\'([^<>\"]+)\\'").getMatch(0);
+                // dllink = br.getRegex("Core\\.InitializeStream\\s*\\('([^']+)'").getMatch(0);
+                dllink = br.getRegex("data-stream=\"([^\"]+)\"").getMatch(0); // 2018-11-11
                 if (dllink != null) {
                     dllink = Encoding.Base64Decode(dllink);
-                    dllink = Encoding.unescape(dllink);
-                    dllink = new Regex(dllink, "(https?://[^<>\"]+/get/[^<>\"]+)").getMatch(0);
+                    // dllink = PluginJSonUtils.unescape(dllink);
+                    // dllink = new Regex(dllink, "(https?://[^<>\"]+/get/[^<>\"]+)").getMatch(0);
                 }
             }
             if (dllink == null) {
@@ -101,7 +104,7 @@ public class VivoSx extends PluginForHost {
                     postData += "&expires=" + expires;
                 }
                 br.postPage(br.getURL(), postData);
-                dllink = br.getRegex("class=\"stream\\-content\" data\\-url=\"(http[^<>\"]*?)\"").getMatch(0);
+                dllink = br.getRegex("class=\"stream-content\" data-url=\"(http[^<>\"]*?)\"").getMatch(0);
                 if (dllink == null) {
                     throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
@@ -112,10 +115,10 @@ public class VivoSx extends PluginForHost {
             brc.getHeaders().put("Accept", "*/*");
             brc.getHeaders().put("X-Requested-With", "XMLHttpRequest");
             brc.getHeaders().put("", "");
-            brc.postPage("http://" + domain + "/request", "action=view&abs=false&hash=" + new Regex(downloadLink.getDownloadURL(), "([a-z0-9]+)$").getMatch(0));
+            brc.postPage("/request", "action=view&abs=false&hash=" + new Regex(downloadLink.getDownloadURL(), "([a-z0-9]+)$").getMatch(0));
         } catch (final Throwable e) {
         }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 1);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, true, 1);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -155,5 +158,4 @@ public class VivoSx extends PluginForHost {
     @Override
     public void resetDownloadlink(final DownloadLink link) {
     }
-
 }

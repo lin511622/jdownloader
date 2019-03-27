@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.File;
@@ -22,26 +21,21 @@ import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Locale;
-import java.util.Map;
 
 import jd.PluginWrapper;
 import jd.config.ConfigContainer;
 import jd.config.ConfigEntry;
-import jd.config.Property;
 import jd.config.SubConfiguration;
 import jd.controlling.AccountController;
 import jd.http.Browser;
-import jd.http.Cookie;
 import jd.http.Cookies;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.JDHash;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.parser.html.Form;
-import jd.parser.html.Form.MethodType;
 import jd.plugins.Account;
 import jd.plugins.Account.AccountType;
 import jd.plugins.AccountInfo;
@@ -61,9 +55,8 @@ import org.jdownloader.controlling.filter.CompiledFiletypeFilter;
 import org.jdownloader.controlling.filter.CompiledFiletypeFilter.ExtensionsFilterInterface;
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "flickr.com" }, urls = { "https?://(www\\.)?flickrdecrypted\\.com/photos/[^<>\"/]+/\\d+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "flickr.com" }, urls = { "https?://(www\\.)?flickrdecrypted\\.com/photos/[^<>\"/]+/\\d+(/in/album-\\d+)?" })
 public class FlickrCom extends PluginForHost {
-
     public FlickrCom(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium("https://edit.yahoo.com/registration?.src=flickrsignup");
@@ -79,9 +72,7 @@ public class FlickrCom extends PluginForHost {
     private static final String CUSTOM_DATE                      = "CUSTOM_DATE";
     private static final String CUSTOM_FILENAME                  = "CUSTOM_FILENAME";
     private static final String CUSTOM_FILENAME_EMPTY_TAG_STRING = "CUSTOM_FILENAME_EMPTY_TAG_STRING";
-
     private static final String MAINPAGE                         = "http://flickr.com";
-
     private static Object       LOCK                             = new Object();
     private String              dllink                           = null;
     private String              user                             = null;
@@ -89,7 +80,14 @@ public class FlickrCom extends PluginForHost {
 
     @SuppressWarnings("deprecation")
     public void correctDownloadLink(DownloadLink link) {
-        link.setUrlDownload("https://www.flickr.com/" + new Regex(link.getDownloadURL(), "\\.com/(.+)").getMatch(0));
+        try {
+            link.setUrlDownload("https://www.flickr.com/" + new Regex(getPhotoURL(link), "\\.com/(.+)").getMatch(0));
+        } catch (PluginException e) {
+            if (logger != null) {
+                logger.log(e);
+                return;
+            }
+        }
         if (link.getContainerUrl() == null) {
             link.setContainerUrl(link.getContentUrl());
         }
@@ -103,6 +101,15 @@ public class FlickrCom extends PluginForHost {
             Browser.setRequestIntervalLimitGlobal(this.getHost(), 3000, 20, 1900);
         } catch (final Throwable t) {
             Browser.setRequestIntervalLimitGlobal(this.getHost(), 1800);
+        }
+    }
+
+    private String getPhotoURL(DownloadLink link) throws PluginException {
+        final String ret = new Regex(link.getPluginPatternMatcher(), "(https?://(www\\.)?(flickrdecrypted|flickr)\\.com/photos/[^<>\"/]+/\\d+)").getMatch(0);
+        if (ret == null) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        } else {
+            return ret;
         }
     }
 
@@ -132,8 +139,9 @@ public class FlickrCom extends PluginForHost {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         correctDownloadLink(downloadLink);
-        id = new Regex(downloadLink.getDownloadURL(), "(\\d+)$").getMatch(0);
-        user = new Regex(downloadLink.getDownloadURL(), "flickr\\.com/photos/([^<>\"/]+)/").getMatch(0);
+        final String photoURL = getPhotoURL(downloadLink);
+        id = new Regex(photoURL, "(\\d+)$").getMatch(0);
+        user = new Regex(photoURL, "flickr\\.com/photos/([^<>\"/]+)/").getMatch(0);
         /* Needed for custom filenames! */
         if (downloadLink.getStringProperty("username", null) == null) {
             downloadLink.setProperty("username", user);
@@ -146,8 +154,7 @@ public class FlickrCom extends PluginForHost {
             logger.info("No account available, continuing without account...");
         }
         br.setFollowRedirects(true);
-
-        br.getPage(downloadLink.getDownloadURL());
+        br.getPage(photoURL);
         if (br.getHttpConnection().getResponseCode() == 404 || br.containsHTML("div class=\"Four04Case\">") || br.containsHTML(">This member is no longer active on Flickr") || br.containsHTML("class=\"Problem\"")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
@@ -168,7 +175,7 @@ public class FlickrCom extends PluginForHost {
              * remove the cookies here - that's just a workaround!
              */
             br.clearCookies(MAINPAGE);
-            br.getPage(downloadLink.getDownloadURL() + "/in/photostream");
+            br.getPage(photoURL + "/in/photostream");
             final String secret = br.getRegex("\"secret\":\"([^<>\"]*)\"").getMatch(0);
             final Browser apibr = br.cloneBrowser();
             // we need to load it before calling!!
@@ -178,7 +185,6 @@ public class FlickrCom extends PluginForHost {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
             apibr.getPage("https://api.flickr.com/services/rest?photo_id=" + id + "&secret=" + secret + "&method=flickr.video.getStreamInfo&csrf=&api_key=" + api_key + "&format=json&hermes=1&hermesClient=1&reqId=&nojsoncallback=1");
-
             dllink = apibr.getRegex("\"type\":\"orig\",\\s*?\"_content\":\"(https[^<>\"]*?)\"").getMatch(0);
             if (dllink == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -194,11 +200,8 @@ public class FlickrCom extends PluginForHost {
             /* Needed for custom filenames! */
             downloadLink.setProperty("ext", videoExt);
         } else {
-            br.getPage(downloadLink.getDownloadURL() + "/in/photostream");
+            br.getPage(photoURL + "/in/photostream");
             dllink = getFinalLink();
-            if (dllink == null) {
-                dllink = br.getRegex("\"(https?://farm\\d+\\.(static\\.flickr|staticflickr)\\.com/\\d+/.*?)\"").getMatch(0);
-            }
             if (dllink == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
@@ -223,7 +226,6 @@ public class FlickrCom extends PluginForHost {
         downloadLink.setProperty("custom_filenames_allowed", true);
         filename = getFormattedFilename(downloadLink);
         downloadLink.setFinalFileName(filename);
-
         this.br.setFollowRedirects(true);
         URLConnectionAdapter con = null;
         try {
@@ -256,6 +258,9 @@ public class FlickrCom extends PluginForHost {
             }
             throw new PluginException(LinkStatus.ERROR_FATAL, "This file can only be downloaded by premium users");
         }
+        if (dllink == null) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
         dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 1);
         if (dl.getConnection().getURL().toString().contains("/photo_unavailable.gif")) {
             /* Same as check below */
@@ -285,20 +290,12 @@ public class FlickrCom extends PluginForHost {
         }
     }
 
-    @SuppressWarnings("deprecation")
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         final AccountInfo ai = new AccountInfo();
-        try {
-            login(account, false, new Browser());
-        } catch (final PluginException e) {
-            account.setValid(false);
-            throw e;
-        }
+        login(account, false, br);
         account.setType(AccountType.FREE);
-        ai.setStatus("Registered (free) User");
         ai.setUnlimitedTraffic();
-        account.setValid(true);
         return ai;
     }
 
@@ -318,181 +315,59 @@ public class FlickrCom extends PluginForHost {
         dl.startDownload();
     }
 
-    @SuppressWarnings("unchecked")
     public void login(final Account account, final boolean force, final Browser br) throws Exception {
         synchronized (LOCK) {
             try {
-                // Load cookies
-                br.setCookiesExclusive(true);
-                prepBr(br);
-                final Object ret = account.getProperty("cookies", null);
-                boolean acmatch = Encoding.urlEncode(account.getUser()).equals(account.getStringProperty("name", Encoding.urlEncode(account.getUser())));
-                if (acmatch) {
-                    acmatch = Encoding.urlEncode(account.getPass()).equals(account.getStringProperty("pass", Encoding.urlEncode(account.getPass())));
-                }
-                if (acmatch && ret != null && ret instanceof HashMap<?, ?>) {
-                    final HashMap<String, String> cookies = (HashMap<String, String>) ret;
-                    if (cookies.containsKey("cookie_epass") && cookies.containsKey("cookie_accid") && account.isValid()) {
-                        for (final Map.Entry<String, String> cookieEntry : cookies.entrySet()) {
-                            final String key = cookieEntry.getKey();
-                            final String value = cookieEntry.getValue();
-                            br.setCookie(MAINPAGE, key, value);
-                        }
-                        final Browser brc = br.cloneBrowser();
-                        if (isValid(brc)) {
-                            return;
-                        }
-                        /* Clear existing cookies - get ready to do a full login */
-                        br.clearCookies(MAINPAGE);
+                br.setFollowRedirects(true);
+                final Cookies cookies = account.loadCookies("");
+                if (cookies != null) {
+                    br.setCookies(getHost(), cookies);
+                    if (isValid(br)) {
+                        account.saveCookies(br.getCookies(getHost()), "");
+                        return;
+                    } else {
+                        br.clearCookies(null);
                     }
                 }
-                if (true) {
-                    throw new PluginException(LinkStatus.ERROR_PREMIUM, "Account support doesn't work at this time.", PluginException.VALUE_ID_PREMIUM_DISABLE);
-                }
-                final String lang = System.getProperty("user.language");
-                br.setFollowRedirects(true);
                 br.getPage("https://www.flickr.com/signin/");
-                // they tell you country code...
-                final String countryCode = br.getRegex("<span id=\"login-country-name\" class=\"mbr-hide\">\\S+ \\(\\+(\\d+)\\)</span>").getMatch(0);
-                // DONT FIGHT FORMS! MANUAL LOGIN IS RECIPE FOR FAILURE
-                // only one form
-                Form login = br.getForm(0);
-                login.put("countrycode", countryCode != null ? countryCode : "");
-                login.put("_format", "json");
-                login.put("_loadtpl", "1");
-                login.put("signin", "authtype");
-                br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
-                br.getHeaders().put("Accept", "*/*");
-                login.put("username", Encoding.urlEncode(account.getUser()));
-                login.put("passwd", "");
-                // post page
-                br.submitForm(login);
-                // should get json back! and {"status":"error","code":"7200",
-                HashMap<String, Object> entries = (HashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
-                if ("error".equals(entries.get("status")) && !"7200".equals(entries.get("code"))) {
-                    // huston we have a problem!
+                Form login = br.getFormByRegex("login-username-form");
+                if (login == null) {
                     throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
-                String output = (String) entries.get("tpl");
-                // action is the same, but inputfield values are not. crumb/ts/seqid values change, signin goes empty
-                login = Form.getForms(output)[0];
-                login.put("countrycode", countryCode != null ? countryCode : "");
-                login.put("_loadtpl", "1");
-                login.put("signin", "");
                 login.put("username", Encoding.urlEncode(account.getUser()));
-                login.put("passwd", Encoding.urlEncode(account.getPass()));
                 br.submitForm(login);
-                // should work OR can result in error if 2factor kicks in {"status":"error","code":"1240","
-                entries = (HashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
-                output = (String) entries.get("tpl");
-                if ("error".equals(entries.get("status")) && "1240".equals(entries.get("code"))) {
-                    // 2factor
-                    process2Factor(br, entries);
+                if (br.containsHTML("messages\\.ERROR_INVALID_USERNAME")) {
+                    final String message = br.getRegex("messages\\.ERROR_INVALID_USERNAME\">\\s*(.*?)\\s*<").getMatch(0);
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, message, PluginException.VALUE_ID_PREMIUM_DISABLE);
                 }
-                // ok ?
-
-                // end of new code
-
-                // Save cookies
-                final HashMap<String, String> cookies = new HashMap<String, String>();
-                final Cookies add = br.getCookies(MAINPAGE);
-                for (final Cookie c : add.getCookies()) {
-                    cookies.put(c.getKey(), c.getValue());
+                login = br.getFormByRegex("name\\s*=\\s*\"displayName\"");
+                if (login == null) {
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
-                account.setProperty("name", Encoding.urlEncode(account.getUser()));
-                account.setProperty("pass", Encoding.urlEncode(account.getPass()));
-                account.setProperty("cookies", cookies);
-
+                login.put("password", Encoding.urlEncode(account.getPass()));
+                login.remove("skip");
+                br.submitForm(login);
+                if (br.containsHTML("messages\\.ERROR_INVALID_PASSWORD")) {
+                    final String message = br.getRegex("messages\\.ERROR_INVALID_PASSWORD\">\\s*(.*?)\\s*<").getMatch(0);
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, message, PluginException.VALUE_ID_PREMIUM_DISABLE);
+                }
+                account.saveCookies(br.getCookies(getHost()), "");
             } catch (final PluginException e) {
-                account.setProperty("cookies", Property.NULL);
+                if (e.getLinkStatus() == LinkStatus.ERROR_PREMIUM) {
+                    account.clearCookies("");
+                }
                 throw e;
             }
         }
     }
 
-    public static void main(final String[] args) {
-        process2Factor(new Browser(), null);
-    }
-
-    private static void process2Factor(final Browser br, HashMap<String, Object> entries) {
-        final Browser br2 = br.cloneBrowser();
-        // construct a form from json
-        try {
-            final String uri = (String) entries.get("uri");
-            final HashMap<String, Object> params = (HashMap<String, Object>) entries.get("params");
-            Form f = new Form();
-            f.setAction(uri);
-            f.setMethod(MethodType.POST);
-            for (final Map.Entry<String, Object> e : params.entrySet()) {
-                final String key = e.getKey();
-                if (e != null) {
-                    f.put(key, Encoding.urlEncode((String) e.getValue()));
-                }
-            }
-            br.submitForm(f);
-            // should result in a single form....
-            final Form travellingSomeWhereNew = br.getForm(0);
-            // here you get selection of sms solutions to mobile phone numbers or send email to verified accounts (all solutions are partly
-            // masked)...
-
-            // show this html to the user in browser solver solution? and they choose selection?
-
-            // disable account in jd.. and ask user to verify sms / email
-
-            // then renable account in jd.
-
-            System.out.println("winning");
-        } catch (final Exception e) {
-            e.printStackTrace();
-        }
-    }
-
-    public static void prepBr(final Browser br) {
-        br.setCookie(MAINPAGE, "localization", "en-us%3Bde%3Bde");
-        br.getHeaders().put("User-Agent", "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:28.0) Gecko/20100101 Firefox/28.0");
-        br.getHeaders().put("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-        br.getHeaders().put("Accept-Language", "en-us;q=0.7,en;q=0.3");
-        br.getHeaders().put("Accept-Charset", null);
-    }
-
     private boolean isValid(final Browser br) throws IOException {
         br.getPage("https://www.flickr.com/");
-        if (!br.containsHTML("class=\"welcome")) {
+        if (br.containsHTML("gnSignin")) {
             return false;
+        } else {
+            return true;
         }
-        return true;
-    }
-
-    private String getLoginCaptchaData(final Account acc) throws Exception, IOException {
-        if (true) {
-            // TODO: fix
-            throw new PluginException(LinkStatus.ERROR_FATAL, "Unsupported feature");
-        }
-        String post_data = "";
-        // br.getPage("https://login.yahoo.com/captcha/CaptchaWSProxyService.php?action=createlazy&initial_view=&.intl=" + intl + "&.lang="
-        // + lang_post + "&login=" + Encoding.urlEncode(acc.getUser()) + "&rnd=" + System.currentTimeMillis());
-        final String captchaLink = br.getRegex("Enter the characters displayed\\&quot; src=\\&quot;(https?://[A-Za-z0-9\\-_\\.]+yahoo\\.com:\\d+/img/[^<>\"]*?)\\&quot;").getMatch(0);
-        if (captchaLink == null) {
-            final String lang = System.getProperty("user.language");
-            if ("de".equalsIgnoreCase(lang)) {
-                throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nPlugin defekt, bitte den JDownloader Support kontaktieren!", PluginException.VALUE_ID_PREMIUM_DISABLE);
-            } else {
-                throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nPlugin broken, please contact the JDownloader Support!", PluginException.VALUE_ID_PREMIUM_DISABLE);
-            }
-        }
-        final DownloadLink dummyLink = new DownloadLink(this, "Account", "flickr.com", "http://flickr.com", true);
-        final String c = getCaptchaCode(captchaLink, dummyLink);
-        final String valuesText = br.getRegex("\\&lt;div id=\\&quot;captchaV5ControlElements\\&quot;\\&gt;(.*?)\\&lt;audio id=\\&quot;captchaV5Audio\\&quot;").getMatch(0);
-        if (valuesText != null) {
-            final String[][] data = new Regex(valuesText, "type=\\&quot;hidden\\&quot; name=\\&quot;([^<>\"]*?)\\&quot; id=\\&quot;([^<>\"]*?)\\&quot; value=\\&quot;([^<>\"]*?)\\&quot;").getMatches();
-            for (final String[] single_data : data) {
-                final String name = single_data[0];
-                final String value = single_data[2];
-                post_data += "&" + name + "=" + value;
-            }
-        }
-        post_data += "&captchaView=visual&captchaAnswer=" + Encoding.urlEncode(c) + "&.saveC=&.persistent=y";
-        return post_data;
     }
 
     @SuppressWarnings("unused")
@@ -513,7 +388,8 @@ public class FlickrCom extends PluginForHost {
         String finallink = null;
         final String[] sizes = { "o", "k", "h", "l", "c", "z", "m", "n", "s", "t", "q", "sq" };
         String picSource;
-        picSource = br.getRegex("modelExport: (\\{\"photo\\-models\".*?),[\t\n\r ]+auth: auth,").getMatch(0);
+        // picSource = br.getRegex("modelExport: (\\{\"photo\\-models\".*?),[\t\n\r ]+auth: auth,").getMatch(0);
+        picSource = br.getRegex("main\":(\\{\"photo-models\".*?),[\t\n\r ]+auth: auth,").getMatch(0);
         if (picSource != null) {
             /* json handling */
             final LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(picSource);
@@ -534,36 +410,37 @@ public class FlickrCom extends PluginForHost {
             }
         } else {
             /* Site handling */
-            br.getPage("https://www.flickr.com/photos/" + user + "/" + id + "/sizes/o");
-            picSource = br.getRegex("<ol class=\"sizes\\-list\">(.*?)<div id=\"allsizes\\-photo\">").getMatch(0);
             /*
-             * Fast way to get finallink via site as we always try to access the "o" (original) quality, page will redirect us to the max
-             * available quality!
+             * Fast way to get finallink via site as we always try to access the "o" (original) quality. Page might be redirected!
              */
-            final String maxQuality = new Regex(br.getURL(), "/sizes/([a-z0-9]+)/").getMatch(0);
-            if (maxQuality != null) {
-                finallink = br.getRegex("<div id=\"allsizes\\-photo\">[\t\n\r ]+<div class=\"spaceball\" style=\"height:\\d+px; width: \\d+px;\"></div>[\t\n\r ]+<img src=\"(http[^<>\"]*?)\">").getMatch(0);
+            br.getPage("https://www.flickr.com/photos/" + user + "/" + id + "/sizes/o");
+            if (br.getURL().contains("sizes/o")) { // Not redirected
+                finallink = br.getRegex("<a href=\"([^<>\"]+)\">\\s*(Dieses Foto im Originalformat|Download the Original)").getMatch(0);
             }
-            if (finallink == null) {
+            if (finallink == null) { // Redirected if download original is not allowed
+                /*
+                 * If it is redirected, get the highest available quality
+                 */
+                picSource = br.getRegex("<ol class=\"sizes-list\">(.*?)<div id=\"allsizes-photo\">").getMatch(0);
                 for (final String size : sizes) {
-                    finallink = new Regex(picSource, "\"(/photos/[A-Za-z0-9\\-_]+/\\d+/sizes/" + size + "/)\"").getMatch(0);
-                    if (finallink != null) {
-                        br.getPage("https://www.flickr.com" + finallink);
-                        finallink = br.getRegex("id=\"allsizes\\-photo\">[\t\n\r ]+<img src=\"(http[^<>\"]*?)\"").getMatch(0);
+                    String allsizeslink = new Regex(picSource, "\"(/photos/[A-Za-z0-9\\-_]+/\\d+/sizes/" + size + "/)\"").getMatch(0);
+                    if (allsizeslink != null) {
+                        br.getPage("https://www.flickr.com" + allsizeslink);
+                        finallink = br.getRegex("id=\"allsizes-photo\">[^~]*?<img src=\"(http[^<>\"]*?)\"").getMatch(0);
                     }
                     if (finallink != null) {
                         break;
                     }
                 }
             }
-
         }
         return finallink;
     }
 
     @SuppressWarnings("deprecation")
-    private String getFilename(final DownloadLink dl) {
-        final String linkid = new Regex(dl.getDownloadURL(), "(\\d+)$").getMatch(0);
+    private String getFilename(final DownloadLink dl) throws PluginException {
+        final String photoURL = getPhotoURL(dl);
+        final String photo_id = new Regex(photoURL, "(\\d+)$").getMatch(0);
         String filename = dl.getStringProperty("decryptedfilename", null);
         if (filename == null) {
             filename = br.getRegex("<meta name=\"title\" content=\"(.*?)\"").getMatch(0);
@@ -575,6 +452,13 @@ public class FlickrCom extends PluginForHost {
             }
             if (filename == null) {
                 filename = br.getRegex("<meta name=\"og:title\" content=\"([^<>\"]*?)\"").getMatch(0);
+            }
+            if (filename == null) {
+                filename = br.getRegex("<title>([^<>]+)\\| Flickr</title").getMatch(0);
+            }
+            if (filename == null) {
+                /* Ultimate fallback */
+                filename = photo_id;
             }
             if (filename != null) {
                 filename = Encoding.htmlDecode(filename).trim();
@@ -590,7 +474,7 @@ public class FlickrCom extends PluginForHost {
                 }
                 final ExtensionsFilterInterface ext = CompiledFiletypeFilter.getExtensionsFilterInterface(Files.getExtension(filename));
                 if (ext == null) {
-                    filename = linkid + "_" + filename;
+                    filename = photo_id + "_" + filename;
                 } else {
                     if (!StringUtils.equalsIgnoreCase(dl.getStringProperty("ext", defaultPhotoExt), "." + ext.name())) {
                         dl.setProperty("ext", "." + ext.name().toLowerCase(Locale.ENGLISH));
@@ -598,7 +482,7 @@ public class FlickrCom extends PluginForHost {
                     filename = Files.getFileNameWithoutExtension(filename);
                 }
             }
-            /* Needed for custom filenames! */
+            /* Required for custom filenames! */
             if (dl.getStringProperty("title", null) == null) {
                 dl.setProperty("title", filename);
             }
@@ -612,12 +496,10 @@ public class FlickrCom extends PluginForHost {
         final SubConfiguration cfg = SubConfiguration.getConfig("flickr.com");
         final String customStringForEmptyTags = getCustomStringForEmptyTags();
         final String owner = cfg.getStringProperty("owner", customStringForEmptyTags);
-
         final String site_title = downloadLink.getStringProperty("title", customStringForEmptyTags);
         final String ext = downloadLink.getStringProperty("ext", defaultPhotoExt);
         final String username = downloadLink.getStringProperty("username", customStringForEmptyTags);
         final String photo_id = downloadLink.getStringProperty("photo_id", customStringForEmptyTags);
-
         final long date = downloadLink.getLongProperty("dateadded", 0l);
         String formattedDate = null;
         final String userDefinedDateFormat = cfg.getStringProperty(CUSTOM_DATE, defaultCustomDate);
@@ -631,7 +513,6 @@ public class FlickrCom extends PluginForHost {
                 formattedDate = defaultCustomStringForEmptyTags;
             }
         }
-
         formattedFilename = cfg.getStringProperty(CUSTOM_FILENAME, defaultCustomFilename);
         if (formattedFilename == null || formattedFilename.equals("")) {
             formattedFilename = defaultCustomFilename;
@@ -641,7 +522,6 @@ public class FlickrCom extends PluginForHost {
         if (!formattedFilename.contains("*extension*") || (!formattedFilename.contains("*photo_id*") && !formattedFilename.contains("*date*") && !formattedFilename.contains("*username*") && !formattedFilename.contains("*owner*"))) {
             formattedFilename = defaultCustomFilename;
         }
-
         formattedFilename = formattedFilename.replace("*photo_id*", photo_id);
         formattedFilename = formattedFilename.replace("*date*", formattedDate);
         formattedFilename = formattedFilename.replace("*extension*", ext);

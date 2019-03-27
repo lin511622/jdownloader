@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.io.File;
@@ -27,14 +26,16 @@ import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterException;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
+import jd.plugins.LinkStatus;
+import jd.plugins.PluginException;
 import jd.plugins.PluginForDecrypt;
 import jd.utils.locale.JDL;
 
 import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperCrawlerPluginRecaptchaV2;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "lesen.to" }, urls = { "http://(www\\.)?lesen\\.to/(protection/folder_\\d+\\.html|wp/tipp/Download/\\d+/)" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "lesen.to" }, urls = { "https?://(?:www\\.)?lesen\\.to/(?:protection/folder_\\d+\\.html|wp/tipp/Download/\\d+/)" })
 public class LsnTo extends PluginForDecrypt {
-
     private static final String RECAPTCHA = "(api\\.recaptcha\\.net|google\\.com/recaptcha/api/)";
 
     public LsnTo(final PluginWrapper wrapper) {
@@ -46,8 +47,7 @@ public class LsnTo extends PluginForDecrypt {
         final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         final String parameter = param.toString().toLowerCase();
         br.getPage(parameter);
-
-        if (parameter.matches("http://(www\\.)?lesen\\.to/wp/tipp/download/\\d+/")) {
+        if (parameter.matches(".+/wp/tipp/download/\\d+/")) {
             final String redirect = br.getRedirectLocation();
             if (redirect == null) {
                 logger.info("Cannot decrypt link: " + parameter);
@@ -58,7 +58,7 @@ public class LsnTo extends PluginForDecrypt {
                 decryptedLinks.add(createDownloadlink(redirect));
                 return decryptedLinks;
             }
-            String newLink = new Regex(redirect, "(http://(www\\.)?lesen\\.to/protection/folder_\\d+\\.html)").getMatch(0);
+            String newLink = new Regex(redirect, "(https?://(www\\.)?lesen\\.to/protection/folder_\\d+\\.html)").getMatch(0);
             if (newLink == null) {
                 if (redirect.matches("http://(www\\.)?lesen\\.to/(download|firstload)")) {
                     logger.info("Cannot decrypt link: " + parameter);
@@ -70,7 +70,6 @@ public class LsnTo extends PluginForDecrypt {
             }
             br.getPage(newLink);
         }
-
         boolean failed = true;
         if (br.containsHTML(RECAPTCHA)) {
             for (int i = 0; i <= 5; i++) {
@@ -88,8 +87,17 @@ public class LsnTo extends PluginForDecrypt {
                 break;
             }
             if (failed) {
-                throw new DecrypterException(DecrypterException.CAPTCHA);
+                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
             }
+        } else if (this.br.containsHTML("g\\-recaptcha")) {
+            /* 2017-07-20: reCaptchaV2 */
+            final Form captchaForm = this.br.getFormbyKey("viewed");
+            if (captchaForm == null) {
+                return null;
+            }
+            final String recaptchaV2Response = new CaptchaHelperCrawlerPluginRecaptchaV2(this, br).getToken();
+            captchaForm.put("g-recaptcha-response", recaptchaV2Response);
+            br.submitForm(captchaForm);
         }
         if (br.containsHTML("Anfrage abgefangen")) {
             throw new DecrypterException(JDL.L("plugins.decrypt.errormsg.unavailable", "Perhaps wrong URL or the download is not available anymore."));
@@ -128,5 +136,4 @@ public class LsnTo extends PluginForDecrypt {
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return true;
     }
-
 }

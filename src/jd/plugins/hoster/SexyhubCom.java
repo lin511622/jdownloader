@@ -13,10 +13,7 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
-
-import java.io.File;
 
 import jd.PluginWrapper;
 import jd.config.ConfigContainer;
@@ -38,11 +35,10 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.SiteType.SiteTemplate;
 
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
 
 @HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "sexyhub.com" }, urls = { "https?://ma\\.sexyhub\\.com/download/\\d+/[A-Za-z0-9\\-_]+/|http://sexyhubdecrypted.+" })
 public class SexyhubCom extends PluginForHost {
-
     public SexyhubCom(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium("http://join.sexyhub.com/signup/signup.php");
@@ -61,11 +57,8 @@ public class SexyhubCom extends PluginForHost {
     private static final boolean ACCOUNT_PREMIUM_RESUME       = true;
     private static final int     ACCOUNT_PREMIUM_MAXCHUNKS    = 0;
     private static final int     ACCOUNT_PREMIUM_MAXDOWNLOADS = 20;
-
     private final String         type_premium_pic             = ".+\\.jpg.*?";
-
     public static final String   html_loggedin                = "class=\"hud\\-username\"";
-
     private String               dllink                       = null;
     private boolean              server_issues                = false;
 
@@ -120,7 +113,6 @@ public class SexyhubCom extends PluginForHost {
                     if (dllink == null) {
                         throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                     }
-
                     /* ... new URL should work! */
                     con = br.openHeadConnection(dllink);
                     if (!con.getContentType().contains("html")) {
@@ -181,31 +173,40 @@ public class SexyhubCom extends PluginForHost {
                      * when the user logs in via browser.
                      */
                     br.setCookies(account.getHoster(), cookies);
-                    br.getPage("http://ma." + account.getHoster() + "/");
+                    br.getPage("https://ma." + account.getHoster() + "/");
                     if (br.containsHTML(html_loggedin)) {
                         logger.info("Cookie login successful");
+                        account.saveCookies(br.getCookies(account.getHoster()), "");
                         return;
                     }
                     logger.info("Cookie login failed --> Performing full login");
                     br = prepBR(new Browser());
+                    br.clearCookies(getHost());
                 }
-                br.getPage("http://ma." + account.getHoster() + "/access/login/");
-                String postdata = "rememberme=on&username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass());
-                if (br.containsHTML("api\\.recaptcha\\.net|google\\.com/recaptcha/api/")) {
-                    final Recaptcha rc = new Recaptcha(br, this);
-                    rc.findID();
-                    rc.load();
-                    final File cf = rc.downloadCaptcha(getLocalCaptchaFile());
-                    final DownloadLink dummyLink = new DownloadLink(this, "Account", account.getHoster(), "http://members." + account.getHoster() + "/", true);
-                    final String code = getCaptchaCode("recaptcha", cf, dummyLink);
-                    postdata += "&recaptcha_challenge_field=" + Encoding.urlEncode(rc.getChallenge()) + "&recaptcha_response_field=" + Encoding.urlEncode(code);
+                br.getPage("https://ma." + account.getHoster() + "/access/login/");
+                final Form submit = br.getFormbyActionRegex(".*/access/submit.*");
+                if (submit == null) {
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
-                br.postPage("http://ma." + account.getHoster() + "/access/submit/", postdata);
+                submit.put("username", Encoding.urlEncode(account.getUser()));
+                submit.put("password", Encoding.urlEncode(account.getPass()));
+                submit.put("rememberme", "on");
+                if (br.containsHTML("google\\.com/recaptcha/api")) {
+                    final DownloadLink dummyLink = new DownloadLink(this, "Account", account.getHoster(), "https://ma." + account.getHoster() + "/", true);
+                    final DownloadLink old = this.getDownloadLink();
+                    if (old == null) {
+                        this.setDownloadLink(dummyLink);
+                    }
+                    final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
+                    submit.put("recaptcha_response_field", Encoding.urlEncode(recaptchaV2Response));
+                }
+                br.submitForm(submit);
                 final Form continueform = br.getFormbyKey("response");
                 if (continueform != null) {
                     /* Redirect from probiller.com to main website --> Login complete */
                     br.submitForm(continueform);
                 }
+                br.getPage("https://ma." + account.getHoster() + "/");
                 if (!br.containsHTML(html_loggedin)) {
                     if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername,Passwort und/oder login Captcha!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
@@ -215,7 +216,9 @@ public class SexyhubCom extends PluginForHost {
                 }
                 account.saveCookies(br.getCookies(account.getHoster()), "");
             } catch (final PluginException e) {
-                account.clearCookies("");
+                if (e.getLinkStatus() == LinkStatus.ERROR_PREMIUM) {
+                    account.clearCookies("");
+                }
                 throw e;
             }
         }
@@ -224,12 +227,7 @@ public class SexyhubCom extends PluginForHost {
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         final AccountInfo ai = new AccountInfo();
-        try {
-            login(this.br, account, true);
-        } catch (PluginException e) {
-            account.setValid(false);
-            throw e;
-        }
+        login(this.br, account, true);
         ai.setUnlimitedTraffic();
         account.setType(AccountType.PREMIUM);
         account.setMaxSimultanDownloads(ACCOUNT_PREMIUM_MAXDOWNLOADS);
@@ -286,5 +284,4 @@ public class SexyhubCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

@@ -26,6 +26,15 @@ import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
+import org.appwork.utils.formatter.SizeFormatter;
+import org.appwork.utils.formatter.TimeFormatter;
+import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
+import org.jdownloader.controlling.filter.CompiledFiletypeFilter;
+import org.jdownloader.plugins.components.antiDDoSForHost;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
+
 import jd.PluginWrapper;
 import jd.config.Property;
 import jd.http.Browser;
@@ -47,16 +56,7 @@ import jd.plugins.PluginException;
 import jd.plugins.components.SiteType.SiteTemplate;
 import jd.utils.locale.JDL;
 
-import org.appwork.utils.formatter.SizeFormatter;
-import org.appwork.utils.formatter.TimeFormatter;
-import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
-import org.jdownloader.controlling.filter.CompiledFiletypeFilter;
-import org.jdownloader.plugins.components.antiDDoSForHost;
-import org.jdownloader.scripting.JavaScriptEngineFactory;
-
-@HostPlugin(revision = "$Revision: 34811 $", interfaceVersion = 3, names = { "ausfile.com" }, urls = { "https?://(?:www\\.)?ausfile\\.com/(?:embed\\-)?[a-z0-9]{12}" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "ausfile.com" }, urls = { "https?://(?:www\\.)?ausfile\\.com/(?:embed\\-)?[a-z0-9]{12}" })
 public class AusfileCom extends antiDDoSForHost {
 
     /* Some HTML code to identify different (error) states */
@@ -432,7 +432,7 @@ public class AusfileCom extends antiDDoSForHost {
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception, PluginException {
         requestFileInformation(downloadLink);
-        doFree(downloadLink, true, 1, PROPERTY_DLLINK_FREE);
+        doFree(downloadLink, false, 1, PROPERTY_DLLINK_FREE);
     }
 
     @SuppressWarnings({ "unused", "deprecation" })
@@ -543,7 +543,7 @@ public class AusfileCom extends antiDDoSForHost {
                     if (method_free_value == null || method_free_value.equals("")) {
                         method_free_value = "Free Download";
                     }
-                    download1.put("method_free", method_free_value);
+                    download1.put("method_free", Encoding.urlEncode(method_free_value));
                 }
                 /* end of backward compatibility */
                 submitForm(download1);
@@ -569,6 +569,7 @@ public class AusfileCom extends antiDDoSForHost {
                 if (new Regex(correctedBR, HTML_PASSWORDPROTECTED).matches()) {
                     password = true;
                     logger.info("The downloadlink seems to be password protected.");
+                    passCode = handlePassword(dlForm, downloadLink);
                 }
                 /* md5 can be on the subsequent pages - it is to be found very rare in current XFS versions */
                 if (downloadLink.getMD5Hash() == null) {
@@ -578,97 +579,98 @@ public class AusfileCom extends antiDDoSForHost {
                     }
                 }
                 /* Captcha START */
-                if (correctedBR.contains(";background:#ccc;text-align")) {
-                    logger.info("Detected captcha method \"plaintext captchas\" for this host");
-                    /* Captcha method by ManiacMansion */
-                    final String[][] letters = new Regex(br, "<span style=\\'position:absolute;padding\\-left:(\\d+)px;padding\\-top:\\d+px;\\'>(&#\\d+;)</span>").getMatches();
-                    if (letters == null || letters.length == 0) {
-                        logger.warning("plaintext captchahandling broken!");
-                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                if (correctedBR.contains("class=\"g-recaptcha\"")) {
+                    if (!skipWaittime) {
+                        waitTime(downloadLink, timeBefore);
                     }
-                    final SortedMap<Integer, String> capMap = new TreeMap<Integer, String>();
-                    for (String[] letter : letters) {
-                        capMap.put(Integer.parseInt(letter[0]), Encoding.htmlDecode(letter[1]));
-                    }
-                    final StringBuilder code = new StringBuilder();
-                    for (String value : capMap.values()) {
-                        code.append(value);
-                    }
-                    dlForm.put("code", code.toString());
-                    logger.info("Put captchacode " + code.toString() + " obtained by captcha metod \"plaintext captchas\" in the form.");
-                } else if (correctedBR.contains("/captchas/")) {
-                    logger.info("Detected captcha method \"Standard captcha\" for this host");
-                    final String[] sitelinks = HTMLParser.getHttpLinks(br.toString(), null);
-                    String captchaurl = null;
-                    if (sitelinks == null || sitelinks.length == 0) {
-                        logger.warning("Standard captcha captchahandling broken!");
-                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-                    }
-                    for (String link : sitelinks) {
-                        if (link.contains("/captchas/")) {
-                            captchaurl = link;
-                            break;
-                        }
-                    }
-                    if (captchaurl == null) {
-                        logger.warning("Standard captcha captchahandling broken!");
-                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-                    }
-                    String code = getCaptchaCode("xfilesharingprobasic", captchaurl, downloadLink);
-                    dlForm.put("code", code);
-                    logger.info("Put captchacode " + code + " obtained by captcha metod \"Standard captcha\" in the form.");
-                } else if (new Regex(correctedBR, "(api\\.recaptcha\\.net|google\\.com/recaptcha/api/)").matches()) {
-                    logger.info("Detected captcha method \"reCaptchaV1\" for this host");
-                    final Recaptcha rc = new Recaptcha(br, this);
-                    rc.findID();
-                    rc.load();
-                    final File cf = rc.downloadCaptcha(getLocalCaptchaFile());
-                    final String c = getCaptchaCode("recaptcha", cf, downloadLink);
-                    dlForm.put("recaptcha_challenge_field", rc.getChallenge());
-                    dlForm.put("recaptcha_response_field", Encoding.urlEncode(c));
-                    logger.info("Put captchacode " + c + " obtained by captcha metod \"Re Captcha\" in the form and submitted it.");
-                    /* wait time is usually skippable for reCaptcha handling */
-                    skipWaittime = true;
-                } else if (correctedBR.contains("class=\"g-recaptcha\"")) {
                     logger.info("Detected captcha method \"reCaptchaV2\" for this host");
                     final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
                     dlForm.put("g-recaptcha-response", Encoding.urlEncode(recaptchaV2Response));
-                } else if (br.containsHTML("solvemedia\\.com/papi/")) {
-                    logger.info("Detected captcha method \"solvemedia\" for this host");
-
-                    final org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia sm = new org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia(br);
-                    File cf = null;
-                    try {
-                        cf = sm.downloadCaptcha(getLocalCaptchaFile());
-                    } catch (final Exception e) {
-                        if (org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia.FAIL_CAUSE_CKEY_MISSING.equals(e.getMessage())) {
-                            throw new PluginException(LinkStatus.ERROR_FATAL, "Host side solvemedia.com captcha error - please contact the " + this.getHost() + " support");
+                } else {
+                    if (correctedBR.contains(";background:#ccc;text-align")) {
+                        logger.info("Detected captcha method \"plaintext captchas\" for this host");
+                        /* Captcha method by ManiacMansion */
+                        final String[][] letters = new Regex(br, "<span style=\\'position:absolute;padding\\-left:(\\d+)px;padding\\-top:\\d+px;\\'>(&#\\d+;)</span>").getMatches();
+                        if (letters == null || letters.length == 0) {
+                            logger.warning("plaintext captchahandling broken!");
+                            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                         }
-                        throw e;
+                        final SortedMap<Integer, String> capMap = new TreeMap<Integer, String>();
+                        for (String[] letter : letters) {
+                            capMap.put(Integer.parseInt(letter[0]), Encoding.htmlDecode(letter[1]));
+                        }
+                        final StringBuilder code = new StringBuilder();
+                        for (String value : capMap.values()) {
+                            code.append(value);
+                        }
+                        dlForm.put("code", code.toString());
+                        logger.info("Put captchacode " + code.toString() + " obtained by captcha metod \"plaintext captchas\" in the form.");
+                    } else if (correctedBR.contains("/captchas/")) {
+                        logger.info("Detected captcha method \"Standard captcha\" for this host");
+                        final String[] sitelinks = HTMLParser.getHttpLinks(br.toString(), null);
+                        String captchaurl = null;
+                        if (sitelinks == null || sitelinks.length == 0) {
+                            logger.warning("Standard captcha captchahandling broken!");
+                            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                        }
+                        for (String link : sitelinks) {
+                            if (link.contains("/captchas/")) {
+                                captchaurl = link;
+                                break;
+                            }
+                        }
+                        if (captchaurl == null) {
+                            logger.warning("Standard captcha captchahandling broken!");
+                            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                        }
+                        String code = getCaptchaCode("xfilesharingprobasic", captchaurl, downloadLink);
+                        dlForm.put("code", code);
+                        logger.info("Put captchacode " + code + " obtained by captcha metod \"Standard captcha\" in the form.");
+                    } else if (new Regex(correctedBR, "(api\\.recaptcha\\.net|google\\.com/recaptcha/api/)").matches()) {
+                        logger.info("Detected captcha method \"reCaptchaV1\" for this host");
+                        final Recaptcha rc = new Recaptcha(br, this);
+                        rc.findID();
+                        rc.load();
+                        final File cf = rc.downloadCaptcha(getLocalCaptchaFile());
+                        final String c = getCaptchaCode("recaptcha", cf, downloadLink);
+                        dlForm.put("recaptcha_challenge_field", rc.getChallenge());
+                        dlForm.put("recaptcha_response_field", Encoding.urlEncode(c));
+                        logger.info("Put captchacode " + c + " obtained by captcha metod \"Re Captcha\" in the form and submitted it.");
+                        /* wait time is usually skippable for reCaptcha handling */
+                        skipWaittime = true;
+                    } else if (br.containsHTML("solvemedia\\.com/papi/")) {
+                        logger.info("Detected captcha method \"solvemedia\" for this host");
+                        final org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia sm = new org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia(br);
+                        File cf = null;
+                        try {
+                            cf = sm.downloadCaptcha(getLocalCaptchaFile());
+                        } catch (final Exception e) {
+                            if (org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia.FAIL_CAUSE_CKEY_MISSING.equals(e.getMessage())) {
+                                throw new PluginException(LinkStatus.ERROR_FATAL, "Host side solvemedia.com captcha error - please contact the " + this.getHost() + " support");
+                            }
+                            throw e;
+                        }
+                        final String code = getCaptchaCode("solvemedia", cf, downloadLink);
+                        final String chid = sm.getChallenge(code);
+                        dlForm.put("adcopy_challenge", chid);
+                        dlForm.put("adcopy_response", "manual_challenge");
+                    } else if (br.containsHTML("id=\"capcode\" name= \"capcode\"")) {
+                        logger.info("Detected captcha method \"keycaptca\"");
+                        String result = handleCaptchaChallenge(getDownloadLink(), new KeyCaptcha(this, br, getDownloadLink()).createChallenge(this));
+                        if (result == null) {
+                            throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                        }
+                        if ("CANCEL".equals(result)) {
+                            throw new PluginException(LinkStatus.ERROR_FATAL);
+                        }
+                        dlForm.put("capcode", result);
+                        skipWaittime = false;
                     }
-                    final String code = getCaptchaCode("solvemedia", cf, downloadLink);
-                    final String chid = sm.getChallenge(code);
-                    dlForm.put("adcopy_challenge", chid);
-                    dlForm.put("adcopy_response", "manual_challenge");
-                } else if (br.containsHTML("id=\"capcode\" name= \"capcode\"")) {
-                    logger.info("Detected captcha method \"keycaptca\"");
-                    String result = handleCaptchaChallenge(getDownloadLink(), new KeyCaptcha(this, br, getDownloadLink()).createChallenge(this));
-                    if (result == null) {
-                        throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                    if (!skipWaittime) {
+                        waitTime(downloadLink, timeBefore);
                     }
-                    if ("CANCEL".equals(result)) {
-                        throw new PluginException(LinkStatus.ERROR_FATAL);
-                    }
-                    dlForm.put("capcode", result);
-                    skipWaittime = false;
                 }
                 /* Captcha END */
-                if (password) {
-                    passCode = handlePassword(dlForm, downloadLink);
-                }
-                if (!skipWaittime) {
-                    waitTime(downloadLink, timeBefore);
-                }
                 submitForm(dlForm);
                 logger.info("Submitted DLForm");
                 checkErrors(downloadLink, true);
@@ -687,7 +689,7 @@ public class AusfileCom extends antiDDoSForHost {
             }
         }
         logger.info("Final downloadlink = " + dllink + " starting the download...");
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, resumable, maxchunks);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, resumable, maxchunks);
         if (dl.getConnection().getContentType().contains("html")) {
             checkResponseCodeErrors(dl.getConnection());
             logger.warning("The final dllink seems not to be a file!");
@@ -790,6 +792,7 @@ public class AusfileCom extends antiDDoSForHost {
         regexStuff.add("<\\!(\\-\\-.*?\\-\\-)>");
         regexStuff.add("(display: ?none;\">.*?</div>)");
         regexStuff.add("(visibility:hidden>.*?<)");
+        regexStuff.add("(<[^>]* style\\s*=(\"|')color:#\\w+\\2[^>]*>\\s*Wrong captcha\\s*<\\s*/\\s*span\\s*>)");
 
         for (String aRegex : regexStuff) {
             String results[] = new Regex(correctedBR, aRegex).getColumn(0);
@@ -1139,7 +1142,7 @@ public class AusfileCom extends antiDDoSForHost {
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 'Error happened when generating Download Link'", 10 * 60 * 1000l);
         }
         /** Error handling for only-premium links */
-        if (new Regex(correctedBR, "( can download files up to |Upgrade your account to download bigger files|>Upgrade your account to download (?:larger|bigger) files|>The file you requested reached max downloads limit for Free Users|Please Buy Premium To download this file<|This file reached max downloads limit|>This file is available for Premium Users only)").matches()) {
+        if (new Regex(correctedBR, "( can download files up to |Upgrade your account to download bigger files|>Upgrade your account to download (?:larger|bigger) files|>The file you requested reached max downloads limit for Free Users|Please Buy Premium To download this file<|This file reached max downloads limit|>This file is available for Premium Users only|>\\s*Upgrade to premium account to download this file\\.\\s*<)").matches()) {
             String filesizelimit = new Regex(correctedBR, "You can download files up to(.*?)only").getMatch(0);
             if (filesizelimit != null) {
                 filesizelimit = filesizelimit.trim();
@@ -1332,7 +1335,7 @@ public class AusfileCom extends antiDDoSForHost {
         if (account.getType() == AccountType.FREE) {
             /* Perform linkcheck after logging in */
             requestFileInformation(downloadLink);
-            doFree(downloadLink, true, 1, PROPERTY_DLLINK_ACCOUNT_FREE);
+            doFree(downloadLink, false, 1, PROPERTY_DLLINK_ACCOUNT_FREE);
         } else {
             String dllink = checkDirectLink(downloadLink, PROPERTY_DLLINK_ACCOUNT_PREMIUM);
             if (dllink == null) {
@@ -1358,7 +1361,7 @@ public class AusfileCom extends antiDDoSForHost {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
             logger.info("Final downloadlink = " + dllink + " starting the download...");
-            dl = jd.plugins.BrowserAdapter.openDownload(this.br, downloadLink, dllink, true, 1);
+            dl = new jd.plugins.BrowserAdapter().openDownload(this.br, downloadLink, dllink, true, 1);
             if (dl.getConnection().getContentType().contains("html")) {
                 checkResponseCodeErrors(dl.getConnection());
                 logger.warning("The final dllink seems not to be a file!");

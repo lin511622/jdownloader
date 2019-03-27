@@ -3,41 +3,43 @@ package org.jdownloader.extensions.eventscripter.sandboxobjects;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.WeakHashMap;
 
 import jd.controlling.linkcrawler.CrawledLink;
 import jd.controlling.linkcrawler.CrawledPackage;
 import jd.controlling.packagecontroller.PackageController;
+import jd.plugins.DownloadLink;
 
 import org.appwork.exceptions.WTFException;
 import org.appwork.storage.JsonKeyValueStorage;
 import org.appwork.storage.Storable;
 import org.appwork.utils.os.CrossSystem;
 import org.appwork.utils.reflection.Clazz;
-import org.jdownloader.api.linkcollector.v2.CrawledLinkAPIStorableV2;
-import org.jdownloader.api.linkcollector.v2.CrawledLinkQueryStorable;
-import org.jdownloader.api.linkcollector.v2.LinkCollectorAPIImplV2;
 import org.jdownloader.controlling.Priority;
 import org.jdownloader.extensions.eventscripter.ScriptAPI;
 import org.jdownloader.extensions.extraction.Archive;
 import org.jdownloader.extensions.extraction.bindings.crawledlink.CrawledLinkFactory;
 import org.jdownloader.extensions.extraction.contextmenu.downloadlist.ArchiveValidator;
 import org.jdownloader.gui.views.components.packagetable.LinkTreeUtils;
+import org.jdownloader.myjdownloader.client.json.AvailableLinkState;
 import org.jdownloader.settings.UrlDisplayType;
 
 @ScriptAPI(description = "The context download list link")
 public class CrawledLinkSandbox {
     private final CrawledLink                                              link;
-    private final CrawledLinkAPIStorableV2                                 storable;
     private final static WeakHashMap<CrawledLink, HashMap<String, Object>> SESSIONPROPERTIES = new WeakHashMap<CrawledLink, HashMap<String, Object>>();
 
     public CrawledLinkSandbox(CrawledLink link) {
         this.link = link;
-        storable = LinkCollectorAPIImplV2.toStorable(CrawledLinkQueryStorable.FULL, link);
     }
 
     public String getAvailableState() {
-        return storable.getAvailability() + "";
+        if (link != null) {
+            return link.getLinkState().name();
+        } else {
+            return AvailableLinkState.UNKNOWN.name();
+        }
     }
 
     public String getPriority() {
@@ -66,13 +68,33 @@ public class CrawledLinkSandbox {
     }
 
     public CrawledLinkSandbox() {
-        link = null;
-        storable = new CrawledLinkAPIStorableV2();
+        this(null);
+    }
+
+    @Override
+    public int hashCode() {
+        if (link != null) {
+            return link.hashCode();
+        } else {
+            return super.hashCode();
+        }
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (obj instanceof CrawledLinkSandbox) {
+            return ((CrawledLinkSandbox) obj).link == link;
+        } else {
+            return super.equals(obj);
+        }
     }
 
     public Object getProperty(String key) {
         if (link != null) {
-            return link.getDownloadLink().getProperty(key);
+            final DownloadLink downloadLink = link.getDownloadLink();
+            if (downloadLink != null) {
+                return downloadLink.getProperty(key);
+            }
         }
         return null;
     }
@@ -160,13 +182,21 @@ public class CrawledLinkSandbox {
 
     public void setProperty(String key, Object value) {
         if (link != null) {
-            if (value != null) {
-                if (!canStore(value)) {
-                    throw new WTFException("Type " + value.getClass().getSimpleName() + " is not supported");
-                }
+            final DownloadLink downloadLink = link.getDownloadLink();
+            if (downloadLink != null) {
+                new DownloadLinkSandBox(downloadLink).setProperty(key, value);
             }
-            link.getDownloadLink().setProperty(key, value);
         }
+    }
+
+    public Map<String, Object> getProperties() {
+        if (link != null) {
+            final DownloadLink downloadLink = link.getDownloadLink();
+            if (downloadLink != null) {
+                return new DownloadLinkSandBox(downloadLink).getProperties();
+            }
+        }
+        return null;
     }
 
     private boolean canStore(final Object value) {
@@ -192,6 +222,12 @@ public class CrawledLinkSandbox {
             return link.getComment();
         }
         return null;
+    }
+
+    public void setComment(String comment) {
+        if (link != null) {
+            link.setComment(comment);
+        }
     }
 
     public void setEnabled(boolean b) {
@@ -243,16 +279,38 @@ public class CrawledLinkSandbox {
     public CrawledPackageSandbox getPackage() {
         if (link == null) {
             return new CrawledPackageSandbox();
+        } else {
+            final CrawledPackage pkg = link.getParentNode();
+            if (pkg != null) {
+                return new CrawledPackageSandbox(pkg);
+            } else {
+                return null;
+            }
         }
-        return new CrawledPackageSandbox(link.getParentNode());
+    }
+
+    public LinkInfoSandbox getLinkInfo() {
+        if (link == null) {
+            return null;
+        } else {
+            return new LinkInfoSandbox(link.getLinkInfo());
+        }
     }
 
     public String getHost() {
-        return storable.getHost();
+        if (link != null) {
+            return link.getHost();
+        } else {
+            return null;
+        }
     }
 
     public boolean isEnabled() {
-        return storable.isEnabled();
+        if (link != null) {
+            return link.isEnabled();
+        } else {
+            return false;
+        }
     }
 
     @Override

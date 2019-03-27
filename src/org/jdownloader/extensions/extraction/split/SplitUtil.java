@@ -13,15 +13,19 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package org.jdownloader.extensions.extraction.split;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import jd.plugins.DownloadLink;
+import jd.plugins.FilePackage;
 import jd.plugins.download.raf.FileBytesCache;
 import jd.plugins.download.raf.FileBytesCacheFlusher;
 import net.sf.sevenzipjbinding.SevenZipException;
@@ -35,22 +39,71 @@ import org.jdownloader.controlling.FileCreationManager;
 import org.jdownloader.extensions.extraction.Archive;
 import org.jdownloader.extensions.extraction.ArchiveFile;
 import org.jdownloader.extensions.extraction.CPUPriority;
+import org.jdownloader.extensions.extraction.DummyArchive;
+import org.jdownloader.extensions.extraction.DummyArchiveFile;
 import org.jdownloader.extensions.extraction.ExtractionConfig;
 import org.jdownloader.extensions.extraction.ExtractionController;
 import org.jdownloader.extensions.extraction.ExtractionControllerConstants;
 import org.jdownloader.extensions.extraction.ExtractionControllerException;
+import org.jdownloader.extensions.extraction.ExtractionExtension;
+import org.jdownloader.extensions.extraction.FLUSH_MODE;
 import org.jdownloader.extensions.extraction.Item;
+import org.jdownloader.extensions.extraction.MissingArchiveFile;
+import org.jdownloader.extensions.extraction.bindings.downloadlink.DownloadLinkArchiveFactory;
 import org.jdownloader.extensions.extraction.content.PackedFile;
 import org.jdownloader.extensions.extraction.gui.iffileexistsdialog.IfFileExistsDialog;
+import org.jdownloader.extensions.extraction.multi.CheckException;
 import org.jdownloader.settings.IfFileExistsAction;
 
-/**
- * Utils for the joiner.
- *
- * @author botzi
- *
- */
 class SplitUtil {
+    protected static void checkComplete(ExtractionExtension extension, Archive archive, DummyArchive dummyArchive) throws CheckException {
+        if (true) {
+            // not finished yet
+            return;
+        }
+        final SplitType splitType = archive.getSplitType();
+        if (dummyArchive.isComplete() && splitType != null) {
+            final ArchiveFile lastArchiveFile = archive.getLastArchiveFile();
+            if (lastArchiveFile != null) {
+                final DownloadLinkArchiveFactory factory;
+                if (archive.getFactory() instanceof DownloadLinkArchiveFactory) {
+                    factory = (DownloadLinkArchiveFactory) archive.getFactory();
+                } else if (archive.getParentArchive() != null && archive.getParentArchive().getFactory() instanceof DownloadLinkArchiveFactory) {
+                    factory = (DownloadLinkArchiveFactory) archive.getParentArchive().getFactory();
+                } else {
+                    factory = null;
+                }
+                if (factory != null) {
+                    final int nextIndex = splitType.getPartNumber(splitType.getPartNumberString(lastArchiveFile.getFilePath())) + 1;
+                    final List<ArchiveFile> maybeMissingArchiveFiles = SplitType.getMissingArchiveFiles(archive, splitType, nextIndex);
+                    if (maybeMissingArchiveFiles.size() > 0) {
+                        final Set<String> archiveIDs = new HashSet<String>();
+                        factoryLoop: for (final DownloadLink downloadLink : factory.getDownloadLinks()) {
+                            final FilePackage fp = downloadLink.getFilePackage();
+                            final boolean readL = fp.getModifyLock().readLock();
+                            try {
+                                final List<Archive> searchArchives = extension.getArchivesFromPackageChildren(fp.getChildren(), archiveIDs, -1);
+                                if (searchArchives != null) {
+                                    for (final Archive searchArchive : searchArchives) {
+                                        if (archiveIDs.add(searchArchive.getArchiveID())) {
+                                            for (final ArchiveFile maybeMissingArchiveFile : maybeMissingArchiveFiles) {
+                                                if (StringUtils.equals(maybeMissingArchiveFile.getName(), searchArchive.getName())) {
+                                                    dummyArchive.add(new DummyArchiveFile(new MissingArchiveFile(searchArchive, maybeMissingArchiveFile.getFilePath())));
+                                                    break factoryLoop;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } finally {
+                                fp.getModifyLock().readUnlock(readL);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /**
      * Merges the files from the archive. The filepaths need to be sortable.
@@ -63,10 +116,14 @@ class SplitUtil {
      * @return
      * @throws SevenZipException
      */
-    static boolean merge(final ExtractionController controller, String fileName, final int skipBytesFirstPart, ExtractionConfig config) throws ExtractionControllerException {
+    protected static boolean merge(final ExtractionController controller, String fileName, final int skipBytesFirstPart, ExtractionConfig config) throws ExtractionControllerException {
         CPUPriority priority = config.getCPUPriority();
         if (priority == null || CPUPriority.HIGH.equals(priority)) {
             priority = null;
+        }
+        FLUSH_MODE flushMode = config.getFlushMode();
+        if (flushMode == null) {
+            flushMode = FLUSH_MODE.NONE;
         }
         final Archive archive = controller.getArchive();
         long size = -skipBytesFirstPart;
@@ -142,7 +199,6 @@ class SplitUtil {
             final RandomAccessFile ffos = fos;
             final NullsafeAtomicReference<IOException> ioException = new NullsafeAtomicReference<IOException>(null);
             flusher = new FileBytesCacheFlusher() {
-
                 @Override
                 public void flushed() {
                 }
@@ -179,7 +235,7 @@ class SplitUtil {
                         }
                         cache.write(flusher, fileWritePosition, buffer, read);
                         fileWritePosition += read;
-                        controller.addAndGetProcessedBytes(read);
+                        controller.addProcessedBytesAndPauseIfNeeded(read);
                         if (controller.gotKilled()) {
                             throw new IOException("Extraction has been aborted!");
                         }
@@ -208,7 +264,6 @@ class SplitUtil {
         } finally {
             final FileBytesCacheFlusher fflusher = flusher;
             cache.execute(new Runnable() {
-
                 @Override
                 public void run() {
                     if (fileOpen.get()) {
@@ -221,22 +276,28 @@ class SplitUtil {
                         }
                     }
                 }
-
             });
-            try {
+            if (fos != null) {
                 try {
-                    if (fos != null) {
-                        fos.getChannel().force(true);
-                    }
-                } finally {
-                    if (fos != null) {
+                    try {
+                        switch (flushMode) {
+                        case FULL:
+                            fos.getChannel().force(true);
+                            break;
+                        case DATA:
+                            fos.getChannel().force(false);
+                            break;
+                        default:
+                            break;
+                        }
+                    } finally {
                         fos.close();
                     }
+                } catch (Throwable e) {
+                    controller.getLogger().log(e);
                 }
-            } catch (Throwable e) {
             }
         }
         return true;
     }
-
 }

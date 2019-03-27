@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import jd.PluginWrapper;
@@ -30,9 +29,8 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.utils.locale.JDL;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "jamendo.com" }, urls = { "https?://(?:www\\.)?jamendo\\.com/.?.?/?(?:track/|download/album/|download/a|download/track/)\\d+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "jamendo.com" }, urls = { "https?://(?:[\\w\\-]*\\.)?jamendo\\.com/.?.?/?(?:track/|download/album/|download/a|download/track/)\\d+" })
 public class JamendoCom extends PluginForHost {
-
     private String             PREFER_HIGHQUALITY = "PREFER_HIGHQUALITY";
     public static final String PREFER_WHOLEALBUM  = "PREFER_WHOLEALBUM";
 
@@ -59,7 +57,7 @@ public class JamendoCom extends PluginForHost {
         String trackDownloadID = new Regex(parameter.getDownloadURL(), "/download/track/(\\d+)").getMatch(0);
         if (trackDownloadID != null) {
             br.setFollowRedirects(true);
-            br.getPage("http://www.jamendo.com/en/track/" + trackDownloadID);
+            br.getPage("https://www." + this.getHost() + "/en/track/" + trackDownloadID);
             String Track = br.getRegex("og:title\" content=\"(.*?)\"").getMatch(0);
             String Artist = br.getRegex("og:description\" content=\"Track by (.*?) - \\d").getMatch(0);
             if (Track == null || Artist == null) {
@@ -73,9 +71,12 @@ public class JamendoCom extends PluginForHost {
         if (trackID != null) {
             br.setFollowRedirects(true);
             br.getPage("https://www.jamendo.com/en/track/" + trackID + "/");
-            String fullname = br.getRegex("og:title\" content=\"(.*?) \\| Jamendo Music\"").getMatch(0);
+            if (this.br.getHttpConnection().getResponseCode() == 404) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
+            String fullname = br.getRegex("<title>([^<>\"]+) \\| Jamendo Music \\| Free music downloads</title>").getMatch(0);
             if (fullname == null) {
-                final String track = br.getRegex("itemprop=\"name\">([^<>\"]*?)<").getMatch(0);
+                final String track = br.getRegex("itemprop=\"name\" content=\"([^<>\"]*?)\"").getMatch(0);
                 final String artist = br.getRegex("itemprop=\"author\">([^<>\"]*?)</a>").getMatch(0);
                 if (track == null || artist == null) {
                     throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
@@ -96,7 +97,7 @@ public class JamendoCom extends PluginForHost {
         }
         if (albumDownloadID != null) {
             br.setFollowRedirects(true);
-            br.getPage("http://www.jamendo.com/en/list/a" + albumDownloadID);
+            br.getPage("https://www.jamendo.com/en/list/a" + albumDownloadID);
             String album = br.getRegex("og:title\" content=\"(.*?)\"").getMatch(0);
             String artist = br.getRegex("og:description\" content=\"Album by (.*?)\"").getMatch(0);
             if (album == null || artist == null) {
@@ -165,5 +166,4 @@ public class JamendoCom extends PluginForHost {
         getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), PREFER_HIGHQUALITY, JDL.L("plugins.hoster.jamendo", "Prefer High Quality Download")).setDefaultValue(true));
         getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), PREFER_WHOLEALBUM, JDL.L("plugins.decrypt.jamendoalbum", "Prefer whole Album as Zip")).setDefaultValue(true));
     }
-
 }

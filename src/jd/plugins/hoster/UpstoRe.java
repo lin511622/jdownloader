@@ -13,17 +13,14 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicReference;
@@ -42,7 +39,6 @@ import jd.parser.Regex;
 import jd.parser.html.Form;
 import jd.plugins.Account;
 import jd.plugins.AccountInfo;
-import jd.plugins.CaptchaException;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
@@ -51,12 +47,11 @@ import jd.plugins.PluginException;
 
 import org.appwork.utils.formatter.SizeFormatter;
 import org.appwork.utils.formatter.TimeFormatter;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
 import org.jdownloader.plugins.components.antiDDoSForHost;
 
 @HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "upstore.net", "upsto.re" }, urls = { "https?://(www\\.)?(upsto\\.re|upstore\\.net)/[A-Za-z0-9]+", "ejnz905rj5o0jt69pgj50ujz0zhDELETE_MEew7th59vcgzh59prnrjhzj0" })
 public class UpstoRe extends antiDDoSForHost {
-
     public UpstoRe(PluginWrapper wrapper) {
         super(wrapper);
         if ("upstore.net".equals(getHost())) {
@@ -83,10 +78,8 @@ public class UpstoRe extends antiDDoSForHost {
     /* Constants (limits) */
     private static final long              FREE_RECONNECTWAIT            = 1 * 60 * 60 * 1000L;
     private static final long              FREE_RECONNECTWAIT_ADDITIONAL = 60 * 1000l;
-    private static Object                  LOCK                          = new Object();
     private final String                   MAINPAGE                      = "http://upstore.net";
-    private final String                   INVALIDLINKS                  = "http://(www\\.)?(upsto\\.re|upstore\\.net)/(faq|privacy|terms|d/|aff|login|account|dmca|imprint|message|panel|premium|contacts)";
-
+    private final String                   INVALIDLINKS                  = "https?://[^/]+/(faq|privacy|terms|d/|aff|login|account|dmca|imprint|message|panel|premium|contacts)";
     private static String[]                IPCHECK                       = new String[] { "http://ipcheck0.jdownloader.org", "http://ipcheck1.jdownloader.org", "http://ipcheck2.jdownloader.org", "http://ipcheck3.jdownloader.org" };
     private final String                   EXPERIMENTALHANDLING          = "EXPERIMENTALHANDLING";
     private Pattern                        IPREGEX                       = Pattern.compile("(([1-2])?([0-9])?([0-9])\\.([1-2])?([0-9])?([0-9])\\.([1-2])?([0-9])?([0-9])\\.([1-2])?([0-9])?([0-9]))", Pattern.CASE_INSENSITIVE);
@@ -99,11 +92,6 @@ public class UpstoRe extends antiDDoSForHost {
 
     public void correctDownloadLink(DownloadLink link) {
         link.setUrlDownload(link.getDownloadURL().replace("upsto.re/", "upstore.net/").replace("http://", "https://"));
-    }
-
-    @Override
-    protected boolean useRUA() {
-        return true;
     }
 
     /**
@@ -131,6 +119,9 @@ public class UpstoRe extends antiDDoSForHost {
         }
         getPage(link.getDownloadURL());
         if (br.containsHTML(">File not found<|>File was deleted by owner or due to a violation of service rules\\.|not found|>SmartErrors powered by")) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        } else if (!this.br.containsHTML("name=\"hash\"") && !this.br.containsHTML("class=\"features (minus|plus)\"")) {
+            /* Probably not a file url. */
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         final Regex fileInfo = br.getRegex("<h2 style=\"margin:0\">([^<>\"]*?)</h2>[\t\n\r ]+<div class=\"comment\">([^<>\"]*?)</div>");
@@ -162,8 +153,6 @@ public class UpstoRe extends antiDDoSForHost {
                 blockedIPsMap = (HashMap<String, Long>) lastdownloadmap;
             }
         }
-        long lastdownload = 0;
-        long passedTimeSinceLastDl = 0;
         String dllink = checkDirectLink(downloadLink, "freelink");
         if (dllink == null) {
             {
@@ -182,8 +171,8 @@ public class UpstoRe extends antiDDoSForHost {
                  * he tries to start more downloads via free accounts afterwards BUT nontheless the limit is only on his IP so he CAN
                  * download using the same free accounts after performing a reconnect!
                  */
-                lastdownload = getPluginSavedLastDownloadTimestamp();
-                passedTimeSinceLastDl = System.currentTimeMillis() - lastdownload;
+                long lastdownload = getPluginSavedLastDownloadTimestamp();
+                long passedTimeSinceLastDl = System.currentTimeMillis() - lastdownload;
                 if (passedTimeSinceLastDl < FREE_RECONNECTWAIT) {
                     throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, FREE_RECONNECTWAIT - passedTimeSinceLastDl);
                 }
@@ -193,18 +182,8 @@ public class UpstoRe extends antiDDoSForHost {
             final Form captcha = br.getFormBySubmitvalue("Get+download+link");
             // Waittime can be skipped
             final long timeBefore = System.currentTimeMillis();
-            final String rcID = br.getRegex("Recaptcha\\.create\\(\\'([^<>\"]*?)\\'").getMatch(0);
-            if (rcID != null && captcha != null) {
-                final Recaptcha rc = new Recaptcha(br, this);
-                rc.setId(rcID);
-                rc.load();
-                File cf = rc.downloadCaptcha(getLocalCaptchaFile());
-                String c = null;
-                try {
-                    c = getCaptchaCode("recaptcha", cf, downloadLink);
-                } catch (final Throwable e) {
-                    throw new PluginException(LinkStatus.ERROR_CAPTCHA);
-                }
+            if (br.containsHTML("<div id=\"(\\w+)\".+grecaptcha\\.render\\(\\s*'\\1',")) {
+                final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br).getToken();
                 int wait = 60;
                 String waittime = br.getRegex("var sec = (\\d+)").getMatch(0);
                 if (waittime != null) {
@@ -215,22 +194,21 @@ public class UpstoRe extends antiDDoSForHost {
                 if (wait > 0) {
                     sleep(wait * 1000l, downloadLink);
                 }
-                final String kpw = br.getRegex("\\(\\{'type':'hidden','name':'(\\w+)'\\}\\).val\\(window\\.antispam").getMatch(0);
-                captcha.put("recaptcha_challenge_field", Encoding.urlEncode(rc.getChallenge()));
-                captcha.put("recaptcha_response_field", Encoding.urlEncode(c));
+                // final String kpw = br.getRegex("\\(\\{'type':'hidden','name':'(\\w+)'\\}\\).val\\(window\\.antispam").getMatch(0);
                 // some javascript crapola
-                final String antispam = Encoding.urlEncode(getSoup());
-                captcha.put("antispam", antispam);
-                captcha.put((kpw != null ? kpw : "kpw"), antispam);
+                // final String antispam = Encoding.urlEncode(getSoup());
+                captcha.put("g-recaptcha-response", Encoding.urlEncode(recaptchaV2Response));
+                captcha.put("antispam", "spam");
+                captcha.put("kpw", "spam");
                 submitForm(captcha);
                 if (br.containsHTML("limit for today|several files recently")) {
                     setDownloadStarted(downloadLink, 0);
                     throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, 3 * 60 * 60 * 1000l);
                 }
             }
-            dllink = br.getRegex("<div style=\"margin: 10px auto 20px\" class=\"center\">[\t\n\r ]+<a href=\"(http://[^<>\"]*?)\"").getMatch(0);
+            dllink = br.getRegex("<div style=\"margin: 10px auto 20px\" class=\"center\">\\s*<a href=\"(https?://[^<>\"]*?)\"").getMatch(0);
             if (dllink == null) {
-                dllink = br.getRegex("\"(http://d\\d+\\.upstore\\.net/[^<>\"]*?)\"").getMatch(0);
+                dllink = br.getRegex("\"(https?://d\\d+\\.upstore\\.net/[^<>\"]*?)\"").getMatch(0);
             }
             if (dllink == null) {
                 final String reconnectWait = br.getRegex("Please wait (\\d+) minutes before downloading next file").getMatch(0);
@@ -239,7 +217,7 @@ public class UpstoRe extends antiDDoSForHost {
                     setDownloadStarted(downloadLink, waitmillis);
                     throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, waitmillis + FREE_RECONNECTWAIT_ADDITIONAL);
                 }
-                if (br.containsHTML("(api\\.recaptcha\\.net|google\\.com/recaptcha/api/)")) {
+                if (br.containsHTML("<div id=\"(\\w+)\".+grecaptcha\\.render\\(\\s*'\\1',")) {
                     throw new PluginException(LinkStatus.ERROR_CAPTCHA);
                 }
                 handleErrorsJson();
@@ -283,7 +261,6 @@ public class UpstoRe extends antiDDoSForHost {
         } else if (br.containsHTML(">This file is available only for Premium users<")) {
             throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
         }
-
         /* Here some errors that should only happen in free(account) mode: */
         if (br.containsHTML(">Server for free downloads is overloaded<")) {
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 'Server for free downloads is overloaded'", 30 * 60 * 1000l);
@@ -304,60 +281,21 @@ public class UpstoRe extends antiDDoSForHost {
         return v;
     }
 
-    @SuppressWarnings("deprecation")
-    private void setDownloadStarted(final DownloadLink dl, final long remaining_reconnect_wait) throws PluginException {
-        synchronized (CTRLLOCK) {
-            final long timestamp_download_started;
-            if (remaining_reconnect_wait > 0) {
-                /*
-                 * FREE_RECONNECTWAIT minus remaining wait = We know when the user started his download - we want to get the timestamp. Add
-                 * 1 minute to make sure that we wait long enough!
-                 */
-                long timePassed = FREE_RECONNECTWAIT - remaining_reconnect_wait - FREE_RECONNECTWAIT_ADDITIONAL;
-                /* Errorhandling for invalid values */
-                if (timePassed < 0) {
-                    timePassed = 0;
-                }
-                timestamp_download_started = System.currentTimeMillis() - timePassed;
-            } else {
-                /*
-                 * Nothing given unknown starttime, wrong inputvalue 'remaining_reconnect_wait' or user has started the download just now.
-                 */
-                timestamp_download_started = System.currentTimeMillis();
-            }
-            blockedIPsMap.put(currentIP.get(), timestamp_download_started);
-            setIP(dl, null);
-            getPluginConfig().setProperty(PROPERTY_LASTDOWNLOAD, blockedIPsMap);
-        }
-    }
-
     @SuppressWarnings("unchecked")
     private void login(final Account account, final boolean force) throws Exception {
-        synchronized (LOCK) {
+        synchronized (account) {
             try {
                 // Load cookies
                 br.setCookiesExclusive(true);
                 br.setCookie(getHost(), "lang", "en");
-                final Object ret = account.getProperty("cookies", null);
-                boolean acmatch = Encoding.urlEncode(account.getUser()).equals(account.getStringProperty("name", Encoding.urlEncode(account.getUser())));
-                if (acmatch) {
-                    acmatch = Encoding.urlEncode(account.getPass()).equals(account.getStringProperty("pass", Encoding.urlEncode(account.getPass())));
-                }
-                if (acmatch && ret != null && ret instanceof HashMap<?, ?> && !force) {
-                    final HashMap<String, String> cookies = (HashMap<String, String>) ret;
-                    if (account.isValid()) {
-                        for (final Map.Entry<String, String> cookieEntry : cookies.entrySet()) {
-                            final String key = cookieEntry.getKey();
-                            final String value = cookieEntry.getValue();
-                            br.setCookie(MAINPAGE, key, value);
-                        }
-                        // re-use same agent from cached session.
-                        final String ua = account.getStringProperty("ua", null);
-                        if (ua != null && !ua.equals(userAgent.get())) {
-                            // cloudflare routine sets user-agent on first request.
-                            userAgent.set(ua);
-                        }
-                        br.setCookie(getHost(), "lang", "en");
+                final Cookies cookies = account.loadCookies("");
+                if (cookies != null) {
+                    br.setCookies(MAINPAGE, cookies);
+                    getPage("https://upstore.net");
+                    if (!browserCookiesMatchLoginCookies(br) || br.containsHTML("/account/login")) {
+                        br.clearCookies(MAINPAGE);
+                    } else {
+                        account.saveCookies(br.getCookies(MAINPAGE), "");
                         return;
                     }
                 }
@@ -370,53 +308,39 @@ public class UpstoRe extends antiDDoSForHost {
                 }
                 // goto first page
                 br.setCookie(getHost(), "lang", "en");
-                getPage("https://upstore.net/");
-                // getPage("/account/soclogin/?url=https%3A%2F%2Fupstore.net%2F");
-                postPage("/account/login/", "url=https%253A%252F%252Fupstore.net%252F&send=Login&email=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
-                // some times they force captcha
-                final String cap = br.getRegex(regexLoginCaptcha).getMatch(-1);
-                if (cap != null) {
+                getPage("https://upstore.net/account/login/");
+                final Form login = br.getFormbyActionRegex(".+/login.*");
+                if (login == null) {
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                }
+                login.put("email", Encoding.urlEncode(account.getUser()));
+                login.put("password", Encoding.urlEncode(account.getPass()));
+                if (login.containsHTML(regexLoginCaptcha)) {
+                    final String cap = br.getRegex(regexLoginCaptcha).getMatch(-1);
                     final DownloadLink dummyLink = new DownloadLink(this, "Account", this.getHost(), MAINPAGE, true);
-                    String code = null;
-                    try {
-                        code = getCaptchaCode(cap, dummyLink);
-                    } catch (Throwable e) {
-                        if (e instanceof CaptchaException) {
-                            // JD2 reference to skip button we should abort!
-                            throw (CaptchaException) e;
-                        }
-                    }
+                    final String code = getCaptchaCode(cap, dummyLink);
                     if (code == null) {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nCaptcha required and wasn't provided, account disabled!", PluginException.VALUE_ID_PREMIUM_DISABLE);
-                    }
-                    postPage(br.getURL(), "url=http%253A%252F%252Fupstore.net%252F&send=sign+in&email=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()) + "&captcha=" + Encoding.urlEncode(code));
-                    if (br.containsHTML(regexLoginCaptcha)) {
-                        // incorrect captcha, or form values changed
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nIncorrect catpcha, account disabled!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                        throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                    } else {
+                        login.put("captcha", Encoding.urlEncode(code));
                     }
                 }
-                if (!browserCookiesMatchLoginCookies(br)) {
+                submitForm(login);
+                if (br.containsHTML(regexLoginCaptcha)) {
+                    // incorrect captcha, or form values changed
+                    throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                } else if (!browserCookiesMatchLoginCookies(br)) {
                     throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!\r\nUngültiger Benutzername oder ungültiges Passwort!", PluginException.VALUE_ID_PREMIUM_DISABLE);
                 }
                 // Save cookies
-                final HashMap<String, String> cookies = getBrowsersLoginCookies(br);
-                account.setProperty("name", Encoding.urlEncode(account.getUser()));
-                account.setProperty("pass", Encoding.urlEncode(account.getPass()));
-                account.setProperty("cookies", cookies);
-                account.setProperty("ua", br.getHeaders().get("User-Agent"));
-                account.setProperty("lastlogin", System.currentTimeMillis());
+                account.saveCookies(br.getCookies(MAINPAGE), "");
             } catch (final PluginException e) {
-                dumpCachedLoginSession(account);
+                if (e.getLinkStatus() == LinkStatus.ERROR_PREMIUM) {
+                    account.clearCookies("");
+                }
                 throw e;
             }
         }
-    }
-
-    private void dumpCachedLoginSession(final Account account) {
-        account.setProperty("cookies", Property.NULL);
-        account.setProperty("lastlogin", Property.NULL);
-        account.setProperty("ua", Property.NULL);
-        userAgent.set(null);
     }
 
     /**
@@ -501,18 +425,14 @@ public class UpstoRe extends antiDDoSForHost {
         // traffic is not unlimited they have 20GiB/day fair use. see ticket HZI-220-58438
         // ai.setUnlimitedTraffic();
         // this is in MiB, more accurate than the top rounded figure
-        String trafficUsed = br.getRegex(">Total:</td>\\s*<td>([\\d+\\.]+)<").getMatch(0);
-        if (trafficUsed == null) {
-            trafficUsed = "0";
-        }
-        final String trafficTotal = br.getRegex("Downloaded in last \\d+ hours: [\\d+\\.]+ of (\\d+) GB").getMatch(0);
-        final long trafficDaily = SizeFormatter.getSize(trafficTotal + "GiB");
-        final long trafficLeft = trafficDaily - SizeFormatter.getSize(trafficUsed + "MiB");
+        // final String trafficUsed = br.getRegex(">Total:</td>\\s*<td>([\\d+\\.]+)<").getMatch(0);
+        final String traffic[] = br.getRegex("Downloaded in last \\d+ hours: ([\\d+\\.]+) of ([\\d+\\.]+) GB").getRow(0);
+        final long trafficDaily = SizeFormatter.getSize(traffic[1] + "GiB");
+        final long trafficLeft = trafficDaily - SizeFormatter.getSize(traffic[0] + "GiB");
         ai.setTrafficLeft(trafficLeft);
         ai.setTrafficMax(trafficDaily);
         ai.setStatus("Premium Account");
         account.setValid(true);
-
         return ai;
     }
 
@@ -528,7 +448,7 @@ public class UpstoRe extends antiDDoSForHost {
      * @throws Exception
      */
     private boolean areWeStillLoggedIn(Account account) throws Exception {
-        synchronized (LOCK) {
+        synchronized (account) {
             boolean isFollowingRedirects = br.isFollowingRedirects();
             try {
                 br = new Browser();
@@ -543,10 +463,9 @@ public class UpstoRe extends antiDDoSForHost {
                 // upstore doesn't remove invalid cookies, so we need to also check against account types!
                 if (browserCookiesMatchLoginCookies(br) && (br.containsHTML(this.lifetimeAccount) || br.containsHTML("unlimited premium") || getPremiumTill(br) > 0)) {
                     // save these incase they changed value.
-                    final HashMap<String, String> cookies = getBrowsersLoginCookies(br);
-                    account.setProperty("cookies", cookies);
+                    account.saveCookies(br.getCookies(MAINPAGE), "");
                 } else {
-                    dumpCachedLoginSession(account);
+                    account.clearCookies("");
                     br = new Browser();
                     login(account, false);
                 }
@@ -597,7 +516,7 @@ public class UpstoRe extends antiDDoSForHost {
     private final String premDlLimit = "It is strange, but you have reached a download limit for today";
 
     private AccountInfo trafficLeft(Account account) throws PluginException {
-        synchronized (LOCK) {
+        synchronized (account) {
             AccountInfo ai = account.getAccountInfo();
             String maxLimit = br.getRegex(premDlLimit + " \\((\\d+ (MB|GB|TB))\\)").getMatch(0);
             if (maxLimit != null) {
@@ -669,7 +588,34 @@ public class UpstoRe extends antiDDoSForHost {
     }
 
     @SuppressWarnings("deprecation")
-    private boolean setIP(final DownloadLink link, final Account account) throws PluginException {
+    private void setDownloadStarted(final DownloadLink dl, final long remaining_reconnect_wait) throws Exception {
+        synchronized (CTRLLOCK) {
+            final long timestamp_download_started;
+            if (remaining_reconnect_wait > 0) {
+                /*
+                 * FREE_RECONNECTWAIT minus remaining wait = We know when the user started his download - we want to get the timestamp. Add
+                 * 1 minute to make sure that we wait long enough!
+                 */
+                long timePassed = FREE_RECONNECTWAIT - remaining_reconnect_wait - FREE_RECONNECTWAIT_ADDITIONAL;
+                /* Errorhandling for invalid values */
+                if (timePassed < 0) {
+                    timePassed = 0;
+                }
+                timestamp_download_started = System.currentTimeMillis() - timePassed;
+            } else {
+                /*
+                 * Nothing given unknown starttime, wrong inputvalue 'remaining_reconnect_wait' or user has started the download just now.
+                 */
+                timestamp_download_started = System.currentTimeMillis();
+            }
+            blockedIPsMap.put(currentIP.get(), timestamp_download_started);
+            setIP(dl, null);
+            getPluginConfig().setProperty(PROPERTY_LASTDOWNLOAD, blockedIPsMap);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private boolean setIP(final DownloadLink link, final Account account) throws Exception {
         synchronized (IPCHECK) {
             if (currentIP.get() != null && !new Regex(currentIP.get(), IPREGEX).matches()) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -709,7 +655,7 @@ public class UpstoRe extends antiDDoSForHost {
         return lastdownload;
     }
 
-    private boolean ipChanged(final DownloadLink link) throws PluginException {
+    private boolean ipChanged(final DownloadLink link) throws Exception {
         String currIP = null;
         if (currentIP.get() != null && new Regex(currentIP.get(), IPREGEX).matches()) {
             currIP = currentIP.get();
@@ -729,11 +675,12 @@ public class UpstoRe extends antiDDoSForHost {
         return !currIP.equals(lastIP);
     }
 
-    private String getIP() throws PluginException {
+    private String getIP() throws Exception {
         Browser ip = new Browser();
         String currentIP = null;
         ArrayList<String> checkIP = new ArrayList<String>(Arrays.asList(IPCHECK));
         Collections.shuffle(checkIP);
+        Exception exception = null;
         for (String ipServer : checkIP) {
             if (currentIP == null) {
                 try {
@@ -742,11 +689,17 @@ public class UpstoRe extends antiDDoSForHost {
                     if (currentIP != null) {
                         break;
                     }
-                } catch (Throwable e) {
+                } catch (Exception e) {
+                    if (exception == null) {
+                        exception = e;
+                    }
                 }
             }
         }
         if (currentIP == null) {
+            if (exception != null) {
+                throw exception;
+            }
             logger.warning("firewall/antivirus/malware/peerblock software is most likely is restricting accesss to JDownloader IP checking services");
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }

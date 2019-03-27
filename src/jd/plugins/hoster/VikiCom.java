@@ -13,10 +13,9 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.IOException;
+import java.util.LinkedHashMap;
 
 import jd.PluginWrapper;
 import jd.http.Browser;
@@ -29,10 +28,15 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
+import jd.utils.JDHexUtils;
 
-@HostPlugin(revision = "$Revision: 28691 $", interfaceVersion = 2, names = { "viki.com" }, urls = { "http://(www\\.)?viki\\.(com|mx|jp)/videos/\\d+v" })
+import org.bouncycastle.crypto.digests.SHA1Digest;
+import org.bouncycastle.crypto.macs.HMac;
+import org.bouncycastle.crypto.params.KeyParameter;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
+
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "viki.com" }, urls = { "https?://(www\\.)?viki\\.(com|mx|jp)/videos/\\d+v" })
 public class VikiCom extends PluginForHost {
-
     public VikiCom(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -43,19 +47,20 @@ public class VikiCom extends PluginForHost {
     private static final boolean free_resume       = true;
     private static final int     free_maxchunks    = 0;
     private static final int     free_maxdownloads = -1;
-
     private String               dllink            = null;
     private boolean              server_issues     = false;
     private boolean              geoblocked        = false;
+    private static final String  APP_ID            = "100005a";
+    private static final String  APP_SECRET        = "MM_d*yP@`&1@]@!AVrXf_o-HVEnoTnm$O-ti4[G~$JDI/Dc-&piU&z&5.;:}95=Iad";
 
     @Override
     public String getAGBLink() {
-        return "http://www.viki.com/terms_of_use";
+        return "https://www.viki.com/terms_of_use";
     }
 
     @SuppressWarnings("deprecation")
     public void correctDownloadLink(final DownloadLink link) {
-        link.setUrlDownload("http://www.viki.com/videos/" + getVID(link));
+        link.setUrlDownload("https://www.viki.com/videos/" + getVID(link));
     }
 
     /** Thanks for the html5 idea guys: https://github.com/rg3/youtube-dl/blob/master/youtube_dl/extractor/viki.py */
@@ -64,17 +69,20 @@ public class VikiCom extends PluginForHost {
      * to get the video streams is not public and only works with their own API secret which we don't have: http://dev.viki.com/v4/streams/
      * ...which is why we're using the html5 version for now. In case we ever use the API - here is the needed hmac hash function:
      * http://stackoverflow.com/questions/6312544/hmac-sha1-how-to-do-it-properly-in-java
+     *
+     * @throws Exception
      */
     @SuppressWarnings("deprecation")
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
         geoblocked = false;
         final String vid = getVID(downloadLink);
         downloadLink.setName(vid);
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
+        br.setAllowedResponseCodes(410);
         br.getPage(downloadLink.getDownloadURL());
-        if (br.getHttpConnection().getResponseCode() == 404) {
+        if (br.getHttpConnection().getResponseCode() == 404 || br.getHttpConnection().getResponseCode() == 410) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         String filename = br.getRegex("property=\"og:title\" content=\"([^<>\"]*?)\"").getMatch(0);
@@ -84,13 +92,28 @@ public class VikiCom extends PluginForHost {
         filename = Encoding.htmlDecode(filename);
         filename = filename.trim();
         filename = encodeUnicode(filename);
+        LinkedHashMap<String, Object> entries = null;
         if (br.containsHTML("\"geo\":true")) {
+            geoblocked = true;
+        } else {
+            if (br.containsHTML("Viki Pass does not apply on these Channels.")) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
+            br.getPage("https://www.viki.com/player5_fragment/" + vid + "?action=show&controller=videos");
+            if (br.containsHTML("this content is not available")) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
+            final String videoJson = br.getRegex("var video =(\\{.+?\\});").getMatch(0);
+            if (videoJson != null) {
+                entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaMap(videoJson);
+                geoblocked = ((Boolean) JavaScriptEngineFactory.walkJson(entries, "blocking/geo")).booleanValue();
+            }
+        }
+        if (geoblocked) {
             downloadLink.getLinkStatus().setStatusText("Not available in your country (geo block)");
-            downloadLink.setName(filename + default_Extension);
+            downloadLink.setName("Geo blocked! " + filename + default_Extension);
             return AvailableStatus.TRUE;
         }
-        br.getPage("http://www.viki.com/player5_fragment/" + vid + "?action=show&controller=videos");
-        geoblocked = this.br.containsHTML("We are sorry, this content is currently not available in your region|\"geo\":true");
         server_issues = this.br.containsHTML("Video playback for this video is not supported by your browser");
         /* Should never happen */
         if (br.containsHTML("Video is Unavailable")) {
@@ -100,7 +123,48 @@ public class VikiCom extends PluginForHost {
             downloadLink.setName(filename + default_Extension);
             return AvailableStatus.TRUE;
         }
-        dllink = br.getRegex("<source type=\"video/mp4\" src=\"(https?://[^<>\"]*?)\">").getMatch(0);
+        String idpart = this.br.getMatch("oster=\"https?://[^/]+/videos/\\d+v/[^_]+_(\\d+)_");
+        if (true || idpart == null) {
+            final Browser cbr = br.cloneBrowser();
+            String apiUrl = (String) JavaScriptEngineFactory.walkJson(entries, "url/api");
+            if (apiUrl == null) {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            }
+            apiUrl = apiUrl.replaceFirst("\\.json", "/streams.json");
+            apiUrl += "?app=" + APP_ID + "&t=" + System.currentTimeMillis() / 1000 + "&site=www.viki.com";
+            apiUrl += "&sig=" + getSignature(apiUrl.replaceFirst("https?://[^/]+", ""));
+            cbr.getPage(apiUrl);
+            LinkedHashMap<String, Object> jsonEntries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaMap(cbr.toString());
+            String url = null;
+            for (String quality : new String[] { "480p", "380p", "240p" }) {
+                url = (String) JavaScriptEngineFactory.walkJson(jsonEntries, quality + "/https/url");
+                if (url == null) {
+                    url = (String) JavaScriptEngineFactory.walkJson(jsonEntries, quality + "/http/url");
+                }
+                if (url != null) {
+                    break;
+                }
+            }
+            if (url == null) {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            } else {
+                dllink = url;
+            }
+            // 480p_1709221204.mp4 pattern. 720p is OK.
+            // idpart = new Regex(url, "480p_(\\d+)").getMatch(0);
+            // if (idpart == null) {
+            // // 480p_e63c3e_1709221204.mp4 pattern. 720p is NG.
+            // dllink = url480;
+            // }
+        }
+        if (false && idpart != null) {
+            /* Thx: https://github.com/dknlght/dkodi/blob/master/plugin.video.viki/plugin.video.viki-1.1.44.zip */
+            /* 2017-09-27: Check this: https://forum.kodi.tv/showthread.php?tid=148429 */
+            /* 2017-03-11 - also possible for: 360p, 480p */
+            dllink = String.format("http://content.viki.com/%s/%s_high_720p_%s.mp4", vid, vid, idpart);
+        } else if (dllink == null) {
+            dllink = br.getRegex("<source type=\"video/mp4\" src=\"(https?://[^<>\"]*?)\">").getMatch(0);
+        }
         filename = Encoding.htmlDecode(filename);
         filename = filename.trim();
         filename = encodeUnicode(filename);
@@ -120,8 +184,10 @@ public class VikiCom extends PluginForHost {
             URLConnectionAdapter con = null;
             try {
                 con = br2.openHeadConnection(dllink);
-                if (!con.getContentType().contains("html")) {
-                    downloadLink.setDownloadSize(con.getLongContentLength());
+                if (con.isOK() && !con.getContentType().contains("html")) {
+                    if (con.getCompleteContentLength() > 0) {
+                        downloadLink.setDownloadSize(con.getCompleteContentLength());
+                    }
                     downloadLink.setProperty("directlink", dllink);
                 } else {
                     server_issues = true;
@@ -137,6 +203,16 @@ public class VikiCom extends PluginForHost {
             downloadLink.setName(filename);
         }
         return AvailableStatus.TRUE;
+    }
+
+    private String getSignature(String query) {
+        HMac hmac = new HMac(new SHA1Digest());
+        byte[] buf = new byte[hmac.getMacSize()];
+        hmac.init(new KeyParameter(APP_SECRET.getBytes()));
+        byte[] qbuf = query.getBytes();
+        hmac.update(qbuf, 0, qbuf.length);
+        hmac.doFinal(buf, 0);
+        return new String(JDHexUtils.getHexString(buf));
     }
 
     @Override
@@ -189,7 +265,6 @@ public class VikiCom extends PluginForHost {
     // }
     // return dllink;
     // }
-
     @Override
     public int getMaxSimultanFreeDownloadNum() {
         return free_maxdownloads;

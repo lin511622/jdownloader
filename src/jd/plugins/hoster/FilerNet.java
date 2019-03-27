@@ -13,12 +13,11 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.File;
-
 import jd.PluginWrapper;
+import jd.config.ConfigContainer;
+import jd.config.ConfigEntry;
 import jd.config.Property;
 import jd.http.Browser;
 import jd.http.Cookies;
@@ -29,42 +28,58 @@ import jd.parser.html.Form;
 import jd.plugins.Account;
 import jd.plugins.Account.AccountType;
 import jd.plugins.AccountInfo;
+import jd.plugins.AccountRequiredException;
+import jd.plugins.AccountUnavailableException;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
-import jd.utils.locale.JDL;
+import jd.plugins.components.PluginJSonUtils;
 
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+import org.appwork.utils.StringUtils;
+import org.appwork.utils.formatter.SizeFormatter;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
 
 @HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "filer.net" }, urls = { "https?://(www\\.)?filer\\.net/(get|dl)/[a-z0-9]+" })
 public class FilerNet extends PluginForHost {
-
-    private static Object       LOCK                            = new Object();
-    private int                 statusCode                      = 0;
-    private String              fuid                            = null;
-    private String              recapID                         = null;
-    private static final int    APIDISABLED                     = 400;
-    private static final String APIDISABLEDTEXT                 = "API is disabled, please wait or use filer.net from your browser";
-    private static final int    DOWNLOADTEMPORARILYDISABLED     = 500;
-    private static final String DOWNLOADTEMPORARILYDISABLEDTEXT = "Download temporarily disabled!";
-    private static final int    UNKNOWNERROR                    = 599;
-    private static final String UNKNOWNERRORTEXT                = "Unknown file error";
-    private static final String NORESUME                        = "NORESUME";
+    private static Object       LOCK                                         = new Object();
+    private int                 statusCode                                   = 0;
+    private String              statusMessage                                = null;
+    private String              fuid                                         = null;
+    private String              recapID                                      = null;
+    private static final int    STATUSCODE_APIDISABLED                       = 400;
+    private static final String ERRORMESSAGE_APIDISABLEDTEXT                 = "API is disabled, please wait or use filer.net from your browser";
+    private static final int    STATUSCODE_DOWNLOADTEMPORARILYDISABLED       = 500;
+    private static final String ERRORMESSAGE_DOWNLOADTEMPORARILYDISABLEDTEXT = "Download temporarily disabled!";
+    private static final int    STATUSCODE_UNKNOWNERROR                      = 599;
+    private static final String ERRORMESSAGE_UNKNOWNERRORTEXT                = "Unknown file error";
+    private static final String DIRECT_WEB                                   = "directlinkWeb";
+    private static final String DIRECT_API                                   = "directlinkApi";
 
     @SuppressWarnings("deprecation")
     public FilerNet(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium("http://filer.net/upgrade");
         this.setStartIntervall(2000l);
+        setConfigElements();
     }
 
     @SuppressWarnings("deprecation")
     @Override
     public void correctDownloadLink(DownloadLink link) {
-        link.setUrlDownload("http://filer.net/get/" + new Regex(link.getDownloadURL(), "([a-z0-9]+)$").getMatch(0));
+        link.setUrlDownload("https://filer.net/get/" + getFileID(link));
+    }
+
+    private final String getFileID(DownloadLink link) {
+        return new Regex(link.getDownloadURL(), "([a-z0-9]+)$").getMatch(0);
+    }
+
+    @Override
+    public String getLinkID(DownloadLink link) {
+        final String fileID = getFileID(link);
+        return getHost() + "://" + fileID;
     }
 
     private void prepBrowser() {
@@ -100,19 +115,19 @@ public class FilerNet extends PluginForHost {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         callAPI(null, "http://api.filer.net/api/status/" + fuid + ".json");
-        if (statusCode == APIDISABLED) {
-            link.getLinkStatus().setStatusText(APIDISABLEDTEXT);
+        if (statusCode == STATUSCODE_APIDISABLED) {
+            link.getLinkStatus().setStatusText(ERRORMESSAGE_APIDISABLEDTEXT);
             return AvailableStatus.UNCHECKABLE;
         } else if (statusCode == 505) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-        } else if (statusCode == DOWNLOADTEMPORARILYDISABLED) {
-            link.getLinkStatus().setStatusText(DOWNLOADTEMPORARILYDISABLEDTEXT);
-        } else if (statusCode == UNKNOWNERROR) {
-            link.getLinkStatus().setStatusText(UNKNOWNERRORTEXT);
+        } else if (statusCode == STATUSCODE_DOWNLOADTEMPORARILYDISABLED) {
+            link.getLinkStatus().setStatusText(ERRORMESSAGE_DOWNLOADTEMPORARILYDISABLEDTEXT);
+        } else if (statusCode == STATUSCODE_UNKNOWNERROR) {
+            link.getLinkStatus().setStatusText(ERRORMESSAGE_UNKNOWNERRORTEXT);
             return AvailableStatus.UNCHECKABLE;
         }
-        link.setFinalFileName(getJson("name", br.toString()));
-        link.setDownloadSize(Long.parseLong(getJson("size", br.toString())));
+        link.setFinalFileName(PluginJSonUtils.getJson(br, "name"));
+        link.setDownloadSize(Long.parseLong(PluginJSonUtils.getJson(br, "size")));
         /* hash != md5, its the hash of fileID */
         link.setMD5Hash(null);
         return AvailableStatus.TRUE;
@@ -120,136 +135,150 @@ public class FilerNet extends PluginForHost {
 
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception {
-        doFree(downloadLink);
+        requestFileInformation(downloadLink);
+        doFree(null, downloadLink);
     }
 
-    @SuppressWarnings({ "deprecation", "static-access" })
-    public void doFree(final DownloadLink downloadLink) throws Exception {
-        requestFileInformation(downloadLink);
+    @SuppressWarnings({ "deprecation" })
+    public void doFree(final Account account, final DownloadLink downloadLink) throws Exception {
+        if (this.getPluginConfig().getBooleanProperty("ENABLE_API_FOR_FREE_AND_FREE_ACCOUNT_DOWNLOADS", true)) {
+            doFreeAPI(account, downloadLink);
+        } else {
+            doFreeWebsite(account, downloadLink);
+        }
+    }
+
+    private void doFreeAPI(final Account account, final DownloadLink downloadLink) throws Exception {
         handleDownloadErrors();
         if (checkShowFreeDialog(getHost())) {
             showFreeDialog(getHost());
         }
-        callAPI(null, "http://filer.net/get/" + fuid + ".json");
-        handleFreeErrorsAPI();
-        if (statusCode == 203) {
-            final String token = getJson("token", br.toString());
-            if (token == null) {
-                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        String dllink = checkDirectLink(downloadLink, DIRECT_API);
+        if (dllink == null) {
+            callAPI(null, "http://filer.net/get/" + fuid + ".json");
+            handleErrorsAPI(account);
+            if (statusCode == 203) {
+                // they can repeat this twice
+                int i = 0;
+                do {
+                    final String token = PluginJSonUtils.getJson(br, "token");
+                    if (token == null) {
+                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                    }
+                    final int wait = getWait();
+                    sleep(wait * 1001l + 1000l, downloadLink);
+                    callAPI(null, "http://filer.net/get/" + fuid + ".json?token=" + token);
+                    // they can make you wait again...
+                    handleErrorsAPI(account);
+                } while (statusCode == 203 && ++i <= 2);
             }
-            final int wait = getWait();
-            sleep(wait * 1001l, downloadLink);
-            callAPI(null, "http://filer.net/get/" + fuid + ".json?token=" + token);
-            handleFreeErrorsAPI();
-        }
-        String dllink = null;
-        if (statusCode == 202) {
-            int maxCaptchaTries = 5;
-            int tries = 0;
-            while (tries < maxCaptchaTries) {
-                final Recaptcha rc = new Recaptcha(br, this);
-                if (recapID == null) {
-                    recapID = getJson("recaptcha_challange", br.toString());
-                }
-                if (recapID == null) {
-                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-                }
-                rc.setId(recapID);
-                rc.load();
-                final File cf = rc.downloadCaptcha(getLocalCaptchaFile());
-                final String c = getCaptchaCode("recaptcha", cf, downloadLink);
-                tries++;
-                br.postPage("http://filer.net/get/" + fuid + ".json", "recaptcha_challenge_field=" + Encoding.urlEncode(rc.getChallenge()) + "&recaptcha_response_field=" + Encoding.urlEncode(c) + "&hash=" + fuid);
-                dllink = br.getRedirectLocation();
-                if (dllink == null) {
-                    updateStatuscode();
-                    if (statusCode == 501) {
-                        throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "No free slots available, wait or buy premium!", 2 * 60 * 1000l);
-                    } else if (statusCode == 502) {
-                        throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "Max free simultan-downloads-limit reached, please finish running downloads before starting new ones!", 1 * 60 * 1000l);
-                    } else {
+            if (statusCode == 202) {
+                int maxCaptchaTries = 4;
+                int tries = 0;
+                while (tries <= maxCaptchaTries) {
+                    tries++;
+                    final CaptchaHelperHostPluginRecaptchaV2 rc2 = new CaptchaHelperHostPluginRecaptchaV2(this, br, "6LdB1kcUAAAAAAVPepnD-6TEd4BXKzS7L4FZFkpO");
+                    final String recaptchaV2Response = rc2.getToken();
+                    if (recaptchaV2Response == null) {
                         continue;
                     }
-                } else {
-                    break;
+                    br.postPage("http://filer.net/get/" + fuid + ".json", "g-recaptcha-response=" + Encoding.urlEncode(recaptchaV2Response) + "&hash=" + fuid);
+                    dllink = br.getRedirectLocation();
+                    if (dllink == null) {
+                        updateStatuscode();
+                        if (statusCode == 501) {
+                            throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "No free slots available, wait or buy premium!", 2 * 60 * 1000l);
+                        } else if (statusCode == 502) {
+                            throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "Max free simultan-downloads-limit reached, please finish running downloads before starting new ones!", 1 * 60 * 1000l);
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        break;
+                    }
                 }
-            }
-            if (dllink == null) {
-                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                if (dllink == null) {
+                    throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                }
             }
         }
         /* This should never happen! */
         if (dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        boolean resume = true;
-        if (downloadLink.getBooleanProperty(FilerNet.NORESUME, false)) {
-            resume = false;
-        }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, resume, 1);
+        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 1);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
-            // Temporary errorhandling for a bug which isn't handled by the API
-            if (br.getURL().equals("http://filer.net/error/500")) {
-                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Serverfehler", 60 * 60 * 1000l);
-            }
-            if (br.getURL().equals("http://filer.net/error/430") || br.containsHTML("Diese Adresse ist nicht bekannt oder")) {
-                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-            }
-            if (br.containsHTML("filer\\.net/register")) {
-                throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "No free slots available, wait or buy premium!", 10 * 60 * 1000l);
-            }
+            handleErrors(account, true);
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         dl.setAllowFilenameFromURL(true);
-        if (!this.dl.startDownload()) {
-            try {
-                if (dl.externalDownloadStop()) {
-                    return;
+        downloadLink.setProperty(DIRECT_API, dl.getConnection().getURL().toString());
+        this.dl.startDownload();
+    }
+
+    private void doFreeWebsite(final Account account, final DownloadLink downloadLink) throws Exception {
+        String dllink = checkDirectLink(downloadLink, DIRECT_WEB);
+        if (dllink == null) {
+            br.getPage(downloadLink.getDownloadURL());
+            handleErrors(account, false);
+            Form continueForm = br.getFormbyKey("token");
+            if (continueForm != null) {
+                /* Captcha is not always required! */
+                int wait = 60;
+                final String waittime_str = br.getRegex("id=\"time\">(\\d+)<").getMatch(0);
+                if (waittime_str != null) {
+                    wait = Integer.parseInt(waittime_str);
                 }
-            } catch (final Throwable e) {
+                sleep(wait * 1001l, downloadLink);
+                br.submitForm(continueForm);
             }
-            if (downloadLink.getLinkStatus().getErrorMessage() != null && downloadLink.getLinkStatus().getErrorMessage().startsWith(JDL.L("download.error.message.rangeheaders", "Server does not support chunkload"))) {
-                if (downloadLink.getBooleanProperty(FilerNet.NORESUME, false) == false) {
-                    downloadLink.setChunksProgress(null);
-                    downloadLink.setProperty(FilerNet.NORESUME, Boolean.valueOf(true));
-                    throw new PluginException(LinkStatus.ERROR_RETRY);
+            int maxCaptchaTries = 4;
+            int tries = 0;
+            while (tries <= maxCaptchaTries) {
+                continueForm = br.getFormbyKey("hash");
+                if (continueForm == null) {
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
+                final CaptchaHelperHostPluginRecaptchaV2 rc2 = new CaptchaHelperHostPluginRecaptchaV2(this, br);
+                final String recaptchaV2Response = rc2.getToken();
+                if (recaptchaV2Response == null) {
+                    throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                }
+                continueForm.put("g-recaptcha-response", Encoding.urlEncode(recaptchaV2Response));
+                br.submitForm(continueForm);
+                dllink = br.getRedirectLocation();
+                tries++;
+                if (dllink == null) {
+                    continue;
+                }
+                break;
+            }
+            if (dllink == null && this.br.containsHTML("data-sitekey")) {
+                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+            } else if (dllink == null) {
+                /* This should never happen! */
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
         }
+        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 1);
+        if (dl.getConnection().getContentType().contains("html")) {
+            br.followConnection();
+            handleErrors(account, true);
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
+        dl.setAllowFilenameFromURL(true);
+        downloadLink.setProperty(DIRECT_WEB, dl.getConnection().getURL().toString());
+        this.dl.startDownload();
     }
 
     private int getWait() {
-        final String tiaw = getJson("wait", br.toString());
+        final String tiaw = PluginJSonUtils.getJson(br, "wait");
         if (tiaw != null) {
             return Integer.parseInt(tiaw);
         } else {
             return 15;
         }
-    }
-
-    // TODO: remove this when v2 becomes stable. use br.getFormbyKey(String key, String value)
-    /**
-     * Returns the first form that has a 'key' that equals 'value'.
-     *
-     * @param key
-     *            name
-     * @param value
-     *            expected value
-     * @param ibr
-     *            import browser
-     */
-    @SuppressWarnings("unused")
-    private Form getFormByInput(final Browser ibr, final String key, final String value) {
-        Form[] workaround = ibr.getForms();
-        if (workaround != null) {
-            for (Form f : workaround) {
-                if (f.containsHTML(key + "=(\"|')" + value + "\\1")) {
-                    return f;
-                }
-            }
-        }
-        return null;
     }
 
     private Browser prepBrowser(final Browser prepBr) {
@@ -294,9 +323,9 @@ public class FilerNet extends PluginForHost {
                 final Form loginform = this.br.getFormbyKey("_username");
                 if (loginform == null) {
                     if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nPlugin defekt, bitte den JDownloader Support kontaktieren!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "\r\nPlugin defekt, bitte den JDownloader Support kontaktieren!");
                     } else {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nPlugin broken, please contact the JDownloader Support!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "\r\nPlugin broken, please contact the JDownloader Support!");
                     }
                 }
                 loginform.put("_username", Encoding.urlEncode(account.getUser()));
@@ -330,37 +359,46 @@ public class FilerNet extends PluginForHost {
             account.setValid(false);
             throw e;
         }
-        if (getJson("state", br.toString()).equals("free")) {
+        if ("free".equals(PluginJSonUtils.getJson(br, "state"))) {
             account.setType(AccountType.FREE);
             ai.setStatus("Free User");
             ai.setUnlimitedTraffic();
         } else {
             account.setType(AccountType.PREMIUM);
             ai.setStatus("Premium User");
-            ai.setTrafficLeft(Long.parseLong(getJson("traffic", br.toString())));
-            ai.setValidUntil(Long.parseLong(getJson("until", br.toString())) * 1000);
+            ai.setTrafficLeft(Long.parseLong(PluginJSonUtils.getJson(br, "traffic")));
+            final String maxTraffic = PluginJSonUtils.getJson(br, "maxtraffic");
+            if (maxTraffic != null) {
+                ai.setTrafficMax(Long.parseLong(maxTraffic));
+            } else {
+                ai.setTrafficMax(SizeFormatter.getSize("125gb"));// fallback
+            }
+            ai.setValidUntil(Long.parseLong(PluginJSonUtils.getJson(br, "until")) * 1000);
         }
         account.setValid(true);
         return ai;
     }
 
-    @SuppressWarnings("deprecation")
     @Override
     public void handlePremium(final DownloadLink downloadLink, final Account account) throws Exception {
         setBrowserExclusive();
         if (account.getType() == AccountType.FREE) {
             loginWebsite(account, false);
-            doFree(downloadLink);
+            requestFileInformation(downloadLink);
+            doFree(account, downloadLink);
         } else {
             requestFileInformation(downloadLink);
             handleDownloadErrors();
             br.getHeaders().put("Authorization", "Basic " + Encoding.Base64Encode(account.getUser() + ":" + account.getPass()));
             callAPI(account, "http://filer.net/api/dl/" + fuid + ".json");
             if (statusCode == 504) {
-                logger.info("No traffic available!");
-                throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_TEMP_DISABLE);
-            } else if (statusCode == UNKNOWNERROR) {
-                throw new PluginException(LinkStatus.ERROR_FATAL, UNKNOWNERRORTEXT);
+                if (StringUtils.isEmpty(statusMessage)) {
+                    throw new AccountUnavailableException("Traffic limit reached", 60 * 60 * 1000l);
+                } else {
+                    throw new AccountUnavailableException(statusMessage, 60 * 60 * 1000l);
+                }
+            } else if (statusCode == STATUSCODE_UNKNOWNERROR) {
+                throw new PluginException(LinkStatus.ERROR_FATAL, ERRORMESSAGE_UNKNOWNERRORTEXT);
             }
             final String dllink = br.getRedirectLocation();
             if (dllink == null) {
@@ -368,11 +406,7 @@ public class FilerNet extends PluginForHost {
             }
             /* Important!! */
             br.getHeaders().put("Authorization", "");
-            boolean resume = true;
-            if (downloadLink.getBooleanProperty(FilerNet.NORESUME, false)) {
-                resume = false;
-            }
-            dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, resume, 1);
+            dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 1);
             if (dl.getConnection().getContentType().contains("html")) {
                 br.followConnection();
                 /**
@@ -401,48 +435,104 @@ public class FilerNet extends PluginForHost {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
             dl.setAllowFilenameFromURL(true);
-            if (!this.dl.startDownload()) {
+            this.dl.startDownload();
+        }
+    }
+
+    /**
+     * Check if a stored directlink exists under property 'property' and if so, check if it is still valid (leads to a downloadable content
+     * [NOT html]).
+     */
+    private String checkDirectLink(final DownloadLink downloadLink, final String property) {
+        String dllink = downloadLink.getStringProperty(property);
+        if (dllink != null) {
+            URLConnectionAdapter con = null;
+            try {
+                final Browser br2 = br.cloneBrowser();
+                con = br2.openHeadConnection(dllink);
+                if (con.getContentType().contains("html") || con.getLongContentLength() == -1) {
+                    downloadLink.setProperty(property, Property.NULL);
+                    dllink = null;
+                }
+            } catch (final Exception e) {
+                downloadLink.setProperty(property, Property.NULL);
+                dllink = null;
+            } finally {
                 try {
-                    if (dl.externalDownloadStop()) {
-                        return;
-                    }
+                    con.disconnect();
                 } catch (final Throwable e) {
                 }
-                if (downloadLink.getLinkStatus().getErrorMessage() != null && downloadLink.getLinkStatus().getErrorMessage().startsWith(JDL.L("download.error.message.rangeheaders", "Server does not support chunkload"))) {
-                    if (downloadLink.getBooleanProperty(FilerNet.NORESUME, false) == false) {
-                        downloadLink.setChunksProgress(null);
-                        downloadLink.setProperty(FilerNet.NORESUME, Boolean.valueOf(true));
-                        throw new PluginException(LinkStatus.ERROR_RETRY);
-                    }
+            }
+        }
+        return dllink;
+    }
+
+    private void handleErrors(final Account account, final boolean afterDownload) throws PluginException {
+        // Temporary errorhandling for a bug which isn't handled by the API
+        if (br.getURL().endsWith("/error/500")) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Serverfehler", 60 * 60 * 1000l);
+        }
+        if (br.getURL().endsWith("/error/430") || br.containsHTML("Diese Adresse ist nicht bekannt oder")) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        }
+        if (afterDownload && br.containsHTML("filer\\.net/register")) {
+            throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "No free slots available, wait or buy premium!", 10 * 60 * 1000l);
+        }
+        if (br.containsHTML(">Maximale Verbindungen erreicht<")) {
+            throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "No free slots available, wait or buy premium!", 10 * 60 * 1000l);
+        }
+        if (br.containsHTML(">Free Download Limit erreicht<")) {
+            final String time = br.getRegex("<span id=\"time\">(\\d+)<").getMatch(0);
+            if (account != null) {
+                if (time != null) {
+                    throw new AccountUnavailableException("Limit reached", (Integer.parseInt(time) + 60) * 1000l);
+                } else {
+                    throw new AccountUnavailableException("Limit reached", 60 * 60 * 1000l);
                 }
+            }
+            if (time != null) {
+                throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, "Free limit reached", (Integer.parseInt(time) + 60) * 1000l);
+            } else {
+                throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, "Free limit reached", 60 * 60 * 1000l);
             }
         }
     }
 
     private void handleDownloadErrors() throws PluginException {
-        if (statusCode == APIDISABLED) {
-            throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, APIDISABLEDTEXT, 2 * 60 * 60 * 1000l);
-        } else if (statusCode == DOWNLOADTEMPORARILYDISABLED) {
-            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, DOWNLOADTEMPORARILYDISABLEDTEXT, 2 * 60 * 60 * 1000l);
-        } else if (statusCode == UNKNOWNERROR) {
-            throw new PluginException(LinkStatus.ERROR_FATAL, UNKNOWNERRORTEXT);
+        if (statusCode == STATUSCODE_APIDISABLED) {
+            throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, ERRORMESSAGE_APIDISABLEDTEXT, 2 * 60 * 60 * 1000l);
+        } else if (statusCode == STATUSCODE_DOWNLOADTEMPORARILYDISABLED) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, ERRORMESSAGE_DOWNLOADTEMPORARILYDISABLEDTEXT, 2 * 60 * 60 * 1000l);
+        } else if (statusCode == STATUSCODE_UNKNOWNERROR) {
+            throw new PluginException(LinkStatus.ERROR_FATAL, ERRORMESSAGE_UNKNOWNERRORTEXT);
         }
     }
 
-    private void handleFreeErrorsAPI() throws PluginException {
+    private void handleErrorsAPI(Account account) throws PluginException {
         if (statusCode == 501) {
             throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "No free slots available, wait or buy premium!", 2 * 60 * 1000l);
         } else if (statusCode == 502) {
             throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "Max free simultan-downloads-limit reached, please finish running downloads before starting new ones!", 1 * 60 * 1000l);
+        } else if (statusCode == 504) {
+            if (account == null || AccountType.FREE.equals(account.getType())) {
+                throw new AccountRequiredException(statusMessage);
+            } else {
+                if (StringUtils.isEmpty(statusMessage)) {
+                    throw new AccountUnavailableException("Traffic limit reached", 60 * 60 * 1000l);
+                } else {
+                    throw new AccountUnavailableException(statusMessage, 60 * 60 * 1000l);
+                }
+            }
         }
         // 203 503 wait
-        int wait = getWait();
+        final int wait = getWait();
         if (statusCode == 503) {
             // Waittime too small->Don't reconnect
             if (wait < 61) {
                 throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "Wait before starting new downloads...", wait * 1001l);
+            } else {
+                throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, wait * 1001l);
             }
-            throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, wait * 1001l);
         }
     }
 
@@ -462,7 +552,8 @@ public class FilerNet extends PluginForHost {
     }
 
     private void updateStatuscode() {
-        final String code = getJson("code", br.toString());
+        final String code = PluginJSonUtils.getJson(br, "code");
+        statusMessage = PluginJSonUtils.getJson(br, "status");
         if ("hour download limit reached".equals(code)) {
             statusCode = 503;
         } else if ("user download slots filled".equals(code)) {
@@ -476,21 +567,24 @@ public class FilerNet extends PluginForHost {
         }
     }
 
-    private String getJson(final String parameter, final String source) {
-        String result = new Regex(source, "\"" + parameter + "\":(\\d+)").getMatch(0);
-        if (result == null) {
-            result = new Regex(source, "\"" + parameter + "\":\"([^<>\"]*?)\"").getMatch(0);
-        }
-        return result;
-    }
-
     @Override
     public void reset() {
     }
 
     @Override
     public void resetDownloadlink(final DownloadLink link) {
-        link.setProperty("errorFailure", Property.NULL);
+        link.removeProperty("errorFailure");
+        link.removeProperty("directlinkWeb");
+        link.removeProperty("directlinkApi");
+    }
+
+    @Override
+    public String getDescription() {
+        return "Download files with the filer.net plugin.";
+    }
+
+    private void setConfigElements() {
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), "ENABLE_API_FOR_FREE_AND_FREE_ACCOUNT_DOWNLOADS", "Enable API for free- and free account downloads?\r\nBy disabling this you will force JD to use the website instead.\r\nThis could lead to unexpected errors.").setDefaultValue(true));
     }
 
     @Override

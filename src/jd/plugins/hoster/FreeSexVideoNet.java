@@ -13,10 +13,7 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
-
-import java.io.IOException;
 
 import jd.PluginWrapper;
 import jd.http.Browser;
@@ -33,9 +30,8 @@ import jd.plugins.components.SiteType.SiteTemplate;
 
 import org.appwork.utils.Regex;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "free-sex-video.net" }, urls = { "http://(?:www\\.)?free\\-sex\\-video\\.net/video/[a-z0-9\\-]+\\-\\d+\\.html" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "free-sex-video.net", "hotclips24.com" }, urls = { "https?://(?:www\\.)?free-sex-video\\.net/video/[a-z0-9\\-]+\\d+\\.html", "https?://(?:www\\.)?hotclips24\\.com/video/[a-z0-9\\-]+\\d+\\.html" })
 public class FreeSexVideoNet extends PluginForHost {
-
     public FreeSexVideoNet(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -44,48 +40,56 @@ public class FreeSexVideoNet extends PluginForHost {
     // Tags:
     // protocol: no https
     // other:
-
-    /* Extension which will be used if no correct extension is found */
-    private static final String  default_Extension = ".mp4";
     /* Connection stuff */
     private static final boolean free_resume       = true;
-    private static final int     free_maxchunks    = 0;
+    private static final int     free_maxchunks    = 1;   // https://svn.jdownloader.org/issues/83286
     private static final int     free_maxdownloads = -1;
-
     private String               dllink            = null;
 
     @Override
     public String getAGBLink() {
-        return "http://free-sex-video.net/tos";
+        return "http://hotclips24.com/tos";
+    }
+
+    @Override
+    public void correctDownloadLink(DownloadLink link) throws Exception {
+        // link.setPluginPatternMatcher(link.getPluginPatternMatcher().replace("free-sex-video.net/", "hotclips24.com/"));
+        // Not the same: (https://svn.jdownloader.org/issues/85655)
+        // https://free-sex-video.net/video/-51455.html
+        // https://hotclips24.com/video/-51455.html
     }
 
     @SuppressWarnings("deprecation")
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         dllink = null;
+        correctDownloadLink(link);
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         br.getPage(link.getDownloadURL());
         if (br.getHttpConnection().getResponseCode() == 404) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-        final String url_filename = new Regex(link.getDownloadURL(), "/video/([a-z0-9\\-]+)\\-\\d+\\.html").getMatch(0).replace("-", " ");
-        String filename = br.getRegex("title: \\'([^<>\"\\']*?)\\',").getMatch(0);
+        final String url_filename = new Regex(link.getDownloadURL(), "/video/([a-z0-9\\-]*\\-\\d+)\\.html").getMatch(0).replace("-", " ");
+        String filename = br.getRegex("title: '([^<>\"']*?)',").getMatch(0);
+        if (filename == null) {
+            filename = br.getRegex("<title>([^<>]*?)(at (Free Sex Video|HotClips24))?</title>").getMatch(0);
+        }
         if (filename == null) {
             filename = url_filename;
         }
-        dllink = br.getRegex("\\'(?:file|video)\\'[\t\n\r ]*?:[\t\n\r ]*?\\'(http[^<>\"]*?)\\'").getMatch(0);
+        dllink = br.getRegex("'(?:file|video)'\\s*:\\s*'(http[^<>\"]*?)'").getMatch(0);
         if (dllink == null) {
-            dllink = br.getRegex("(?:file|url):[\t\n\r ]*?(?:\"|\\')(http[^<>\"]*?)(?:\"|\\')").getMatch(0);
+            dllink = br.getRegex("(?:file|url):\\s*(\"|')(http[^<>\"]*?)\\1").getMatch(1);
             if (dllink == null) {
-                dllink = br.getRegex("<source src=\"(https?://[^<>\"]*?)\" type=(?:\"|\\')video/(?:mp4|flv)(?:\"|\\')").getMatch(0);
+                dllink = br.getRegex("<source src=\"(https?://[^<>\"]*?)\" type=(\"|')video/(?:mp4|flv)\\2").getMatch(0);
                 if (dllink == null) {
                     dllink = br.getRegex("property=\"og:video\" content=\"(http[^<>\"]*?)\"").getMatch(0);
                     if (dllink == null) {
-                        dllink = br.getRegex("var defFile = \\'(http[^<>\"\\']*?)\\';").getMatch(0);
+                        dllink = br.getRegex("var defFile = '(http[^<>\"']*?)';").getMatch(0);
                         if (dllink == null) {
                             /* Mobile format */
-                            dllink = br.getRegex("var mobFile = \\'(http[^<>\"\\']*?)\\';").getMatch(0);
+                            dllink = br.getRegex("var mobFile = '(http[^<>\"']*?)';").getMatch(0);
                             if (dllink == null) {
                                 dllink = br.getRegex("(https?://media\\d+\\.free\\-sex\\-video\\.net/media/videos/[^<>\"]*?\\.mp4)").getMatch(0);
                             }
@@ -101,11 +105,7 @@ public class FreeSexVideoNet extends PluginForHost {
         filename = Encoding.htmlDecode(filename);
         filename = filename.trim();
         filename = encodeUnicode(filename);
-        String ext = getFileNameExtensionFromString(dllink);
-        /* Make sure that we get a correct extension */
-        if (ext == null || !ext.matches("\\.[A-Za-z0-9]{3,5}")) {
-            ext = default_Extension;
-        }
+        String ext = getFileNameExtensionFromString(dllink, ".mp4");
         if (!filename.endsWith(ext)) {
             filename += ext;
         }

@@ -1,29 +1,37 @@
 package org.jdownloader.api.myjdownloader;
 
+import java.io.EOFException;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URL;
+import java.nio.channels.ClosedByInterruptException;
+import java.nio.charset.Charset;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import jd.controlling.proxy.ProxyController;
 import jd.http.SocketConnectionFactory;
 
+import org.appwork.utils.Exceptions;
 import org.appwork.utils.NullsafeAtomicReference;
+import org.appwork.utils.UniqueAlltimeID;
+import org.appwork.utils.net.httpconnection.HTTPConnectionImpl;
 import org.appwork.utils.net.httpconnection.HTTPProxy;
 import org.appwork.utils.net.httpconnection.HTTPProxyException;
+import org.appwork.utils.net.httpconnection.SocketStreamInterface;
 import org.appwork.utils.net.socketconnection.SocketConnection;
 import org.jdownloader.api.myjdownloader.MyJDownloaderConnectThread.DeviceConnectionHelper;
 import org.jdownloader.api.myjdownloader.MyJDownloaderConnectThread.SessionInfoWrapper;
 import org.jdownloader.myjdownloader.client.json.DeviceConnectionStatus;
 
 public class MyJDownloaderWaitingConnectionThread extends Thread {
-
     protected static class MyJDownloaderConnectionRequest {
-
         public final SessionInfoWrapper getSession() {
             return session;
         }
@@ -42,33 +50,37 @@ public class MyJDownloaderWaitingConnectionThread extends Thread {
     }
 
     protected static class MyJDownloaderConnectionResponse {
-
-        public final DeviceConnectionStatus getConnectionStatus() {
-            return connectionStatus;
+        public final DeviceConnectionStatus getStatus() {
+            return status;
         }
 
-        public final Socket getConnectionSocket() {
-            return connectionSocket;
+        public final SocketStreamInterface getSocketStream() {
+            return socket;
         }
 
         public final Throwable getThrowable() {
             return throwable;
         }
 
-        private final DeviceConnectionStatus               connectionStatus;
-        private final Socket                               connectionSocket;
+        private final DeviceConnectionStatus               status;
+        private final SocketStreamInterface                socket;
         private final Throwable                            throwable;
         private final MyJDownloaderWaitingConnectionThread thread;
         private final MyJDownloaderConnectionRequest       request;
+        private final long                                 uniqueID = UniqueAlltimeID.next();
+
+        public long getUniqueID() {
+            return uniqueID;
+        }
 
         public final MyJDownloaderConnectionRequest getRequest() {
             return request;
         }
 
-        protected MyJDownloaderConnectionResponse(MyJDownloaderWaitingConnectionThread thread, MyJDownloaderConnectionRequest request, DeviceConnectionStatus connectionStatus, Socket connectionSocket, Throwable e) {
+        protected MyJDownloaderConnectionResponse(MyJDownloaderWaitingConnectionThread thread, MyJDownloaderConnectionRequest request, DeviceConnectionStatus connectionStatus, SocketStreamInterface connectionSocket, Throwable e) {
             this.request = request;
-            this.connectionStatus = connectionStatus;
-            this.connectionSocket = connectionSocket;
+            this.status = connectionStatus;
+            this.socket = connectionSocket;
             this.throwable = e;
             this.thread = thread;
         }
@@ -79,13 +91,13 @@ public class MyJDownloaderWaitingConnectionThread extends Thread {
         public final MyJDownloaderWaitingConnectionThread getThread() {
             return thread;
         }
-
     }
 
-    protected final AtomicBoolean                                           running           = new AtomicBoolean(true);
-    protected final NullsafeAtomicReference<MyJDownloaderConnectionRequest> connectionRequest = new NullsafeAtomicReference<MyJDownloaderConnectionRequest>();
+    protected final AtomicBoolean                                           running            = new AtomicBoolean(true);
+    protected final AtomicReference<Boolean>                                pendingConnectFlag = new AtomicReference<Boolean>(null);
+    protected final NullsafeAtomicReference<MyJDownloaderConnectionRequest> connectionRequest  = new NullsafeAtomicReference<MyJDownloaderConnectionRequest>();
     protected final MyJDownloaderConnectThread                              connectThread;
-    private final static AtomicInteger                                      THREADID          = new AtomicInteger(0);
+    private final static AtomicInteger                                      THREADID           = new AtomicInteger(0);
 
     public MyJDownloaderWaitingConnectionThread(MyJDownloaderConnectThread connectThread) {
         this.setDaemon(true);
@@ -93,77 +105,147 @@ public class MyJDownloaderWaitingConnectionThread extends Thread {
         this.connectThread = connectThread;
     }
 
+    private final static Charset ISO_8859_1 = Charset.forName("ISO-8859-1");
+
     @Override
     public void run() {
-
         try {
-            while (running.get()) {
+            while (isRunning()) {
                 MyJDownloaderConnectionRequest request = null;
                 synchronized (connectionRequest) {
                     if ((request = connectionRequest.getAndSet(null)) == null) {
-                        if (running.get() == false) {
+                        if (!isRunning()) {
                             return;
+                        } else {
+                            try {
+                                connectionRequest.wait();
+                            } catch (InterruptedException e) {
+                                if (isRunning()) {
+                                    throw e;
+                                } else {
+                                    return;
+                                }
+                            }
+                            request = connectionRequest.getAndSet(null);
                         }
-                        connectionRequest.wait();
-                        request = connectionRequest.getAndSet(null);
                     }
                 }
                 if (request != null) {
                     Throwable e = null;
-                    DeviceConnectionStatus connectionStatus = null;
+                    DeviceConnectionStatus status = null;
                     request.getConnectionHelper().backoff();
-                    Socket connectionSocket = null;
                     HTTPProxy proxy = null;
                     final InetSocketAddress addr = request.getConnectionHelper().getAddr();
                     final URL url = new URL(null, "socket://" + SocketConnection.getHostName(addr) + ":" + addr.getPort(), ProxyController.SOCKETURLSTREAMHANDLER);
+                    Socket socket = null;
+                    SocketStreamInterface socketStream = null;
+                    request.getConnectionHelper().mark();
+                    boolean closeSocket = true;
                     try {
-                        connectThread.log("Connect " + addr);
                         final List<HTTPProxy> list = ProxyController.getInstance().getProxiesByURL(url, false, false);
                         if (list != null && list.size() > 0) {
                             proxy = list.get(0);
-                            connectionSocket = SocketConnectionFactory.createSocket(proxy);
-                            connectionSocket.setReuseAddress(true);
-                            connectionSocket.setSoTimeout(180000);
-                            connectionSocket.setTcpNoDelay(true);
-                            connectionSocket.connect(addr, 30000);
-                            connectionSocket.getOutputStream().write(("DEVICE" + request.getSession().getSessionToken()).getBytes("ISO-8859-1"));
-                            connectionSocket.getOutputStream().flush();
-                            int validToken = connectionSocket.getInputStream().read();
-                            connectionStatus = DeviceConnectionStatus.parse(validToken);
+                            connectThread.log("Connect:" + addr + "|" + proxy);
+                            if (pendingConnectFlag.compareAndSet(null, Boolean.TRUE)) {
+                                socket = SocketConnectionFactory.createSocket(proxy);
+                                socket.setReuseAddress(true);
+                                socket.setSoTimeout(180000);
+                                socket.setTcpNoDelay(true);
+                                if (proxy == null || proxy.isDirect() || proxy.isNone()) {
+                                    socket.connect(addr, 10000);
+                                } else {
+                                    socket.connect(addr, 30000);
+                                }
+                                final long timeStamp = System.currentTimeMillis();
+                                final Socket finalSocket = socket;
+                                socketStream = new SocketStreamInterface() {
+                                    @Override
+                                    public Socket getSocket() {
+                                        return finalSocket;
+                                    }
+
+                                    @Override
+                                    public OutputStream getOutputStream() throws IOException {
+                                        return finalSocket.getOutputStream();
+                                    }
+
+                                    @Override
+                                    public InputStream getInputStream() throws IOException {
+                                        return finalSocket.getInputStream();
+                                    }
+
+                                    @Override
+                                    public void close() throws IOException {
+                                        finalSocket.close();
+                                    }
+                                };
+                                if (addr.getPort() == 443) {
+                                    socketStream = HTTPConnectionImpl.getDefaultSSLSocketStreamFactory().create(socketStream, SocketConnection.getHostName(addr), 443, true, true, null);
+                                }
+                                final OutputStream os = socketStream.getOutputStream();
+                                os.write(("DEVICE" + request.getSession().getSessionToken()).getBytes(ISO_8859_1));
+                                os.flush();
+                                final int validToken = socketStream.getInputStream().read();
+                                if (validToken == -1) {
+                                    throw new EOFException("Timeout:" + (System.currentTimeMillis() - timeStamp));
+                                }
+                                status = DeviceConnectionStatus.parse(validToken);
+                                if (status == null) {
+                                    throw new IllegalStateException("Unknown/Unsupported DeviceConnectionStatus:" + validToken);
+                                }
+                                closeSocket = false;
+                            }
                         } else {
                             synchronized (connectionRequest) {
                                 try {
                                     connectionRequest.wait(5000);
                                 } catch (final InterruptedException ignore) {
+                                    if (isRunning()) {
+                                        throw ignore;
+                                    } else {
+                                        return;
+                                    }
                                 }
                                 throw new ConnectException("No available connection for: " + url);
                             }
                         }
                     } catch (Throwable throwable) {
-                        try {
+                        if (Exceptions.containsInstanceOf(throwable, ClosedByInterruptException.class)) {
+                            // SocketChannel Socket-> Interrupted
+                            if (isRunning()) {
+                                connectThread.log(throwable);
+                            } else {
+                                return;
+                            }
+                        } else {
                             connectThread.log(throwable);
                             e = throwable;
                             if (proxy != null && !proxy.isNone() && throwable instanceof HTTPProxyException) {
                                 ProxyController.getInstance().reportHTTPProxyException(proxy, url, (IOException) throwable);
                             }
-                        } finally {
+                        }
+                    } finally {
+                        pendingConnectFlag.compareAndSet(Boolean.TRUE, null);
+                        request.getConnectionHelper().unmark();
+                        if (closeSocket && socket != null) {
                             try {
-                                if (connectionSocket != null) {
-                                    connectionSocket.close();
-                                    connectionSocket = null;
-                                }
+                                socket.close();
                             } catch (final Throwable ignore) {
+                            } finally {
+                                socket = null;
                             }
                         }
                     }
-                    final MyJDownloaderConnectionResponse response = new MyJDownloaderConnectionResponse(this, request, connectionStatus, connectionSocket, e);
+                    final MyJDownloaderConnectionResponse response = new MyJDownloaderConnectionResponse(this, request, status, socketStream, e);
                     if (connectThread.putResponse(response) == false) {
-                        connectThread.log("putResponse failed, maybe connectThread is closed/interrupted.");
                         try {
-                            if (connectionSocket != null) {
-                                connectionSocket.close();
+                            if (socket != null) {
+                                socket.close();
                             }
                         } catch (final Throwable ignore) {
+                        }
+                        if (isRunning()) {
+                            connectThread.log("putResponse failed!");
                         }
                     }
                 }
@@ -196,6 +278,9 @@ public class MyJDownloaderWaitingConnectionThread extends Thread {
         synchronized (connectionRequest) {
             running.set(false);
             connectionRequest.notifyAll();
+            if (pendingConnectFlag.compareAndSet(null, Boolean.FALSE)) {
+                interrupt();
+            }
         }
     }
 }

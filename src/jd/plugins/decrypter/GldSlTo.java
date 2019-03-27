@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.io.File;
@@ -24,18 +23,18 @@ import jd.controlling.ProgressController;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.plugins.CryptedLink;
-import jd.plugins.DecrypterException;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
-import jd.plugins.PluginForDecrypt;
+import jd.plugins.LinkStatus;
+import jd.plugins.PluginException;
 
 import org.jdownloader.captcha.v2.challenge.clickcaptcha.ClickedPoint;
 import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperCrawlerPluginRecaptchaV2;
+import org.jdownloader.plugins.components.antiDDoSForDecrypt;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "goldesel.to" }, urls = { "http://(www\\.)?goldesel\\.to/[a-z0-9]+(/[a-z0-9]+)?/\\d+.{2,}" }) 
-public class GldSlTo extends PluginForDecrypt {
-
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "goldesel.to" }, urls = { "http://(www\\.)?goldesel\\.to/[a-z0-9]+(/[a-z0-9\\-]+)?/\\d+.{2,}" })
+public class GldSlTo extends antiDDoSForDecrypt {
     public GldSlTo(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -47,12 +46,11 @@ public class GldSlTo extends PluginForDecrypt {
         ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         String parameter = param.toString();
         br.setFollowRedirects(true);
-        br.getPage(parameter);
+        getPage(parameter);
         if (!br.containsHTML("<h2>DDL\\-Links</h2>") && !br.containsHTML("<h2>Stream\\-Links</h2>")) {
             logger.info("Link offline: " + parameter);
             return decryptedLinks;
         }
-
         String fpName = br.getRegex("<title>([^<>\"]*?) \\&raquo; goldesel\\.to</title>").getMatch(0);
         if (fpName == null) {
             fpName = br.getRegex("<title>([^<>\"]*?)</title>").getMatch(0);
@@ -88,7 +86,7 @@ public class GldSlTo extends PluginForDecrypt {
             // br.setCookie("goldesel.to", "__utmc", "222304525");
             /* IMPORTANT */
             br.setCookie("goldesel.to", "__utmt", "1");
-            br.postPage("http://goldesel.to/res/links", "data=" + Encoding.urlEncode(decryptID));
+            postPage("http://goldesel.to/res/links", "data=" + Encoding.urlEncode(decryptID));
             if (br.containsHTML(HTML_CAPTCHA)) {
                 for (int i = 1; i <= 3; i++) {
                     try {
@@ -105,7 +103,7 @@ public class GldSlTo extends PluginForDecrypt {
                         return null;
                     }
                     final File file = this.getLocalCaptchaFile();
-                    br.cloneBrowser().getDownload(file, "http://goldesel.to/" + capLink);
+                    getCaptchaBrowser(br).getDownload(file, "http://goldesel.to/" + capLink);
                     String click_on;
                     if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                         click_on = "Klicke in den gestrichelten Kreis!";
@@ -113,7 +111,10 @@ public class GldSlTo extends PluginForDecrypt {
                         click_on = "Click in the dashed circle!";
                     }
                     final ClickedPoint cp = getCaptchaClickedPoint(getHost(), file, param, "Goldesel.to\r\nDecrypting: " + fpName + "\r\nClick-Captcha | Mirror " + counter + " / " + maxc + " : " + decryptID, click_on);
-                    br.postPage("http://goldesel.to/res/links", "data=" + Encoding.urlEncode(decryptID) + "&xC=" + cp.getX() + "&yC=" + cp.getY());
+                    if (cp == null) {
+                        throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                    }
+                    postPage("http://goldesel.to/res/links", "data=" + Encoding.urlEncode(decryptID) + "&xC=" + cp.getX() + "&yC=" + cp.getY());
                     if (br.containsHTML(HTML_LIMIT_REACHED)) {
                         logger.info("We have to wait because the user entered too many wrong captchas...");
                         int wait = 60;
@@ -141,7 +142,7 @@ public class GldSlTo extends PluginForDecrypt {
                 }
             } else if (br.containsHTML("\"g\\-recaptcha\"")) {
                 final String recaptchaV2Response = new CaptchaHelperCrawlerPluginRecaptchaV2(this, br).getToken();
-                br.postPage("http://goldesel.to/res/links", "data=" + Encoding.urlEncode(decryptID) + "&rcc=" + Encoding.urlEncode(recaptchaV2Response));
+                postPage("http://goldesel.to/res/links", "data=" + Encoding.urlEncode(decryptID) + "&rcc=" + Encoding.urlEncode(recaptchaV2Response));
             }
             if (br.containsHTML(HTML_LIMIT_REACHED)) {
                 logger.info("Probably hourly limit is reached --> Stopping decryption");
@@ -158,7 +159,7 @@ public class GldSlTo extends PluginForDecrypt {
         }
         /* Only 1 link + wrong captcha --> */
         if (decryptedLinks.size() == 0 && captchafailed) {
-            throw new DecrypterException(DecrypterException.CAPTCHA);
+            throw new PluginException(LinkStatus.ERROR_CAPTCHA);
         }
         if (decryptedLinks.size() == 0) {
             logger.warning("Decrypter broken for link: " + parameter);
@@ -173,22 +174,8 @@ public class GldSlTo extends PluginForDecrypt {
         return 1;
     }
 
-    // private String[] getAjaxPost(final Browser br) {
-    // String[] postInfo = new String[2];
-    // final Regex postInfoRegex = br.getRegex("function [A-Za-z0-9\\-_]+\\(([A-Z0-9]+)\\) \\{ \\$\\.post\\(\"(ajax[^<>\"]*?)\"");
-    // if (postInfoRegex.getMatches().length != 0) {
-    // postInfo[0] = "http://goldesel.to/" + postInfoRegex.getMatch(1);
-    // postInfo[1] = postInfoRegex.getMatch(0);
-    // } else {
-    // postInfo[0] = "http://goldesel.to/ajax/jDL.php";
-    // postInfo[1] = "LNK";
-    // }
-    // return postInfo;
-    // }
-
     /* NO OVERRIDE!! */
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

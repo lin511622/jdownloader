@@ -3,6 +3,7 @@ package org.jdownloader.extensions.extraction.multi;
 import java.io.File;
 import java.util.Date;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import net.sf.sevenzipjbinding.ExtractAskMode;
 import net.sf.sevenzipjbinding.ExtractOperationResult;
@@ -22,20 +23,20 @@ import org.jdownloader.extensions.extraction.Item;
 
 public class Seven7ExtractCallback implements IArchiveExtractCallback, ICryptoGetTextPassword {
 
-    protected final ISequentialOutStream[]   outStreams;
-    protected final ExtractionController     ctrl;
-    protected final SevenZipArchiveWrapper   archiveWrapper;
-    protected final String                   password;
-    protected final Archive                  archive;
-    protected final ExtractionConfig         config;
-    protected int                            lastIndex                 = -1;
-    protected final ExtractOperationResult[] results;
-    protected final Multi                    multi;
-    protected final ISimpleInArchiveItem[]   items;
-    protected final AtomicBoolean            error                     = new AtomicBoolean(false);
-    protected final LogSource                logger;
-    protected final boolean                  slowDownWorkaroundNeeded;
-    protected final static long              SLOWDOWNWORKAROUNDTIMEOUT = 150;
+    protected final ISequentialOutStream[]     outStreams;
+    protected final ExtractionController       ctrl;
+    protected final SevenZipArchiveWrapper     archiveWrapper;
+    protected final String                     password;
+    protected final Archive                    archive;
+    protected final ExtractionConfig           config;
+    protected int                              lastIndex                 = -1;
+    protected final ExtractOperationResult[]   results;
+    protected final Multi                      multi;
+    protected final ISimpleInArchiveItem[]     items;
+    protected final AtomicReference<Throwable> error                     = new AtomicReference<Throwable>();
+    protected final LogSource                  logger;
+    protected final boolean                    slowDownWorkaroundNeeded;
+    protected final static long                SLOWDOWNWORKAROUNDTIMEOUT = 150;
 
     public ExtractOperationResult getResult(int index) {
         return results[index];
@@ -113,8 +114,8 @@ public class Seven7ExtractCallback implements IArchiveExtractCallback, ICryptoGe
         if (ctrl.gotKilled()) {
             throw new MultiSevenZipException("Extraction has been aborted", ExtractionControllerConstants.EXIT_CODE_USER_BREAK);
         }
-        if (error.get()) {
-            throw new SevenZipException("Extraction error");
+        if (error.get() != null) {
+            throw new SevenZipException(error.get());
         }
         ISequentialOutStream ret = outStreams[index];
         if (ret == null) {
@@ -266,7 +267,7 @@ public class Seven7ExtractCallback implements IArchiveExtractCallback, ICryptoGe
                                     throw new MultiSevenZipException("Extraction has been aborted", ExtractionControllerConstants.EXIT_CODE_USER_BREAK);
                                 }
                                 final int ret = super.write(data);
-                                ctrl.addAndGetProcessedBytes(ret);
+                                ctrl.addProcessedBytesAndPauseIfNeeded(ret);
                                 return ret;
                             }
 
@@ -276,7 +277,7 @@ public class Seven7ExtractCallback implements IArchiveExtractCallback, ICryptoGe
                 }
                 outStreams[index] = ret;
             } catch (Throwable e) {
-                error.set(true);
+                error.set(e);
                 if (e instanceof SevenZipException) {
                     throw (SevenZipException) e;
                 }
@@ -302,7 +303,7 @@ public class Seven7ExtractCallback implements IArchiveExtractCallback, ICryptoGe
                         throw new MultiSevenZipException("Extraction has been aborted", ExtractionControllerConstants.EXIT_CODE_USER_BREAK);
                     }
                     if (countBytesAsProcessed) {
-                        ctrl.addAndGetProcessedBytes(data.length);
+                        ctrl.addProcessedBytesAndPauseIfNeeded(data.length);
                     }
                     return data.length;
                 }
@@ -315,7 +316,7 @@ public class Seven7ExtractCallback implements IArchiveExtractCallback, ICryptoGe
                         throw new MultiSevenZipException("Extraction has been aborted", ExtractionControllerConstants.EXIT_CODE_USER_BREAK);
                     }
                     if (countBytesAsProcessed) {
-                        ctrl.addAndGetProcessedBytes(data.length);
+                        ctrl.addProcessedBytesAndPauseIfNeeded(data.length);
                     }
                     return data.length;
                 }
@@ -325,6 +326,10 @@ public class Seven7ExtractCallback implements IArchiveExtractCallback, ICryptoGe
     }
 
     public boolean hasError() {
+        return getError() != null;
+    }
+
+    public Throwable getError() {
         return error.get();
     }
 
@@ -399,7 +404,7 @@ public class Seven7ExtractCallback implements IArchiveExtractCallback, ICryptoGe
                 }
             }
         } catch (final Throwable e) {
-            error.set(true);
+            error.set(e);
             if (e instanceof SevenZipException) {
                 throw (SevenZipException) e;
             }

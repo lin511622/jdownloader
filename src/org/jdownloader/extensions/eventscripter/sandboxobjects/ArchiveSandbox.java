@@ -8,6 +8,7 @@ import jd.plugins.DownloadLink;
 
 import org.appwork.exceptions.WTFException;
 import org.appwork.utils.IO;
+import org.jdownloader.extensions.eventscripter.EnvironmentException;
 import org.jdownloader.extensions.eventscripter.ScriptThread;
 import org.jdownloader.extensions.extraction.Archive;
 import org.jdownloader.extensions.extraction.ArchiveFile;
@@ -16,7 +17,6 @@ import org.jdownloader.extensions.extraction.bindings.downloadlink.DownloadLinkA
 import org.jdownloader.extensions.extraction.multi.ArchiveType;
 
 public class ArchiveSandbox {
-
     private final Archive archive;
 
     public ArchiveSandbox(Archive archive) {
@@ -25,6 +25,24 @@ public class ArchiveSandbox {
 
     public ArchiveSandbox() {
         this(null);
+    }
+
+    @Override
+    public int hashCode() {
+        if (archive != null) {
+            return archive.hashCode();
+        } else {
+            return super.hashCode();
+        }
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (obj instanceof ArchiveSandbox) {
+            return ((ArchiveSandbox) obj).archive == archive;
+        } else {
+            return super.equals(obj);
+        }
     }
 
     public String getExtractionLog() {
@@ -39,6 +57,14 @@ public class ArchiveSandbox {
             }
         }
         return null;
+    }
+
+    public boolean isPasswordProtected() {
+        if (archive != null) {
+            return archive.isProtected() || archive.isPasswordRequiredToOpen();
+        } else {
+            return false;
+        }
     }
 
     public String getUsedPassword() {
@@ -69,15 +95,17 @@ public class ArchiveSandbox {
     public Object getInfo() {
         if (archive != null) {
             return ((ScriptThread) Thread.currentThread()).toNative(archive.getSettings());
+        } else {
+            return null;
         }
-        return null;
     }
 
     public String getArchiveType() {
         if (archive != null) {
             return archive.getSplitType() == null ? (String.valueOf(archive.getArchiveType())) : (String.valueOf(archive.getSplitType()));
+        } else {
+            return ArchiveType.RAR_MULTI.name();
         }
-        return ArchiveType.RAR_MULTI.name();
     }
 
     public String getExtractToFolder() {
@@ -86,12 +114,26 @@ public class ArchiveSandbox {
 
     public String[] getExtractedFiles() {
         if (archive != null && archive.getExtractedFiles() != null && archive.getExtractedFiles().size() > 0) {
-            final ArrayList<String> lst = new ArrayList<String>();
-            for (final File s : archive.getExtractedFiles()) {
-                lst.add(s.getAbsolutePath());
+            final ArrayList<String> ret = new ArrayList<String>(archive.getExtractedFiles().size());
+            for (final File file : archive.getExtractedFiles()) {
+                ret.add(file.getAbsolutePath());
             }
-            if (lst.size() > 0) {
-                return lst.toArray(new String[] {});
+            if (ret.size() > 0) {
+                return ret.toArray(new String[] {});
+            }
+        }
+        return null;
+    }
+
+    public FilePathSandbox[] getExtractedFilePaths() throws EnvironmentException {
+        final String[] files = getExtractedFiles();
+        if (files != null && files.length > 0) {
+            final ArrayList<FilePathSandbox> ret = new ArrayList<FilePathSandbox>(files.length);
+            for (final String file : files) {
+                ret.add(ScriptEnvironment.getPath(file));
+            }
+            if (ret.size() > 0) {
+                return ret.toArray(new FilePathSandbox[] {});
             }
         }
         return null;

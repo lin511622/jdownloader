@@ -31,6 +31,13 @@ import javax.crypto.NoSuchPaddingException;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
+import org.appwork.storage.simplejson.JSonUtils;
+import org.appwork.utils.formatter.SizeFormatter;
+import org.jdownloader.gui.IconKey;
+import org.jdownloader.images.AbstractIcon;
+import org.jdownloader.plugins.PluginTaskID;
+import org.jdownloader.plugins.components.antiDDoSForHost;
+
 import jd.PluginWrapper;
 import jd.config.ConfigContainer;
 import jd.config.ConfigEntry;
@@ -38,6 +45,7 @@ import jd.http.Browser;
 import jd.nutils.encoding.Base64;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
+import jd.plugins.Account;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
@@ -47,24 +55,19 @@ import jd.plugins.PluginProgress;
 import jd.plugins.components.PluginJSonUtils;
 import jd.utils.locale.JDL;
 
-import org.appwork.storage.simplejson.JSonUtils;
-import org.appwork.utils.formatter.SizeFormatter;
-import org.jdownloader.gui.IconKey;
-import org.jdownloader.images.AbstractIcon;
-import org.jdownloader.plugins.PluginTaskID;
-import org.jdownloader.plugins.components.antiDDoSForHost;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "megacrypter" }, urls = { "https?://(?:www\\.)?(megacrypter\\.neerdi\\.x10\\.bz|megacrypter\\.neerdi\\.com|megacrypter\\.noestasinvitado\\.com|youpaste\\.co|megacrypter\\.sytes\\.net)/(!|%21)[A-Za-z0-9\\-_\\!%]+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "megacrypter" }, urls = { "https?://(?:www\\.)?(megacrypter\\.noestasinvitado\\.com|youpaste\\.co|shurcrypter\\.se)/(!|%21)[A-Za-z0-9\\-_\\!%]+" })
 public class MegaCrypterCom extends antiDDoSForHost {
 
     @Override
     public String[] siteSupportedNames() {
-        return new String[] { "megacrypter.neerdi.x10.bz", "megacrypter.neerdi.com", "megacrypter.noestasinvitado.com", "youpaste.co" };
+        return new String[] { "megacrypter.noestasinvitado.com", "youpaste.co", "shurcrypter.se" };
     }
 
     // note: hosts removed due to be down.
     // 20150206 megacrypter.megabuscame.me/ account suspended on datacenter server.
     // 20160308 encrypterme.ga, no dns
+    // 20170112 megacrypter.sytes.net, no dns record
+    // 20170728 megacrypter.neerdi.x10.bz / megacrypter.neerdi.com, dead/expired
 
     public MegaCrypterCom(PluginWrapper wrapper) {
         super(wrapper);
@@ -76,12 +79,19 @@ public class MegaCrypterCom extends antiDDoSForHost {
         link.setUrlDownload(link.getDownloadURL().replace("%21", "!"));
     }
 
+    @Override
+    public String getHost(DownloadLink link, Account account) {
+        if (link != null) {
+            return Browser.getHost(link.getDownloadURL());
+        }
+        return super.getHost(link, account);
+    }
+
     private void setUrl(final DownloadLink downloadLink) {
-        if (downloadLink.getDownloadURL().matches("(?i).+(megacrypter\\.neerdi\\.com|megacrypter\\.neerdi\\.x10\\.bz)/.+")) {
-            // https seems to some soccer sports page
+        if (false && downloadLink.getDownloadURL().matches("(?i)")) {
             supportsHTTPS = false;
             enforcesHTTPS = false;
-        } else if (downloadLink.getDownloadURL().contains("megacrypter.noestasinvitado.com/")) {
+        } else if (downloadLink.getDownloadURL().contains("megacrypter.noestasinvitado.com/") || downloadLink.getPluginPatternMatcher().contains("shurcrypter.se")) {
             // all others enable by default.
             supportsHTTPS = true;
             enforcesHTTPS = true;
@@ -151,6 +161,7 @@ public class MegaCrypterCom extends antiDDoSForHost {
         MEGA_EREAD(-21),
         MEGA_EAPPKEY(-22),
         MEGA_EDLURL(-101);
+
         private int code;
 
         private MegaCrypterComApiErrorCodes(int code) {
@@ -297,7 +308,7 @@ public class MegaCrypterCom extends antiDDoSForHost {
         if (dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, -10);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, true, -10);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -350,6 +361,7 @@ public class MegaCrypterCom extends antiDDoSForHost {
         try {
             long total = src.length();
             progress = new PluginProgress(0, total, null) {
+
                 long lastCurrent    = -1;
                 long startTimeStamp = -1;
 

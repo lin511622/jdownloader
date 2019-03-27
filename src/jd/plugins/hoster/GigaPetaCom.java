@@ -15,10 +15,10 @@
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package jd.plugins.hoster;
 
-import java.io.IOException;
 import java.util.regex.Pattern;
 
 import jd.PluginWrapper;
+import jd.http.Browser;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.parser.html.Form;
@@ -36,23 +36,22 @@ import jd.utils.locale.JDL;
 import org.appwork.utils.formatter.SizeFormatter;
 import org.appwork.utils.formatter.TimeFormatter;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "gigapeta.com" }, urls = { "http://[\\w\\.]*?gigapeta\\.com/dl/\\w+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "gigapeta.com" }, urls = { "http://[\\w\\.]*?gigapeta\\.com/dl/\\w+" })
 public class GigaPetaCom extends PluginForHost {
-
     // Gehört zu tenfiles.com/tenfiles.info
     public GigaPetaCom(PluginWrapper wrapper) {
         super(wrapper);
         enablePremium("http://gigapeta.com/premium/");
     }
 
-    public AvailableStatus requestFileInformation(DownloadLink downloadLink) throws IOException, PluginException {
-        this.setBrowserExclusive();
+    public AvailableStatus requestFileInformation(DownloadLink downloadLink) throws Exception {
+        br = new Browser();
         br.setCookie("http://gigapeta.com", "lang", "us");
         br.getPage(downloadLink.getDownloadURL());
         if (br.containsHTML("All threads for IP")) {
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, JDL.L("plugins.hoster.gigapeta.unavailable", "Your IP is already downloading a file"));
         }
-        if (br.containsHTML("<div id=\"page_error\">")) {
+        if (br.containsHTML("<div id=\"page_error\">") && !br.containsHTML("To download this file please <a")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         Regex infos = br.getRegex(Pattern.compile("<img src=\".*\" alt=\"file\" />\\-\\->(.*?)</td>.*?</tr>.*?<tr>.*?<th>.*?</th>.*?<td>(.*?)</td>", Pattern.DOTALL));
@@ -63,11 +62,17 @@ public class GigaPetaCom extends PluginForHost {
         }
         downloadLink.setName(fileName.trim());
         downloadLink.setDownloadSize(SizeFormatter.getSize(fileSize.trim()));
-
         return AvailableStatus.TRUE;
     }
 
     public void doFree(DownloadLink downloadLink) throws Exception {
+        if (this.br.containsHTML("To download this file please")) {
+            /*
+             * E.g. html:
+             * "To download this file please <a href=/reg>register</a>. It is fast, free, and assumes no obligations.        </p>"
+             */
+            throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
+        }
         String captchaKey = (int) (Math.random() * 100000000) + "";
         String captchaUrl = "/img/captcha.gif?x=" + captchaKey;
         for (int i = 1; i <= 3; i++) {
@@ -76,12 +81,23 @@ public class GigaPetaCom extends PluginForHost {
             if (br.containsHTML("class=\"big_error\">404</h1>")) {
                 throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error (404)", 60 * 60 * 1000l);
             }
-            if (br.containsHTML("You will get ability to download next file after")) {
-                final Regex wttime = br.getRegex("<b>(\\d+) min\\. (\\d+) sec\\.</b>");
-                final String minutes = wttime.getMatch(0);
-                final String seconds = wttime.getMatch(1);
-                if (minutes != null && seconds != null) {
-                    throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, (Integer.parseInt(minutes) * 60 * 1001l) + (Integer.parseInt(seconds) * 1001l));
+            final String wttime = br.getRegex("You will get ability to download next file after.*?\\.\\s*</b>").getMatch(-1);
+            if (wttime != null) {
+                final String hours = new Regex(wttime, "(\\d+)\\s*hr\\.").getMatch(0);
+                final String minutes = new Regex(wttime, "(\\d+)\\s*min\\.").getMatch(0);
+                final String seconds = new Regex(wttime, "(\\d+)\\s*sec\\.").getMatch(0);
+                long time = 0;
+                if (hours != null) {
+                    time += Long.parseLong(hours) * 60 * 60 * 1000l;
+                }
+                if (minutes != null) {
+                    time += Long.parseLong(minutes) * 60 * 1000l;
+                }
+                if (seconds != null) {
+                    time += Long.parseLong(seconds) * 1000l;
+                }
+                if (time > 0) {
+                    throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, time);
                 } else {
                     throw new PluginException(LinkStatus.ERROR_IP_BLOCKED);
                 }
@@ -93,7 +109,7 @@ public class GigaPetaCom extends PluginForHost {
         if (br.getRedirectLocation() == null) {
             throw new PluginException(LinkStatus.ERROR_CAPTCHA);
         }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, br.getRedirectLocation(), false, 1);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, br.getRedirectLocation(), false, 1);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             if (br.containsHTML("All threads for IP")) {
@@ -152,7 +168,7 @@ public class GigaPetaCom extends PluginForHost {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
             logger.info("Final downloadlink = " + dllink + " starting the download...");
-            jd.plugins.BrowserAdapter.openDownload(br, link, dllink, true, 0);
+            dl = new jd.plugins.BrowserAdapter().openDownload(br, link, dllink, true, -6);
             if (!(dl.getConnection().isContentDisposition())) {
                 br.followConnection();
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -162,7 +178,6 @@ public class GigaPetaCom extends PluginForHost {
     }
 
     // do not add @Override here to keep 0.* compatibility
-
     private AccountInfo login(Account account, boolean fromFetchAccount) throws Exception {
         this.setBrowserExclusive();
         br.setCookie("http://gigapeta.com", "lang", "us");
@@ -192,6 +207,7 @@ public class GigaPetaCom extends PluginForHost {
         final AccountInfo ai = new AccountInfo();
         final String expire = br.getRegex("You have <b>premium</b> account till(.*?)</p>").getMatch(0);
         if (expire != null) {
+            account.setType(AccountType.PREMIUM);
             ai.setValidUntil(TimeFormatter.getMilliSeconds(expire.trim(), "dd.MM.yyyy HH:mm", null));
             if (!ai.isExpired()) {
                 account.setMaxSimultanDownloads(-1);
@@ -210,6 +226,11 @@ public class GigaPetaCom extends PluginForHost {
             account.setAccountInfo(ai);
         }
         return ai;
+    }
+
+    @Override
+    public boolean isHosterManipulatesFilenames() {
+        return true;
     }
 
     public void reset() {

@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -38,9 +37,8 @@ import jd.utils.locale.JDL;
 
 import org.appwork.utils.formatter.SizeFormatter;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "makinamania.com" }, urls = { "http://(www\\.)?makinamania\\.com/((download/|descargar\\-).+|index\\.php\\?action=dlattach;topic=\\d+(?:\\.0)?;attach=\\d+)" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "makinamania.net" }, urls = { "https?://(?:www\\.)?makinamania\\.(com|net)/((download/|descargar\\-).+|index\\.php\\?action=dlattach;topic=\\d+(?:\\.0)?;attach=\\d+)" })
 public class MakinaManiaCom extends PluginForHost {
-
     public MakinaManiaCom(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium();
@@ -48,13 +46,13 @@ public class MakinaManiaCom extends PluginForHost {
 
     @Override
     public String getAGBLink() {
-        return "http://www.makinamania.com/";
+        return "http://www.makinamania.net/";
     }
 
-    private static final String MAINPAGE         = "http://makinamania.com";
+    private static final String MAINPAGE         = "http://makinamania.net";
     private static Object       LOCK             = new Object();
     private static final String NOCHUNKS         = "NOCHUNKS";
-    private static final String ATTACHEDFILELINK = "http://(www\\.)?makinamania\\.com/index\\.php\\?action=dlattach;topic=\\d+(?:\\.0)?;attach=\\d+";
+    private static final String ATTACHEDFILELINK = ".+/index\\.php\\?action=dlattach;topic=\\d+(?:\\.0)?;attach=\\d+";
 
     @SuppressWarnings("deprecation")
     @Override
@@ -65,7 +63,7 @@ public class MakinaManiaCom extends PluginForHost {
             URLConnectionAdapter con = null;
             try {
                 con = br.openGetConnection(link.getDownloadURL());
-                if (!con.getContentType().contains("html")) {
+                if (con.isOK() && !con.getContentType().contains("html")) {
                     link.setDownloadSize(con.getLongContentLength());
                     link.setFinalFileName(Encoding.htmlDecode(getFileNameFromHeader(con)));
                 } else {
@@ -84,11 +82,13 @@ public class MakinaManiaCom extends PluginForHost {
             }
             final String filename = br.getRegex("<meta property=\"og:title\" content=\"([^<>\"]*?)\"").getMatch(0);
             final String filesize = br.getRegex("\\&nbsp;\\&nbsp;Tamaño: ([^<>\"]*?)<br").getMatch(0);
-            if (filename == null || filesize == null) {
+            if (filename == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
             link.setName(Encoding.htmlDecode(filename.trim()));
-            link.setDownloadSize(SizeFormatter.getSize(filesize));
+            if (filesize != null) {
+                link.setDownloadSize(SizeFormatter.getSize(filesize));
+            }
         }
         return AvailableStatus.TRUE;
     }
@@ -106,14 +106,7 @@ public class MakinaManiaCom extends PluginForHost {
             }
             dl.startDownload();
         } else {
-            try {
-                throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
-            } catch (final Throwable e) {
-                if (e instanceof PluginException) {
-                    throw (PluginException) e;
-                }
-            }
-            throw new PluginException(LinkStatus.ERROR_FATAL, "This file is only available for Premium Members");
+            throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
         }
     }
 
@@ -139,7 +132,7 @@ public class MakinaManiaCom extends PluginForHost {
                         return;
                     }
                 }
-                br.postPage("http://www.makinamania.com/index.php?action=login2", "&user=" + Encoding.urlEncode(account.getUser()) + "&passwrd=" + Encoding.urlEncode(account.getPass()) + "&cookielength=999&hash_passwrd=");
+                br.postPage("http://www.makinamania.net/index.php?action=login2", "&user=" + Encoding.urlEncode(account.getUser()) + "&passwrd=" + Encoding.urlEncode(account.getPass()) + "&cookielength=999&hash_passwrd=");
                 if (br.getRedirectLocation() == null || !br.getRedirectLocation().contains("sa=check")) {
                     throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
                 }
@@ -178,24 +171,32 @@ public class MakinaManiaCom extends PluginForHost {
     public void handlePremium(final DownloadLink link, final Account account) throws Exception {
         requestFileInformation(link);
         login(account, false);
-        br.setFollowRedirects(true);
-        br.getPage(link.getDownloadURL());
-        br.setFollowRedirects(false);
-        String dllink = br.getRegex("\"javascript:download\\(\\'(http://[^<>\"]*?)\\'\\)").getMatch(0);
-        if (dllink == null) {
-            dllink = br.getRegex("(\"|\\')(http://machines\\.makinamania\\.com/descargas/descarga\\.php\\?id=[^<>\"]*?)(\"|\\')").getMatch(1);
+        String dllink = null;
+        if (link.getDownloadURL().matches(ATTACHEDFILELINK)) {
+            dllink = link.getDownloadURL();
+        } else {
+            br.setFollowRedirects(true);
+            br.getPage(link.getDownloadURL());
+            br.setFollowRedirects(false);
+            dllink = br.getRegex("\"javascript:download\\(\\'(https?://[^<>\"]*?)\\'\\)").getMatch(0);
+            if (dllink == null) {
+                dllink = br.getRegex("(\"|\\')(https?://machines\\.makinamania\\.(?:com|net)/descargas/descarga\\.php\\?id=[^<>\"]*?)(\"|\\')").getMatch(1);
+            }
+            if (dllink == null) {
+                logger.warning("Final downloadlink (String is \"dllink\") regex didn't match!");
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            }
+            br.getPage(dllink);
+            if (br.containsHTML("No se ha encontrado el archivo")) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
+            dllink = br.getRedirectLocation();
+            if (dllink == null) {
+                logger.warning("Final downloadlink (String is \"dllink\") regex didn't match!");
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            }
         }
         if (dllink == null) {
-            logger.warning("Final downloadlink (String is \"dllink\") regex didn't match!");
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-        }
-        br.getPage(dllink);
-        if (br.containsHTML("No se ha encontrado el archivo")) {
-            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-        }
-        dllink = br.getRedirectLocation();
-        if (dllink == null) {
-            logger.warning("Final downloadlink (String is \"dllink\") regex didn't match!");
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         int chunks = 0;
@@ -246,5 +247,4 @@ public class MakinaManiaCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

@@ -5,6 +5,7 @@ import java.io.IOException;
 
 import org.appwork.remoteapi.exceptions.RemoteAPIException;
 import org.appwork.utils.net.httpserver.requests.GetRequest;
+import org.appwork.utils.net.httpserver.requests.HttpRequest;
 import org.appwork.utils.net.httpserver.requests.PostRequest;
 import org.appwork.utils.net.httpserver.responses.HttpResponse;
 import org.jdownloader.captcha.v2.Challenge;
@@ -22,9 +23,8 @@ import jd.plugins.PluginForDecrypt;
 import jd.plugins.PluginForHost;
 
 public abstract class AbstractBrowserChallenge extends Challenge<String> {
-
-    private Plugin    plugin;
-    protected Browser pluginBrowser;
+    protected final Plugin  plugin;
+    protected final Browser pluginBrowser;
 
     public Plugin getPlugin() {
         return plugin;
@@ -39,21 +39,29 @@ public abstract class AbstractBrowserChallenge extends Challenge<String> {
         return results != null && results.getValue() != null;
     }
 
-    public AbstractBrowserChallenge(String method, Plugin pluginForHost) {
-
+    protected AbstractBrowserChallenge(final String method, final Plugin plugin, Browser pluginBrowser) {
         super(method, null);
-        this.plugin = pluginForHost;
-        if (pluginForHost == null) {
-            plugin = getPluginFromThread();
+        this.plugin = plugin;
+        this.pluginBrowser = pluginBrowser;
+    }
+
+    public AbstractBrowserChallenge(final String method, final Plugin plugin) {
+        super(method, null);
+        if (plugin == null) {
+            this.plugin = getPluginFromThread();
+        } else {
+            this.plugin = plugin;
         }
-        if (pluginForHost instanceof PluginForHost) {
-            this.pluginBrowser = ((PluginForHost) pluginForHost).getBrowser();
-        } else if (pluginForHost instanceof PluginForDecrypt) {
-            this.pluginBrowser = ((PluginForDecrypt) pluginForHost).getBrowser();
+        if (this.plugin instanceof PluginForHost) {
+            this.pluginBrowser = ((PluginForHost) this.plugin).getBrowser();
+        } else if (this.plugin instanceof PluginForDecrypt) {
+            this.pluginBrowser = ((PluginForDecrypt) this.plugin).getBrowser();
+        } else {
+            this.pluginBrowser = null;
         }
     }
 
-    abstract public String getHTML();
+    abstract public String getHTML(HttpRequest request, String id);
 
     abstract public BrowserViewport getBrowserViewport(BrowserWindow screenResource, Rectangle elementBounds);
 
@@ -100,9 +108,8 @@ public abstract class AbstractBrowserChallenge extends Challenge<String> {
     public String getHttpPath() {
         if (plugin != null) {
             return plugin.getHost();
+        } else {
+            return "jd";
         }
-        Thread th = Thread.currentThread();
-        return "jd";
     }
-
 }

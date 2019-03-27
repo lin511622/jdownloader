@@ -140,6 +140,12 @@ public interface JdownloaderTranslation extends TranslateInterface {
     @Default(lngs = { "en" }, values = { "Wait %s1" })
     String gui_download_waittime_status2(Object s1);
 
+    @Default(lngs = { "en" }, values = { "Not enough traffic available (%s1 required)" })
+    String gui_download_waittime_notenoughtraffic(String trafficRequired);
+
+    @Default(lngs = { "en" }, values = { "Not enough traffic available" })
+    String gui_download_waittime_notenoughtraffic2();
+
     @Default(lngs = { "en" }, values = { "Wrong captcha code" })
     String decrypter_wrongcaptcha();
 
@@ -554,12 +560,12 @@ public interface JdownloaderTranslation extends TranslateInterface {
 
     @Default(lngs = { "en" }, values = { "Proxy authentication is required!" })
     String ProxyController_updateProxy_proxy_auth_required_title();
+
     // TODO Remove unused code found by UCDetector
     // @Default(lngs = { "en", "de" }, values = {
     // "JDownloader cannot connect to %s1! Your Proxy Server requires authentication. \r\nCheck your credentials...",
     // "JDownloader kann nicht nach %s1 verbinden! Dein Proxyserver benötigt Anmeldedaten.\r\nBitte überprüfe die Zugangsdaten..." })
     // String ProxyController_updateProxy_proxy_auth_required_msg_updater(String host);
-
     // TODO Remove unused code found by UCDetector
     // @Default(lngs = { "en" }, values = { "Authentication failed" })
     // String ProxyController_updateProxy_baned_auth();
@@ -876,7 +882,7 @@ public interface JdownloaderTranslation extends TranslateInterface {
     String ConfirmLinksContextAction_getTranslationForAssignPriorityEnabled();
 
     @Default(lngs = { "en" }, values = { "Download Priority:" })
-    String ConfirmLinksContextAction_getTranslationForPiority();
+    String ConfirmLinksContextAction_getTranslationForPriority();
 
     @Default(lngs = { "en" }, values = { "If the selection contains offline links..." })
     String ConfirmLinksContextAction_getTranslationForHandleOffline();
@@ -1025,6 +1031,9 @@ public interface JdownloaderTranslation extends TranslateInterface {
     @Default(lngs = { "en" }, values = { "AAC Spatial 6 Channel" })
     String AudioCodec_aac_spatial();
 
+    @Default(lngs = { "en" }, values = { "Opus Spatial 6 Channel" })
+    String AudioCodec_opus_spatial();
+
     @Default(lngs = { "en" }, values = { "Spatial" })
     String YOUTUBE_surround();
 
@@ -1094,8 +1103,20 @@ public interface JdownloaderTranslation extends TranslateInterface {
     @Default(lngs = { "en" }, values = { "Add Subtitles" })
     String lit_add_subtitles();
 
+    @Default(lngs = { "en" }, values = { "Add Audio" })
+    String lit_add_audio();
+
     @Default(lngs = { "en" }, values = { "Add only the best video quality" })
     String lit_add_only_the_best_video_quality();
+
+    @Default(lngs = { "en" }, values = { "Add only the best video quality within user selected formats" })
+    String lit_add_only_the_best_video_quality_within_user_selected_formats();
+
+    @Default(lngs = { "en" }, values = { "Add unknown formats (recommended)" })
+    String lit_add_unknown_formats();
+
+    @Default(lngs = { "en" }, values = { "Enable fast linkcheck?\r\nFilesize will not be shown until downloadstart or manual linkcheck!" })
+    String lit_enable_fast_linkcheck();
 
     @Default(lngs = { "en" }, values = { "Port" })
     String lit_port();

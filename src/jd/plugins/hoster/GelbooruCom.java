@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -32,9 +31,8 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.SiteType.SiteTemplate;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "gelbooru.com" }, urls = { "http://(?:www\\.)?gelbooru\\.com/index\\.php\\?page=post\\&s=view\\&id=\\d+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "gelbooru.com" }, urls = { "https?://(?:www\\.)?gelbooru\\.com/index\\.php\\?page=post\\&s=view\\&id=\\d+" })
 public class GelbooruCom extends PluginForHost {
-
     public GelbooruCom(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -43,12 +41,10 @@ public class GelbooruCom extends PluginForHost {
     // Tags:
     // protocol: no https
     // other:
-
     /* Connection stuff */
     private static final boolean free_resume       = false;
     private static final int     free_maxchunks    = 1;
     private static final int     free_maxdownloads = -1;
-
     private String               dllink            = null;
 
     @Override
@@ -62,23 +58,45 @@ public class GelbooruCom extends PluginForHost {
         dllink = null;
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
+        final String url_filename = new Regex(link.getDownloadURL(), "id=(\\d+)$").getMatch(0);
+        link.setName(url_filename);
         br.getPage(link.getDownloadURL());
         if (br.getHttpConnection().getResponseCode() == 404) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-        final String url_filename = new Regex(link.getDownloadURL(), "id=(\\d+)$").getMatch(0);
-        String filename = br.getRegex("<title>Gelbooru\\- Image View \\- ([^<>\"]+) \\| \\d+</title>").getMatch(0);
-        if (filename != null) {
+        String filename = br.getRegex("<title>([^<>\"]+) - Image View -.*?</title>").getMatch(0);
+        if (filename != null && false) {
+            // filename can be too long
             filename = url_filename + "_" + filename;
         } else {
             filename = url_filename;
         }
-        dllink = br.getRegex("\"(http[^<>\"]+)\" id=\"image\"").getMatch(0);
+        dllink = br.getRegex("<a href=\"([^<>\"\\']+)\"[^<>]+>Original image</a>").getMatch(0);
         if (dllink == null) {
-            dllink = br.getRegex("\"(https?://img\\.gelbooru\\.com//images/\\d+/[^<>\"]+)\"").getMatch(0);
+            dllink = br.getRegex("\"(https?[^<>\"]+)\" id=\"image\"").getMatch(0);
+            if (dllink == null) {
+                dllink = br.getRegex("(gelbooru\\.com//images/[^<>\"]+)\"").getMatch(0);
+            }
+            if (dllink == null) {
+                /* 2017-02-18 */
+                String imglink = br.getRegex("Resize image.*?<a href=(\"|'|)(.*?)\\1").getMatch(1);
+                if (imglink == null) {
+                    imglink = br.getRegex("<img alt=.*?src=(\"|'|)(.*?)\\1").getMatch(1);
+                }
+            }
+            if (dllink == null) {
+                // can be a video!
+                dllink = br.getRegex("<\\s*source\\s+[^>]*src\\s*=\\s*(\"|'|)(.*?)\\1").getMatch(1);
+            }
         }
         if (filename == null || dllink == null) {
+            logger.info("filename: " + filename + " dllink: " + dllink);
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
+        if (dllink.startsWith("//")) {
+            dllink = "https:" + dllink;
+        } else if (!dllink.startsWith("http")) {
+            dllink = "https://" + dllink;
         }
         dllink = Encoding.htmlDecode(dllink);
         filename = Encoding.htmlDecode(filename);

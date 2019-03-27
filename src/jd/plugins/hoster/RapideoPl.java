@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.security.MessageDigest;
@@ -21,13 +20,13 @@ import java.security.NoSuchAlgorithmException;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Map;
 import java.util.Random;
+
+import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
 
 import jd.PluginWrapper;
 import jd.config.Property;
 import jd.http.Browser;
-import jd.http.Cookie;
 import jd.http.Cookies;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
@@ -41,20 +40,15 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
+import jd.plugins.components.PluginJSonUtils;
 
-import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "rapideo.pl" }, urls = { "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsdgfd32423" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "rapideo.pl" }, urls = { "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsdgfd32423" })
 public class RapideoPl extends PluginForHost {
-
     private static HashMap<Account, HashMap<String, Long>> hostUnavailableMap = new HashMap<Account, HashMap<String, Long>>();
     private static final String                            NOCHUNKS           = "NOCHUNKS";
-    private static final String                            MAINPAGE           = "http://rapideo.pl";
+    private static final String                            MAINPAGE           = "https://rapideo.pl";
     private static final String                            NICE_HOST          = MAINPAGE.replaceAll("(https://|http://)", "");
     private static final String                            NICE_HOSTproperty  = MAINPAGE.replaceAll("(https://|http://|\\.|\\-)", "");
-    private static final String[][]                        HOSTS              = { { "vip-file", "vip-file.com" }, { "unibytes", "unibytes.com" }, { "uptobox", "uptobox.com" }, { "fileshark", "fileshark.pl" }, { "megaszafa", "megaszafa.com" }, { "nowvideo", "nowvideo.sx" }, { "divxstage", "divxstage.eu" }, { "oboom", "oboom.com" }, { "rapidu", "rapidu.net" }, { "ddlstorage", "ddlstorage.com" }, { "uploadable", "uploadable.ch" }, { "secureupload", "secureupload.eu" }, { "uloz", "uloz.to" }, { "cloudstor", "cloudstor.es" }, { "1fichier", "1fichier.com" }, { "datafile", "datafile.com" }, { "hugefiles", "hugefiles.net" }, { "zippyshare", "zippyshare.com" }, { "fastshare", "fastshare.cz" }, { "lunaticfiles", "lunaticfiles.com" }, { "fileparadox", "fileparadox.in" }, { "filesmonster", "filesmonster.com" }, { "hd3d", "hd3d.cc" }, { "lumfile", "lumfile.com" },
-            { "catshare", "catshare.org" }, { "ultramegabit", "ultramegabit.com" }, { "hitfile", "hitfile.net" }, { "shareflare", "shareflare.net" }, { "letitbit", "letitbit.net" }, { "uploaded", "uploaded.to" }, { "bitshare", "bitshare.com" }, { "4shared", "4shared.com" }, { "turbobit", "turbobit.net" }, { "2shared", "2shared.com" }, { "ifilez", "depfile.com" }, { "freakshare", "freakshare.com" }, { "rapidgator", "rapidgator.net" }, { "uploading", "uploading.com" }, { "easyshare", "crocko.com" }, { "mediafire", "mediafire.com" }, { "filefactory", "filefactory.com" }, { "videobb", "videobb.com" }, { "megashares", "megashares.com" }, { "filevelocity", "filevelocity.com" }, { "sendspace", "sendspace.com" }, { "cloudnator", "cloudnator.com" }, { "uptobox", "uptobox.com" }, { "filereactor", "filereactor.com" }, { "ifile", "filecloud.io" }, { "share-online", "share-online.biz" },
-            { "glumbouploads", "glumbouploads.com" } };
 
     public RapideoPl(PluginWrapper wrapper) {
         super(wrapper);
@@ -89,28 +83,38 @@ public class RapideoPl extends PluginForHost {
                 throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!\r\nQuick help:\r\nYou're sure that the username and password you entered are correct?\r\nIf your password contains special characters, change it (remove them) and try again!", PluginException.VALUE_ID_PREMIUM_DISABLE);
             }
         }
-
         /* API used in their browser addons */
-        br.postPage("http://enc.rapideo.pl/", "site=newrd&output=json&loc=1&info=1&username=" + Encoding.urlEncode(account.getUser()) + "&password=" + md5HEX(account.getPass()));
-        final String traffic_left = br.getRegex("\"balance\":(\\d+)").getMatch(0);
-        ac.setTrafficLeft(Long.parseLong(traffic_left) * 1024);
-
+        br.postPage("https://enc.rapideo.pl/", "site=newrd&output=json&loc=1&info=1&username=" + Encoding.urlEncode(account.getUser()) + "&password=" + md5HEX(account.getPass()));
+        final String traffic_left_str = PluginJSonUtils.getJson(br, "balance");
+        long traffic_left = 0;
+        if (traffic_left_str != null && traffic_left_str.matches("\\d+")) {
+            traffic_left = Long.parseLong(traffic_left_str) * 1024;
+            ac.setTrafficLeft(traffic_left);
+        }
         // now let's get a list of all supported hosts:
-        br.getPage("https://www.rapideo.pl/twoje_pliki");
+        br.getPage("https://www." + account.getHoster() + "/twoje_pliki");
         final ArrayList<String> supportedHosts = new ArrayList<String>();
-        for (final String[] filehost : HOSTS) {
-            final String crippledHost = filehost[0];
-            final String realHost = filehost[1];
-            if (br.containsHTML("<li>" + crippledHost + "</li>")) {
-                supportedHosts.add(realHost);
+        final String[] crippledHosts = br.getRegex("<li>([A-Za-z0-9\\-\\.]+)</li>").getColumn(0);
+        for (String crippledHost : crippledHosts) {
+            crippledHost = crippledHost.toLowerCase();
+            if (crippledHost.equals("mega")) {
+                supportedHosts.add("mega.nz");
+            } else {
+                supportedHosts.add(crippledHost);
             }
         }
-        /* They only have accounts with traffic, no free/premium difference (other than no traffic) */
-        account.setType(AccountType.PREMIUM);
-        account.setMaxSimultanDownloads(-1);
+        /* They only have accounts with traffic, no free/premium difference (other than no traffic) - we treat no-traffic as FREE */
+        if (traffic_left > 0) {
+            account.setType(AccountType.PREMIUM);
+            account.setMaxSimultanDownloads(-1);
+            ac.setStatus("Premium account");
+        } else {
+            account.setType(AccountType.FREE);
+            account.setMaxSimultanDownloads(-1);
+            ac.setStatus("Free account (no traffic left)");
+        }
         account.setConcurrentUsePossible(true);
         ac.setMultiHostSupport(this, supportedHosts);
-        ac.setStatus("Premium User");
         return ac;
     }
 
@@ -151,7 +155,6 @@ public class RapideoPl extends PluginForHost {
      * downloadprogress=1, see loop below)
      */
     public void handleMultiHost(final DownloadLink link, final Account account) throws Exception {
-
         synchronized (hostUnavailableMap) {
             HashMap<String, Long> unavailableMap = hostUnavailableMap.get(account);
             if (unavailableMap != null) {
@@ -167,7 +170,6 @@ public class RapideoPl extends PluginForHost {
                 }
             }
         }
-
         login(account, false);
         int maxChunks = 0;
         if (link.getBooleanProperty(RapideoPl.NOCHUNKS, false)) {
@@ -180,16 +182,13 @@ public class RapideoPl extends PluginForHost {
             final int random = new Random().nextInt(1000000);
             final DecimalFormat df = new DecimalFormat("000000");
             final String random_session = df.format(random);
-
             final String filename = link.getName();
             final String filename_encoded = Encoding.urlEncode(filename);
             String id;
-
             br.getPage("https://www.rapideo.pl/twoje_pliki");
             br.postPage("https://www.rapideo.pl/twoje_pliki", "loadfiles=1");
             br.postPage("https://www.rapideo.pl/twoje_pliki", "loadfiles=2");
             br.postPage("https://www.rapideo.pl/twoje_pliki", "loadfiles=3");
-
             br.postPage("https://www.rapideo.pl/twoje_pliki", "session=" + random_session + "&links=" + url);
             if (br.containsHTML("strong>Brak transferu</strong>")) {
                 logger.info("Traffic empty");
@@ -199,16 +198,12 @@ public class RapideoPl extends PluginForHost {
             if (id == null) {
                 handleErrors(account, link, "id_null", 10);
             }
-
             br.postPage("https://www.rapideo.pl/twoje_pliki", "downloadprogress=1");
             br.postPage("https://www.rapideo.pl/progress", "session=" + random_session + "&total=1");
-
             br.postPage("https://www.rapideo.pl/twoje_pliki", "insert=1&ds=false&di=false&note=false&notepaths=" + url + "&sids=" + id + "&hids=&iids=&wids=");
-
             br.postPage("https://www.rapideo.pl/twoje_pliki", "loadfiles=1");
             br.postPage("https://www.rapideo.pl/twoje_pliki", "loadfiles=2");
             br.postPage("https://www.rapideo.pl/twoje_pliki", "loadfiles=3");
-
             boolean downloading = false;
             /* Sometimes it takes over 10 minutes until the file is on the MOCH server. */
             for (int i = 1; i <= 280; i++) {
@@ -238,7 +233,6 @@ public class RapideoPl extends PluginForHost {
             }
             dllink = dllink.replace("\\", "");
         }
-
         dl = jd.plugins.BrowserAdapter.openDownload(br, link, dllink, true, maxChunks);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
@@ -304,27 +298,15 @@ public class RapideoPl extends PluginForHost {
 
     private static Object LOCK = new Object();
 
-    @SuppressWarnings("unchecked")
     private boolean login(final Account account, final boolean force) throws Exception {
         synchronized (LOCK) {
             try {
                 // Load cookies
                 br.setCookiesExclusive(true);
-                final Object ret = account.getProperty("cookies", null);
-                boolean acmatch = Encoding.urlEncode(account.getUser()).equals(account.getStringProperty("name", Encoding.urlEncode(account.getUser())));
-                if (acmatch) {
-                    acmatch = Encoding.urlEncode(account.getPass()).equals(account.getStringProperty("pass", Encoding.urlEncode(account.getPass())));
-                }
-                if (acmatch && ret != null && ret instanceof HashMap<?, ?> && !force) {
-                    final HashMap<String, String> cookies = (HashMap<String, String>) ret;
-                    if (account.isValid()) {
-                        for (final Map.Entry<String, String> cookieEntry : cookies.entrySet()) {
-                            final String key = cookieEntry.getKey();
-                            final String value = cookieEntry.getValue();
-                            br.setCookie(MAINPAGE, key, value);
-                        }
-                        return true;
-                    }
+                final Cookies cookies = account.loadCookies("");
+                if (cookies != null && !force) {
+                    br.setCookies(this.getHost(), cookies);
+                    return true;
                 }
                 br.setFollowRedirects(true);
                 br.postPage("https://www.rapideo.pl/logowanie", "remember=on&login=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
@@ -335,18 +317,10 @@ public class RapideoPl extends PluginForHost {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!\r\nQuick help:\r\nYou're sure that the username and password you entered are correct?\r\nIf your password contains special characters, change it (remove them) and try again!", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     }
                 }
-                // Save cookies
-                final HashMap<String, String> cookies = new HashMap<String, String>();
-                final Cookies add = br.getCookies(MAINPAGE);
-                for (final Cookie c : add.getCookies()) {
-                    cookies.put(c.getKey(), c.getValue());
-                }
-                account.setProperty("name", Encoding.urlEncode(account.getUser()));
-                account.setProperty("pass", Encoding.urlEncode(account.getPass()));
-                account.setProperty("cookies", cookies);
+                account.saveCookies(br.getCookies(this.getHost()), "");
                 return true;
             } catch (final PluginException e) {
-                account.setProperty("cookies", Property.NULL);
+                account.clearCookies("");
                 return false;
             }
         }
@@ -400,5 +374,4 @@ public class RapideoPl extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

@@ -24,6 +24,8 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.appwork.utils.formatter.SizeFormatter;
+
 import jd.PluginWrapper;
 import jd.config.Property;
 import jd.controlling.AccountController;
@@ -34,6 +36,7 @@ import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.plugins.Account;
 import jd.plugins.AccountInfo;
+import jd.plugins.AccountRequiredException;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
@@ -42,9 +45,7 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.PluginJSonUtils;
 
-import org.appwork.utils.formatter.SizeFormatter;
-
-@HostPlugin(revision = "$Revision: 21813 $", interfaceVersion = 2, names = { "datator.cz" }, urls = { "http://(?:www\\.)?datator\\.cz/soubor-ke-stazeni-.*?(\\d+)\\.html" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "datator.cz" }, urls = { "https?://(?:www\\.)?datator\\.cz/soubor-ke-stazeni-.*?(\\d+)\\.html" })
 public class DataTorCz extends PluginForHost {
 
     // devnotes
@@ -56,18 +57,23 @@ public class DataTorCz extends PluginForHost {
 
     public DataTorCz(PluginWrapper wrapper) {
         super(wrapper);
-        enablePremium("http://www.datator.cz/navysit-kredit.html");
+        enablePremium("https://www.datator.cz/navysit-kredit.html");
     }
 
     @Override
     public String getAGBLink() {
-        return "http://www.datator.cz/clanek-vseobecne-podminky-3.html";
+        return "https://www.datator.cz/clanek-vseobecne-podminky-3.html";
+    }
+
+    @Override
+    public void correctDownloadLink(DownloadLink link) throws Exception {
+        link.setPluginPatternMatcher(link.getPluginPatternMatcher().replace("http://", "https://"));
     }
 
     /**
      * Rules to prevent new downloads from commencing
      *
-     * */
+     */
     public boolean canHandle(DownloadLink downloadLink, Account account) throws Exception {
         if (account == null) {
             return false;
@@ -83,18 +89,10 @@ public class DataTorCz extends PluginForHost {
 
     @Override
     public void handleFree(DownloadLink downloadLink) throws Exception {
-        final String msg = "účet Povinné - Account Required";
-        try {
-            throw new PluginException(LinkStatus.ERROR_PREMIUM, msg, PluginException.VALUE_ID_PREMIUM_ONLY);
-        } catch (final Throwable e) {
-            if (e instanceof PluginException) {
-                throw (PluginException) e;
-            }
-        }
-        throw new PluginException(LinkStatus.ERROR_FATAL, msg);
+        throw new AccountRequiredException("účet Povinné - Account Required");
     }
 
-    private static final AtomicBoolean useAPI = new AtomicBoolean(true);
+    private static AtomicBoolean useAPI = new AtomicBoolean(false);
 
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
@@ -102,29 +100,30 @@ public class DataTorCz extends PluginForHost {
     }
 
     public AvailableStatus requestFileInformation(final DownloadLink downloadLink, Account account) throws Exception {
-        if (account == null) {
-            ArrayList<Account> accounts = AccountController.getInstance().getAllAccounts(this.getHost());
-            if (accounts != null && accounts.size() != 0) {
-                // lets sort, premium > non premium
-                Collections.sort(accounts, new Comparator<Account>() {
-                    @Override
-                    public int compare(Account o1, Account o2) {
-                        final int io1 = o1.getBooleanProperty("free", false) ? 0 : 1;
-                        final int io2 = o2.getBooleanProperty("free", false) ? 0 : 1;
-                        return io1 <= io2 ? io1 : io2;
-                    }
-                });
-                Iterator<Account> it = accounts.iterator();
-                while (it.hasNext()) {
-                    Account n = it.next();
-                    if (n.isEnabled() && n.isValid()) {
-                        account = n;
-                        break;
+        if (useAPI.get()) {
+            if (account == null) {
+                ArrayList<Account> accounts = AccountController.getInstance().getAllAccounts(this.getHost());
+                if (accounts != null && accounts.size() != 0) {
+                    // lets sort, premium > non premium
+                    Collections.sort(accounts, new Comparator<Account>() {
+
+                        @Override
+                        public int compare(Account o1, Account o2) {
+                            final int io1 = o1.getBooleanProperty("free", false) ? 0 : 1;
+                            final int io2 = o2.getBooleanProperty("free", false) ? 0 : 1;
+                            return io1 <= io2 ? io1 : io2;
+                        }
+                    });
+                    Iterator<Account> it = accounts.iterator();
+                    while (it.hasNext()) {
+                        Account n = it.next();
+                        if (n.isEnabled() && n.isValid()) {
+                            account = n;
+                            break;
+                        }
                     }
                 }
             }
-        }
-        if (useAPI.get() && account != null) {
             // api can only be used with an account....
             br.getPage("http://japi.datator.cz/api.php?action=getFileInfo&hash=" + getHash(account) + "&url=" + Encoding.urlEncode(downloadLink.getDownloadURL()));
             final String filename = PluginJSonUtils.getJsonValue(br, "filename");
@@ -142,26 +141,21 @@ public class DataTorCz extends PluginForHost {
             }
             downloadLink.setName(filename);
             if (!inValidate(filesize)) {
-                try {
-                    downloadLink.setVerifiedFileSize(Long.parseLong(filesize));
-                } catch (final Throwable t) {
-                    downloadLink.setDownloadSize(Long.parseLong(filesize));
-                }
+                downloadLink.setVerifiedFileSize(Long.parseLong(filesize));
             }
             return AvailableStatus.TRUE;
-        } else {
-            return requestFileInformationWeb(downloadLink);
         }
+        return requestFileInformationWeb(downloadLink);
     }
 
     @SuppressWarnings("deprecation")
     private AvailableStatus requestFileInformationWeb(DownloadLink downloadLink) throws Exception {
+        correctDownloadLink(downloadLink);
         prepBRWebsite(this.br);
         br.getPage(downloadLink.getDownloadURL());
         if (br.getURL().endsWith("datator.cz/404.html") || this.br.getHttpConnection().getResponseCode() == 404 || this.br.getHttpConnection().getResponseCode() == 410) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-
         final String[] fileInfo = br.getRegex("content=\".*?: (.*?) \\| \\d{1,2}\\.\\d{1,2}\\.\\d{4} \\|  ([\\d A-Z]+)\" />").getRow(0);
         if (fileInfo != null) {
             if (fileInfo[1] != null) {
@@ -199,31 +193,33 @@ public class DataTorCz extends PluginForHost {
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         AccountInfo ai = new AccountInfo();
-        // we will use api
-        br.getPage("http://japi.datator.cz/api.php?action=login&email=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
-        final String hash = PluginJSonUtils.getJsonValue(br, "hash");
-        final String credits = PluginJSonUtils.getJsonValue(br, "kredit");
-        if ("auth error".equals(PluginJSonUtils.getJsonValue(br, "error")) || hash == null) {
-            if ("de".equalsIgnoreCase(language)) {
-                throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!", PluginException.VALUE_ID_PREMIUM_DISABLE);
-            } else {
-                throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+        if (useAPI.get()) {
+            // we will use api
+            br.getPage("http://japi.datator.cz/api.php?action=login&email=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
+            final String hash = PluginJSonUtils.getJsonValue(br, "hash");
+            final String credits = PluginJSonUtils.getJsonValue(br, "kredit");
+            if ("auth error".equals(PluginJSonUtils.getJsonValue(br, "error")) || hash == null) {
+                if ("de".equalsIgnoreCase(language)) {
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                } else {
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                }
             }
-        }
-        account.setProperty("hash", hash);
-        ai.setTrafficLeft(SizeFormatter.getSize(credits + " MiB"));
-        if (ai.getTrafficLeft() >= 0) {
-            account.setValid(true);
-            ai.setStatus("Premium Account");
-            account.setProperty("free", false);
+            account.setProperty("hash", hash);
+            ai.setTrafficLeft(SizeFormatter.getSize(credits + " MiB"));
+            if (ai.getTrafficLeft() >= 0) {
+                account.setValid(true);
+                ai.setStatus("Premium Account");
+                account.setProperty("free", false);
+            } else {
+                ai.setStatus("Free Account");
+                account.setProperty("free", true);
+                throw new PluginException(LinkStatus.ERROR_PREMIUM, "Free accounts are not supported!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+            }
         } else {
-            ai.setStatus("Free Account");
-            account.setProperty("free", true);
-            throw new PluginException(LinkStatus.ERROR_PREMIUM, "Free accounts are not supported!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+            // web (disabled)
+            login(account, ai, true, true);
         }
-        // web (disabled)
-        // login(account, ai, true, true);
-
         return ai;
     }
 
@@ -267,7 +263,7 @@ public class DataTorCz extends PluginForHost {
                 }
                 if (!acmatch || loginFull) {
                     br.setFollowRedirects(true);
-                    br.postPage("http://www.datator.cz/prihlaseni.html", "username=" + Encoding.urlEncode(account.getUser()) + "&pass=" + Encoding.urlEncode(account.getPass()) + "&permLogin=on&Ok=Log+in&login=1");
+                    br.postPage("https://www.datator.cz/prihlaseni.html", "username=" + Encoding.urlEncode(account.getUser()) + "&pass=" + Encoding.urlEncode(account.getPass()) + "&permLogin=on&Ok=Log+in&login=1");
                     if (br.getCookie(getHost(), "permLoginKey") == null || br.containsHTML("Špatný email nebo heslo")) {
                         if ("de".equalsIgnoreCase(language)) {
                             throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!", PluginException.VALUE_ID_PREMIUM_DISABLE);
@@ -305,7 +301,6 @@ public class DataTorCz extends PluginForHost {
                         ai.setStatus("Free Account");
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "Free accounts are not supported!", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     }
-
                     // this basically updates account info before returning.
                     if (importedAI == null) {
                         account.setAccountInfo(ai);
@@ -374,7 +369,7 @@ public class DataTorCz extends PluginForHost {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
         }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, resumes, chunks);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, resumes, chunks);
         if (!dl.getConnection().isContentDisposition()) {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -386,7 +381,7 @@ public class DataTorCz extends PluginForHost {
      * resets provided accounts properties fields. This will allow next login to be a full login!
      *
      * @author raztoki
-     * */
+     */
     private void resetAccount(final Account account) {
         synchronized (ACCLOCK) {
             account.setProperty("cookies", Property.NULL);
@@ -401,7 +396,7 @@ public class DataTorCz extends PluginForHost {
      *            Imported String to match against.
      * @return <b>true</b> on valid rule match. <b>false</b> on invalid rule match.
      * @author raztoki
-     * */
+     */
     private boolean inValidate(final String s) {
         if (s == null || s != null && (s.matches("[\r\n\t ]+") || s.equals(""))) {
             return true;

@@ -13,14 +13,14 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
 import java.text.DecimalFormat;
 
 import jd.PluginWrapper;
-import jd.http.Browser;
+import jd.config.ConfigContainer;
+import jd.config.ConfigEntry;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
@@ -31,14 +31,15 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "myspass.de", "tvtotal.prosieben.de" }, urls = { "http://(?:www\\.)?myspassdecrypted\\.de/.+\\d+/?$", "http://tvtotal\\.prosieben\\.de/videos/.*?/\\d+/" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "myspass.de", "tvtotal.prosieben.de" }, urls = { "https?://(?:www\\.)?myspassdecrypted\\.de/.+\\d+/?$", "http://tvtotal\\.prosieben\\.de/videos/.*?/\\d+/" })
 public class MySpassDe extends PluginForHost {
-
     public MySpassDe(PluginWrapper wrapper) {
         super(wrapper);
+        setConfigElements();
     }
 
-    private String dllink = null;
+    private String  dllink        = null;
+    private boolean server_issues = false;
 
     @Override
     public String getAGBLink() {
@@ -53,54 +54,71 @@ public class MySpassDe extends PluginForHost {
     @SuppressWarnings("deprecation")
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws IOException, PluginException {
+        dllink = null;
+        server_issues = false;
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         final String fid = new Regex(downloadLink.getDownloadURL(), "(\\d+)/?$").getMatch(0);
         downloadLink.setLinkID(fid);
-        br.getPage("http://www.myspass.de/myspass/includes/apps/video/getvideometadataxml.php?id=" + fid + "&0." + System.currentTimeMillis());
+        // br.getPage("http://www.myspass.de/myspass/includes/apps/video/getvideometadataxml.php?id=" + fid + "&0." +
+        // System.currentTimeMillis());
+        /* 2018-12-29: New */
+        br.getPage("https://www.myspass.de/includes/apps/video/getvideometadataxml.php?id=" + fid);
         if (br.containsHTML("<url_flv><\\!\\[CDATA\\[\\]\\]></url_flv>")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-
         /* Build our filename */
         /* Links added via decrypter can have this set to FALSE as it is not needed for all filenames e.g. stock car crash challenge. */
         final boolean needs_series_filename = downloadLink.getBooleanProperty("needs_series_filename", true);
         final DecimalFormat df = new DecimalFormat("00");
         String filename = getXML("format") + " - ";
-        if (needs_series_filename) {
-            filename += "S" + df.format(Integer.parseInt(getXML("season"))) + "E" + df.format(Integer.parseInt(getXML("episode"))) + " - ";
+        if (needs_series_filename) { // Sometimes episode = 9/Best Of, need regex to get only the integer
+            filename += "S" + df.format(Integer.parseInt(getXML("season"))) + "E" + getXML("episode") + " - ";
         }
         filename += getXML("title");
-
         dllink = getXML("url_flv");
-        if (filename == null || dllink == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-        }
-        dllink = Encoding.htmlDecode(dllink);
         filename = filename.trim();
-        final String ext = getFileNameExtensionFromString(dllink, ".mp4");
-        downloadLink.setFinalFileName(Encoding.htmlDecode(filename) + ext);
-        final Browser br2 = br.cloneBrowser();
-        URLConnectionAdapter con = null;
-        try {
-            con = br2.openHeadConnection(dllink);
-            if (!con.getContentType().contains("html")) {
-                downloadLink.setDownloadSize(con.getLongContentLength());
-            } else {
-                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-            }
-            return AvailableStatus.TRUE;
-        } finally {
-            try {
-                con.disconnect();
-            } catch (Throwable e) {
-            }
+        final String ext;
+        if (dllink != null) {
+            dllink = Encoding.htmlDecode(dllink);
+            ext = getFileNameExtensionFromString(dllink, ".mp4");
+        } else {
+            ext = ".mp4";
         }
+        filename = Encoding.htmlDecode(filename);
+        if (dllink != null) {
+            downloadLink.setFinalFileName(filename + ext);
+            URLConnectionAdapter con = null;
+            try {
+                con = br.openHeadConnection(dllink);
+                if (!con.getContentType().contains("html")) {
+                    downloadLink.setDownloadSize(con.getLongContentLength());
+                } else {
+                    server_issues = true;
+                }
+            } finally {
+                try {
+                    con.disconnect();
+                } catch (Throwable e) {
+                }
+            }
+        } else {
+            downloadLink.setName(filename + ext);
+        }
+        return AvailableStatus.TRUE;
     }
 
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception {
         requestFileInformation(downloadLink);
+        if (server_issues) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown server error", 10 * 60 * 1000l);
+        } else if (dllink == null) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
+        /* 2017-02-04: Without the Range Header we'll be limited to ~100 KB/s */
+        downloadLink.setProperty("ServerComaptibleForByteRangeRequest", true);
+        br.getHeaders().put("Range", "bytes=" + 0 + "-");
         /* Workaround for old downloadcore bug that can lead to incomplete files */
         br.getHeaders().put("Accept-Encoding", "identity");
         dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, false, 1);
@@ -113,6 +131,10 @@ public class MySpassDe extends PluginForHost {
 
     private String getXML(final String parameter) {
         return br.getRegex("<" + parameter + "><\\!\\[CDATA\\[(.*?)\\]\\]></" + parameter + ">").getMatch(0);
+    }
+
+    private void setConfigElements() {
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), "FAST_LINKCHECK", "Enable fast linkcheck?\r\nFilesize will only be visible on downloadstart!").setDefaultValue(true));
     }
 
     @Override

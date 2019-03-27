@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.text.DecimalFormat;
@@ -37,17 +36,15 @@ import org.jdownloader.controlling.ffmpeg.FFmpeg;
 import org.jdownloader.controlling.ffmpeg.json.Stream;
 import org.jdownloader.controlling.ffmpeg.json.StreamInfo;
 import org.jdownloader.downloader.hls.HLSDownloader;
-import org.jdownloader.downloader.hls.M3U8Playlist;
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "atv.at" }, urls = { "http://(?:www\\.)?atv\\.at/[a-z0-9\\-_]+/[a-z0-9\\-_]+/(?:d|v)\\d+/|https?://(?:www\\.)?atvsmart\\.tv/[^/]+/[^/]+" })
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "atv.at" }, urls = { "https?://(?:www\\.)?atv\\.at/[a-z0-9\\-_]+/[a-z0-9\\-_]+/(?:d|v)\\d+/|https?://(?:www\\.)?atvsmart\\.(tv|at)/[^/]+/[^/]+" })
 public class AtvAt extends PluginForDecrypt {
-
     public AtvAt(PluginWrapper wrapper) {
         super(wrapper);
     }
 
-    private static final String TYPE_ATVSMART = "https?://(?:www\\.)?atvsmart\\.tv/.+";
+    private static final String TYPE_ATVSMART = "https?://(?:www\\.)?atvsmart\\.(tv|at)/.+";
 
     /**
      * Important note: Via browser the videos are streamed via RTSP.
@@ -69,16 +66,15 @@ public class AtvAt extends PluginForDecrypt {
         String json_source = null;
         String seasonnumber_str = null;
         String episodenumber_str = null;
-
         LinkedHashMap<String, Object> entries;
         final ArrayList<Object> parts;
         boolean geo_blocked = false;
         if (parameter.matches(TYPE_ATVSMART)) {
-            final Regex linkinfo = new Regex(parameter, "atvsmart\\.at/([a-z0-9\\-_]+)/([a-z0-9\\-_]+)");
+            final Regex linkinfo = new Regex(parameter, "atvsmart\\.(?:at|tv)/([a-z0-9\\-_]+)/([a-z0-9\\-_]+)");
             url_seriesname = linkinfo.getMatch(0);
             url_episodename = linkinfo.getMatch(1);
-
             br.getPage(parameter);
+            br.followRedirect();
             if (br.getHttpConnection().getResponseCode() == 404 || this.br.containsHTML(">404 \\- Nicht gefunden|Leider ist die von Ihnen aufgerufene Seite nicht")) {
                 logger.info("Link offline (404 error): " + parameter);
                 final DownloadLink offline = this.createOfflinelink(parameter);
@@ -103,12 +99,12 @@ public class AtvAt extends PluginForDecrypt {
             }
             parts = (ArrayList<Object>) entries.get("videoUrl");
         } else {
-            final Regex linkinfo = new Regex(parameter, "atv\\.at/([a-z0-9\\-_]+)/([a-z0-9\\-_]+)/((?:d|v)\\d+)/$");
+            final Regex linkinfo = new Regex(parameter, "atv\\.(?:at|tv)/([a-z0-9\\-_]+)/([a-z0-9\\-_]+)/((?:d|v)\\d+)/$");
             url_seriesname = linkinfo.getMatch(0);
             url_episodename = linkinfo.getMatch(1);
             fid = linkinfo.getMatch(2);
-
             br.getPage(parameter);
+            br.followRedirect();
             if (br.getHttpConnection().getResponseCode() == 404) {
                 logger.info("Link offline (404 error): " + parameter);
                 final DownloadLink offline = this.createOfflinelink(parameter);
@@ -130,13 +126,14 @@ public class AtvAt extends PluginForDecrypt {
                 geo_blocked = true;
             }
             br.getRequest().setHtmlCode(br.toString().replace("\\", ""));
-
             /* Get filename information */
             seriesname = this.br.getRegex("\">zurück zu ([^<>\"]*?)<span class=\"ico ico_close\"").getMatch(0);
             episodename = this.br.getRegex("property=\"og:title\" content=\"Folge \\d+ \\- ([^<>\"]*?)\"").getMatch(0);
             episodenumber_str = br.getRegex("class=\"headline\">Folge (\\d+)</h4>").getMatch(0);
-
-            json_source = br.getRegex("<div class=\"jsb_ jsb_video/FlashPlayer\" data\\-jsb=\"([^\"<>]+)\">").getMatch(0);
+            json_source = br.getRegex("var\\s*flashPlayerOptions\\s*=\\s*\"(.*?)\"").getMatch(0);
+            if (json_source == null) {
+                json_source = br.getRegex("<div class=\"jsb_ jsb_video/FlashPlayer\" data\\-jsb=\"([^\"<>]+)\">").getMatch(0);
+            }
             json_source = Encoding.htmlDecode(json_source);
             entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaMap(json_source);
             entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.walkJson(entries, "config/initial_video");
@@ -182,10 +179,14 @@ public class AtvAt extends PluginForDecrypt {
         hybrid_name += episodename;
         hybrid_name = Encoding.htmlDecode(hybrid_name);
         hybrid_name = decodeUnicode(hybrid_name);
-
         final String[] possibleQualities = { "1080", "720", "576", "540", "360", "226" };
-        final int possibleQualitiesNumber = possibleQualities.length;
-        final FFmpeg ffmpeg = new FFmpeg();
+        final int possibleQualitiesCount = possibleQualities.length;
+        final FFmpeg ffmpeg = new FFmpeg(br.cloneBrowser()) {
+            @Override
+            public LogInterface getLogger() {
+                return AtvAt.this.getLogger();
+            }
+        };
         int part_counter = 1;
         for (final Object parto : parts) {
             entries = (LinkedHashMap<String, Object>) parto;
@@ -213,11 +214,13 @@ public class AtvAt extends PluginForDecrypt {
                      */
                     /* E.g. Old url for part 1 only: http://atv.at/bauer-sucht-frau-staffel-13/die-hofwochen-beginnen/d1348313/ */
                     /* E.g. old url for all parts: http://atv.at/bauer-sucht-frau-staffel-13/die-hofwochen-beginnen/d1348313/ */
+                    /* Alternative. http://videos-fallback.atv.cdn.tvnext.tv */
                     src = "http://109.68.230.208/vod/fallback/" + linkpart_old_geo_block_workaround + "/index.m3u8";
                 } else {
                     /* Get around GEO-block - for new content */
                     src = src.replaceAll("http(s?)://blocked(\\.|-)", "http$1://");
                 }
+                src = src.replaceAll("&amp;", "&");
                 /* Some variables we need in that loop below. */
                 DownloadLink link = null;
                 String quality = null;
@@ -225,7 +228,7 @@ public class AtvAt extends PluginForDecrypt {
                 final FilePackage fp = FilePackage.getInstance();
                 fp.setName(hybrid_name);
                 final String part_formatted = df.format(part_counter);
-                if ("streaming".equalsIgnoreCase(delivery) || src.contains(".m3u8")) {
+                if (("streaming".equalsIgnoreCase(delivery) && (src.contains(".m3u8") || src.contains("chunklist"))) || src.contains(".m3u8")) {
                     if (this.isAbort()) {
                         logger.info("Decryption aborted by user");
                         return decryptedLinks;
@@ -233,18 +236,22 @@ public class AtvAt extends PluginForDecrypt {
                     if (!ffmpeg.isAvailable()) {
                         logger.info("Ffmpeg is not installed --> Skipping hls urls");
                         continue;
+                    } else if (!ffmpeg.isCompatible()) {
+                        logger.info("Ffmpeg is incompatible --> Skipping hls urls");
+                        continue;
                     }
                     /* Find all hls qualities */
                     /* 2016-10-18: It is possible to change hls urls to http urls! */
                     this.br.getPage(src);
                     final String[] qualities = this.br.getRegex("BANDWIDTH=").getColumn(-1);
                     final int qualitiesNum = qualities.length;
-                    if (!this.br.containsHTML("#EXT-X-STREAM-INF")) {
+                    if (!this.br.containsHTML("#EXT-X-STREAM-INF") && !this.br.containsHTML("#EXTINF")) {
                         if (is_geo_ip_blocked) {
                             logger.info("Possible GEO-unlock fail: " + src);
                         }
                         continue;
                     }
+                    boolean stop = false;
                     int qualityIndex = 0;
                     for (String line : Regex.getLines(this.br.toString())) {
                         if (!line.startsWith("#")) {
@@ -256,7 +263,12 @@ public class AtvAt extends PluginForDecrypt {
                             /* Reset quality value */
                             quality = null;
                             line = line.replaceAll("http(s?)://blocked(\\.|-)", "http$1://");
-                            link = createDownloadlink(br.getURL(line).toString());
+                            if (qualitiesNum == 0) {
+                                stop = true;
+                                link = createDownloadlink(this.br.getURL());
+                            } else {
+                                link = createDownloadlink(br.getURL(line).toString());
+                            }
                             link.setContainerUrl(parameter);
                             try {
                                 /* try to get the video quality */
@@ -266,8 +278,7 @@ public class AtvAt extends PluginForDecrypt {
                                         return getLogger();
                                     }
                                 };
-                                final M3U8Playlist m3u8PlayList = downloader.getM3U8Playlist();
-                                estimatedSize = m3u8PlayList.getEstimatedSize();
+                                estimatedSize = downloader.getEstimatedSize();
                                 final StreamInfo streamInfo = downloader.getProbe();
                                 for (Stream s : streamInfo.getStreams()) {
                                     if ("video".equals(s.getCodec_type())) {
@@ -275,7 +286,6 @@ public class AtvAt extends PluginForDecrypt {
                                         break;
                                     }
                                 }
-
                             } catch (Throwable e) {
                                 getLogger().log(e);
                                 estimatedSize = 0;
@@ -283,18 +293,20 @@ public class AtvAt extends PluginForDecrypt {
                             finalname = hybrid_name + "_";
                             finalname += "hls_part_";
                             finalname += part_formatted + "_";
-                            if (quality == null && qualitiesNum <= possibleQualitiesNumber) {
+                            if (quality == null && qualitiesNum > 0 && qualitiesNum <= possibleQualitiesCount) {
                                 /*
                                  * Workaround for possible Ffmpeg issue. We know that the bitrates go from highest to lowest so we can
                                  * assume which quality we have here in case the Ffmpeg method fails!
                                  */
-                                quality = possibleQualities[possibleQualitiesNumber - qualitiesNum + qualityIndex] + "p";
+                                quality = possibleQualities[possibleQualitiesCount - qualitiesNum + qualityIndex] + "p";
+                            } else if (quality == null) {
+                                /* Should never happen! */
+                                quality = "unknownp";
                             }
                             if (quality != null) {
                                 finalname += quality;
                             }
                             finalname += ".mp4";
-
                             link.setFinalFileName(finalname);
                             if (estimatedSize > 0) {
                                 link.setAvailable(true);
@@ -306,11 +318,17 @@ public class AtvAt extends PluginForDecrypt {
                             distribute(link);
                             qualityIndex++;
                         }
-
+                        if (stop) {
+                            break;
+                        }
                     }
                 } else {
                     /* delivery:progressive --> http url */
                     /* 2016-10-18: Seems like their http urls always have the same quality */
+                    /*
+                     * 2017-01-25: Seems like sometimes, part1 is only available in one single quality which is usually lower than 576p
+                     * (same for hls) - this is a serverside "issue" and not a JDownloader problem! (See forum 59152 page 7).
+                     */
                     quality = "576p";
                     link = this.createDownloadlink("directhttp://" + src);
                     finalname = hybrid_name + "_";
@@ -325,11 +343,9 @@ public class AtvAt extends PluginForDecrypt {
                     decryptedLinks.add(link);
                     distribute(link);
                 }
-
             }
             part_counter++;
         }
-
         if (decryptedLinks.size() == 0 && geo_blocked) {
             logger.info("GEO-blocked");
             final DownloadLink offline = this.createOfflinelink(parameter);
@@ -337,7 +353,6 @@ public class AtvAt extends PluginForDecrypt {
             decryptedLinks.add(offline);
             return decryptedLinks;
         }
-
         return decryptedLinks;
     }
 
@@ -355,5 +370,4 @@ public class AtvAt extends PluginForDecrypt {
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

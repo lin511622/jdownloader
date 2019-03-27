@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins;
 
 import java.io.File;
@@ -36,6 +35,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Pattern;
 
 import jd.config.Property;
+import jd.controlling.downloadcontroller.DownloadLinkCandidate;
 import jd.controlling.downloadcontroller.DownloadWatchDog;
 import jd.controlling.downloadcontroller.HistoryEntry;
 import jd.controlling.downloadcontroller.SingleDownloadController;
@@ -63,6 +63,7 @@ import org.jdownloader.controlling.DownloadLinkView;
 import org.jdownloader.controlling.Priority;
 import org.jdownloader.controlling.UniqueAlltimeID;
 import org.jdownloader.controlling.UrlProtection;
+import org.jdownloader.controlling.filter.CompiledFiletypeFilter;
 import org.jdownloader.controlling.filter.CompiledFiletypeFilter.ExtensionsFilterInterface;
 import org.jdownloader.controlling.linkcrawler.GenericVariants;
 import org.jdownloader.controlling.linkcrawler.LinkVariant;
@@ -82,13 +83,11 @@ import org.jdownloader.settings.staticreferences.CFG_GENERAL;
  * @author astaldo
  */
 public class DownloadLink extends Property implements Serializable, AbstractPackageChildrenNode<FilePackage>, CheckableLink {
-
     public static enum AvailableStatus {
         UNCHECKED(_GUI.T.linkgrabber_onlinestatus_unchecked()),
         FALSE(_GUI.T.linkgrabber_onlinestatus_offline()),
         UNCHECKABLE(_GUI.T.linkgrabber_onlinestatus_uncheckable()),
         TRUE(_GUI.T.linkgrabber_onlinestatus_online());
-
         private final String exp;
 
         private AvailableStatus(String exp) {
@@ -123,9 +122,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
     public static final String                          PROPERTY_EXTRACTION_STATUS          = "EXTRACTION_STATUS";
     public static final String                          PROPERTY_CUSTOM_MESSAGE             = "CUSTOM_MESSAGE";
     public static final String                          PROPERTY_MIME_HINT                  = "MIME_HINT";
-
     private static final long                           serialVersionUID                    = 1981079856214268373L;
-
     private static final String                         UNKNOWN_FILE_NAME                   = "unknownFileName";
     private static final String                         PROPERTY_CHUNKS                     = "CHUNKS";
     private static final String                         URL_ORIGIN                          = "URL_ORIGIN";
@@ -135,49 +132,32 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
     private static final String                         URL_CUSTOM                          = "URL_CUSTOM";
     private static final String                         VARIANT_SUPPORT                     = "VARIANT_SUPPORT";
     public static final String                          PROPERTY_JOB_ID                     = "JOB_ID";
-
     private transient volatile AvailableStatus          availableStatus                     = AvailableStatus.UNCHECKED;
-
     @Deprecated
     private long[]                                      chunksProgress                      = null;
-
     /** Aktuell heruntergeladene Bytes der Datei */
     private long                                        downloadCurrent                     = 0;
-
     private transient volatile SingleDownloadController downloadLinkController              = null;
-
     /** Maximum der heruntergeladenen Datei (Dateilaenge) */
     private long                                        downloadMax                         = -1;
-
     private FilePackage                                 filePackage;
-
     /** Hoster des Downloads */
     private String                                      host;
-
     private boolean                                     isEnabled;
-
     /** Beschreibung des Downloads */
     /* kann sich noch ändern, NICHT final */
     private String                                      name;
-
     private transient PluginForHost                     defaultplugin;
-
     private transient PluginForHost                     liveplugin;
-
     /**
      * Do not rename urlDownload. We need this field to restore old downloadlinks from the jd09 database
      */
     private String                                      urlDownload;
-
     private transient volatile List<PluginProgress>     pluginProgress                      = null;
-
     private long                                        created                             = -1l;
-
     private transient UniqueAlltimeID                   uniqueID                            = null;
     private transient AbstractNodeNotifier              propertyListener;
-
     private transient DomainInfo                        domainInfo                          = null;
-    private transient Boolean                           resumeable                          = null;
     private transient volatile SkipReason               skipReason                          = null;
     private transient volatile ConditionalSkipReason    conditionalSkipReason               = null;
     private transient volatile FinalLinkState           finalLinkState                      = null;
@@ -186,15 +166,11 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
     private transient Property                          tempProperties                      = null;
     private transient DownloadLinkView                  view                                = null;
     private transient LinkInfo                          linkInfo                            = null;
-
     private transient volatile long                     lastAvailableStatusChange           = -1;
-
     private transient volatile FilePackage              lastValidFilePackage                = null;
     private transient volatile String[]                 cachedName                          = null;
-
     private transient UrlProtection                     urlProtection                       = UrlProtection.UNSET;
     private transient List<HistoryEntry>                history                             = null;
-
     private transient Boolean                           partOfAnArchive                     = null;
     private transient List<String>                      sourcePluginPasswordList            = null;
     public static final String                          RELATIVE_DOWNLOAD_FOLDER_PATH       = "subfolderbyplugin";
@@ -203,9 +179,21 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
         return partOfAnArchive;
     }
 
-    public void setPartOfAnArchive(final Boolean notAnArchive) {
-        if (!Boolean.FALSE.equals(notAnArchive) || Files.getExtension(getName()) != null) {
-            this.partOfAnArchive = notAnArchive;
+    public void setPartOfAnArchive(final Boolean archivePart) {
+        if (!Boolean.FALSE.equals(archivePart) || Files.getExtension(getName()) != null) {
+            if (Boolean.FALSE.equals(archivePart) && getLinkInfo().getExtension().isSameExtensionGroup(CompiledFiletypeFilter.ArchiveExtensions.AA)) {
+                /**
+                 * in case the file has a known archive extension, we can't say for sure that it's NOT part of an archive because other
+                 * parts of the archive might be existing in another archive
+                 *
+                 * example:
+                 *
+                 * part01.rar.001, part01.rar.002, part01.rar.003, part02.rar
+                 */
+                this.partOfAnArchive = null;
+            } else {
+                this.partOfAnArchive = archivePart;
+            }
         }
     }
 
@@ -279,7 +267,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
 
     public void setFinishedDate(long finishedDate) {
         if (finishedDate <= 0) {
-            this.setProperty(PROPERTY_FINISHTIME, Property.NULL);
+            this.removeProperty(PROPERTY_FINISHTIME);
         } else {
             this.setProperty(PROPERTY_FINISHTIME, finishedDate);
         }
@@ -287,7 +275,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
 
     public void addDownloadTime(long time) {
         if (time < 0) {
-            setProperty(PROPERTY_DOWNLOADTIME, Property.NULL);
+            removeProperty(PROPERTY_DOWNLOADTIME);
         } else {
             setProperty(PROPERTY_DOWNLOADTIME, time + getDownloadTime());
         }
@@ -336,7 +324,6 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
         } catch (final Throwable e) {
             e.printStackTrace();
         }
-
         try {
             final Object sourcePluginPasswordList = fields.get("sourcePluginPasswordList", null);
             if (sourcePluginPasswordList != null && sourcePluginPasswordList instanceof List && ((List) sourcePluginPasswordList).size() > 0) {
@@ -357,7 +344,6 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
         } catch (final Throwable e) {
             e.printStackTrace();
         }
-
         try {
             this.created = fields.get("created", -1l);
         } catch (final Throwable e) {
@@ -377,7 +363,6 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
             downloadCurrent = 0;
             e.printStackTrace();
         }
-
         try {
             this.downloadMax = fields.get("downloadMax", -1l);
         } catch (final Throwable e) {
@@ -465,23 +450,14 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
     public void setChunks(int chunks) {
         if (chunks == getChunks()) {
             return;
-        }
-        if (chunks <= 0) {
-            setProperty(PROPERTY_CHUNKS, Property.NULL);
+        } else if (chunks == 0) {
+            removeProperty(PROPERTY_CHUNKS);
         } else {
             setProperty(PROPERTY_CHUNKS, chunks);
         }
-        SingleDownloadController dlc = getDownloadLinkController();
-        // DownloadInterface dli = null;
-        // if (dlc != null && (dli = dlc.getDownloadInstance()) != null) {
-        // if (dli instanceof HTTPDownloader) {
-        // ((HTTPDownloader) dli).setChunkNum(chunks);
-        // }
-        // }
         if (hasNotificationListener()) {
             notifyChanges(AbstractNodeNotifier.NOTIFY.PROPERTY_CHANCE, new DownloadLinkProperty(this, DownloadLinkProperty.Property.CHUNKS, chunks));
         }
-
     }
 
     public void setCustomSpeedLimit(int limit) {
@@ -489,7 +465,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
             return;
         }
         if (limit == 0) {
-            setProperty(PROPERTY_SPEEDLIMIT, Property.NULL);
+            removeProperty(PROPERTY_SPEEDLIMIT);
         } else {
             if (limit < 0) {
                 limit = 1;
@@ -532,7 +508,6 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
             }
         }
         return getDownloadCurrentRaw();
-
     }
 
     /**
@@ -621,7 +596,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
     public void setContentUrl(final String url) {
         if (!StringUtils.equals(url, getContentUrl())) {
             if (StringUtils.isEmpty(url)) {
-                setProperty(URL_CONTENT, Property.NULL);
+                removeProperty(URL_CONTENT);
             } else {
                 setProperty(URL_CONTENT, url);
             }
@@ -652,7 +627,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
     public void setCustomURL(final String url) {
         if (!StringUtils.equals(url, getContainerUrl())) {
             if (StringUtils.isEmpty(url)) {
-                setProperty(URL_CUSTOM, Property.NULL);
+                removeProperty(URL_CUSTOM);
             } else {
                 setProperty(URL_CUSTOM, url);
             }
@@ -680,7 +655,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
     public void setContainerUrl(final String url) {
         if (!StringUtils.equals(url, getContainerUrl())) {
             if (StringUtils.isEmpty(url)) {
-                setProperty(URL_CONTAINER, Property.NULL);
+                removeProperty(URL_CONTAINER);
             } else {
                 setProperty(URL_CONTAINER, url);
             }
@@ -702,7 +677,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
     public void setOriginUrl(final String url) {
         if (!StringUtils.equals(url, getOriginUrl())) {
             if (StringUtils.isEmpty(url)) {
-                setProperty(URL_ORIGIN, Property.NULL);
+                removeProperty(URL_ORIGIN);
             } else {
                 setProperty(URL_ORIGIN, url);
             }
@@ -724,7 +699,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
     public void setReferrerUrl(final String url) {
         if (!StringUtils.equals(url, getReferrerUrl())) {
             if (StringUtils.isEmpty(url)) {
-                setProperty(URL_REFERRER, Property.NULL);
+                removeProperty(URL_REFERRER);
             } else {
                 setProperty(URL_REFERRER, url);
             }
@@ -826,7 +801,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
      */
     public void setInternalTmpFilename(String fileName) {
         if (StringUtils.isEmpty(fileName)) {
-            setProperty(PROPERTY_CUSTOM_LOCALFILENAME, Property.NULL);
+            removeProperty(PROPERTY_CUSTOM_LOCALFILENAME);
         } else {
             fileName = CrossSystem.alleviatePathParts(fileName);
             this.setProperty(PROPERTY_CUSTOM_LOCALFILENAME, fileName);
@@ -841,9 +816,9 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
      */
     public void setInternalTmpFilenameAppend(String fileName) {
         if (StringUtils.isEmpty(fileName)) {
-            setProperty(PROPERTY_CUSTOM_LOCALFILENAMEAPPEND, Property.NULL);
+            removeProperty(PROPERTY_CUSTOM_LOCALFILENAMEAPPEND);
         } else {
-            fileName = CrossSystem.alleviatePathParts(fileName);
+            fileName = CrossSystem.alleviatePathParts(fileName, false);
             this.setProperty(PROPERTY_CUSTOM_LOCALFILENAMEAPPEND, fileName);
         }
         cachedName = null;
@@ -985,7 +960,6 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
                 return name + "." + cust;
             }
             return name.substring(0, index + 1) + cust;
-
         }
         return name;
     }
@@ -1087,11 +1061,17 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
     }
 
     public String getLinkID() {
-        final String linkID = getSetLinkID();
-        if (StringUtils.isEmpty(linkID)) {
-            return getPluginPatternMatcher();
+        final PluginForHost plugin = getDefaultPlugin();
+        if (plugin != null) {
+            return plugin.getLinkID(this);
+        } else {
+            final String linkID = getSetLinkID();
+            if (StringUtils.isEmpty(linkID)) {
+                return getPluginPatternMatcher();
+            } else {
+                return linkID;
+            }
         }
-        return linkID;
     }
 
     /**
@@ -1102,7 +1082,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
      */
     public void setLinkID(String id) {
         if (StringUtils.isEmpty(id)) {
-            this.setProperty(PROPERTY_LINKDUPEID, Property.NULL);
+            this.removeProperty(PROPERTY_LINKDUPEID);
         } else {
             this.setProperty(PROPERTY_LINKDUPEID, id);
         }
@@ -1312,7 +1292,6 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
         // sync is not required. this method is only called from the downloadwatchdog queue
         old = this.downloadLinkController;
         this.downloadLinkController = downloadLinkController;
-
         if (old != null && old != downloadLinkController) {
             old.onDetach(this);
         }
@@ -1406,7 +1385,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
                 setAvailable(false);
             }
             if (finalLinkState != FinalLinkState.FAILED_FATAL) {
-                setProperty(PROPERTY_CUSTOM_MESSAGE, Property.NULL);
+                removeProperty(PROPERTY_CUSTOM_MESSAGE);
             }
             if (finalLinkState != null && JsonConfig.create(GeneralSettings.class).isHashRetryEnabled() && finalLinkState.isFailedHash()) {
                 final List<DownloadLink> link = Arrays.asList(this);
@@ -1519,7 +1498,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
             final String oldName;
             if (StringUtils.isEmpty(newForced)) {
                 oldName = getName();
-                this.setProperty(PROPERTY_FORCEDFILENAME, Property.NULL);
+                this.removeProperty(PROPERTY_FORCEDFILENAME);
             } else {
                 oldName = getName(false, true);
                 newForced = CrossSystem.alleviatePathParts(newForced);
@@ -1547,7 +1526,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
         }
         String oldName = getName(false, true);
         if (StringUtils.isEmpty(name)) {
-            this.setProperty(PROPERTY_FORCEDFILENAME, Property.NULL);
+            this.removeProperty(PROPERTY_FORCEDFILENAME);
             oldName = getName();
         } else {
             if (StringUtils.equals(oldName, name)) {
@@ -1555,7 +1534,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
                     // name equals normal name
                     return;
                 } else {
-                    this.setProperty(PROPERTY_FORCEDFILENAME, Property.NULL);
+                    this.removeProperty(PROPERTY_FORCEDFILENAME);
                     oldName = getName();
                 }
             } else {
@@ -1584,7 +1563,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
     public void setComment(String comment) {
         final boolean changed;
         if (comment == null || comment.length() == 0) {
-            changed = this.setProperty(PROPERTY_COMMENT, Property.NULL);
+            changed = this.removeProperty(PROPERTY_COMMENT);
         } else {
             changed = this.setProperty(PROPERTY_COMMENT, comment);
         }
@@ -1596,7 +1575,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
     @Deprecated
     public DownloadLink setSourcePluginPasswordList(ArrayList<String> sourcePluginPassword) {
         if (sourcePluginPassword == null || sourcePluginPassword.size() == 0) {
-            this.setProperty(PROPERTY_PWLIST, Property.NULL);
+            this.removeProperty(PROPERTY_PWLIST);
         } else {
             this.setProperty(PROPERTY_PWLIST, sourcePluginPassword);
         }
@@ -1611,16 +1590,16 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
     public void setFinalFileName(String newfinalFileName) {
         final String oldName = getName();
         if (!StringUtils.isEmpty(newfinalFileName)) {
-            if (new Regex(newfinalFileName, Pattern.compile("r..\\.htm.?$", Pattern.CASE_INSENSITIVE)).matches()) {
+            if (new Regex(newfinalFileName, Pattern.compile("r(ar|\\d{2,3})\\.html?$", Pattern.CASE_INSENSITIVE)).matches()) {
                 System.out.println("Use Workaround for stupid >>rar.html<< uploaders!");
-                newfinalFileName = newfinalFileName.substring(0, newfinalFileName.length() - new Regex(newfinalFileName, Pattern.compile("r..(\\.htm.?)$", Pattern.CASE_INSENSITIVE)).getMatch(0).length());
+                newfinalFileName = newfinalFileName.substring(0, newfinalFileName.length() - new Regex(newfinalFileName, Pattern.compile("r(?:ar|\\d{2,3})(\\.html?)$", Pattern.CASE_INSENSITIVE)).getMatch(0).length());
             }
             newfinalFileName = CrossSystem.alleviatePathParts(newfinalFileName);
             this.setProperty(PROPERTY_FINALFILENAME, newfinalFileName);
             cachedName = null;// setName calls getName
             setName(newfinalFileName);
         } else {
-            this.setProperty(PROPERTY_FINALFILENAME, Property.NULL);
+            this.removeProperty(PROPERTY_FINALFILENAME);
         }
         cachedName = null;
         final String newName = getName();
@@ -1673,14 +1652,17 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
     @Override
     public String toString() {
         final UniqueAlltimeID lPreviousParentNodeID = getPreviousParentNodeID();
+        String host = getHost();
+        if (host == null) {
+            host = "";
+        }
         if (lPreviousParentNodeID == null) {
-            return getName().concat("@").concat(getHost());
+            return getName().concat("@").concat(host);
         }
         if (lPreviousParentNodeID.equals(getParentNode().getUniqueID())) {
-            return getName().concat("@").concat(getHost());
+            return getName().concat("@").concat(host);
         }
-        return getName().concat("@").concat(getHost()).concat(" previousParentNode:").concat(lPreviousParentNodeID.toString());
-
+        return getName().concat("@").concat(host).concat(" previousParentNode:").concat(lPreviousParentNodeID.toString());
     }
 
     /**
@@ -1891,7 +1873,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
 
     public void setMirrorID(long mirrorID) {
         if (mirrorID <= 0) {
-            setProperty(PROPERTY_MIRRORID, Property.NULL);
+            removeProperty(PROPERTY_MIRRORID);
         } else {
             setProperty(PROPERTY_MIRRORID, mirrorID);
         }
@@ -1943,7 +1925,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
         setDownloadSize(size);
         final boolean changed;
         if (size < 0) {
-            changed = setProperty(DownloadLink.PROPERTY_VERIFIEDFILESIZE, Property.NULL);
+            changed = removeProperty(DownloadLink.PROPERTY_VERIFIEDFILESIZE);
         } else {
             changed = setProperty(DownloadLink.PROPERTY_VERIFIEDFILESIZE, size);
         }
@@ -1970,7 +1952,6 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
         if (b == isResumeable()) {
             return;
         }
-        resumeable = b;
         setProperty(PROPERTY_RESUMEABLE, b);
         if (hasNotificationListener()) {
             notifyChanges(AbstractNodeNotifier.NOTIFY.PROPERTY_CHANCE, new DownloadLinkProperty(this, DownloadLinkProperty.Property.RESUMABLE, b));
@@ -1978,17 +1959,30 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
     }
 
     public boolean isResumeable() {
-        if (resumeable == null) {
-            resumeable = getBooleanProperty(PROPERTY_RESUMEABLE, false);
+        final SingleDownloadController controller = getDownloadLinkController();
+        if (controller != null) {
+            final DownloadLinkCandidate candidate = controller.getDownloadLinkCandidate();
+            return candidate.getCachedAccount().getPlugin().isResumeable(this, candidate.getCachedAccount().getAccount());
+        } else {
+            final PluginForHost plugin = getDefaultPlugin();
+            if (plugin != null) {
+                return plugin.isResumeable(this, null);
+            }
         }
-        return Boolean.TRUE.equals(resumeable);
+        return false;
     }
 
     public DomainInfo getDomainInfo() {
+        DomainInfo domainInfo = this.domainInfo;
         if (domainInfo == null) {
             domainInfo = DomainInfo.getInstance(getServiceHost());
+            this.domainInfo = domainInfo;
         }
         return domainInfo;
+    }
+
+    public void setDomainInfo(DomainInfo domainInfo) {
+        this.domainInfo = domainInfo;
     }
 
     public String getServiceHost() {
@@ -2046,13 +2040,17 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
         this.propertyListener = propertyListener;
     }
 
+    public AbstractNodeNotifier getNodeChangeListener() {
+        return propertyListener;
+    }
+
     public void setPriorityEnum(Priority priority) {
         if (priority == null) {
             priority = Priority.DEFAULT;
         }
         if (getPriorityEnum() != priority) {
             if (Priority.DEFAULT.equals(priority)) {
-                setProperty(PROPERTY_PRIORITY, Property.NULL);
+                removeProperty(PROPERTY_PRIORITY);
             } else {
                 setProperty(PROPERTY_PRIORITY, priority.name());
             }
@@ -2072,7 +2070,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
                 setProperty(DownloadLink.PROPERTY_ARCHIVE_ID, id);
                 setPartOfAnArchive(Boolean.TRUE);
             } else {
-                setProperty(DownloadLink.PROPERTY_ARCHIVE_ID, Property.NULL);
+                removeProperty(DownloadLink.PROPERTY_ARCHIVE_ID);
                 setPartOfAnArchive(null);
             }
             if (hasNotificationListener()) {
@@ -2123,7 +2121,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
             extractionStatus = newExtractionStatus;
             if (newExtractionStatus == null || ExtractionStatus.NA.equals(newExtractionStatus)) {
                 newExtractionStatus = null;
-                setProperty(DownloadLink.PROPERTY_EXTRACTION_STATUS, Property.NULL);
+                removeProperty(DownloadLink.PROPERTY_EXTRACTION_STATUS);
             } else {
                 setProperty(DownloadLink.PROPERTY_EXTRACTION_STATUS, newExtractionStatus.name());
             }
@@ -2141,7 +2139,7 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
         if (b) {
             setProperty(VARIANT_SUPPORT, b);
         } else {
-            setProperty(VARIANT_SUPPORT, Property.NULL);
+            removeProperty(VARIANT_SUPPORT);
         }
         if (hasNotificationListener()) {
             notifyChanges(AbstractNodeNotifier.NOTIFY.PROPERTY_CHANCE, new DownloadLinkProperty(this, DownloadLinkProperty.Property.VARIANTS_ENABLED, b));
@@ -2155,26 +2153,28 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
     public static <T extends DownloadLinkDatabindingInterface> T bindData(final Property property, final String ID, final Class<T> clazz) {
         @SuppressWarnings("unchecked")
         final T ret = (T) Proxy.newProxyInstance(clazz.getClassLoader(), new Class<?>[] { clazz }, new InvocationHandler() {
-
             public String getKey(Method method) {
+                final Key keyAnnotation = method.getAnnotation(Key.class);
                 String key = null;
-                if (method.getName().startsWith("set")) {
-                    key = method.getName().substring(3).replaceAll("([a-z])([A-Z])", "$1_$2").toUpperCase(Locale.ENGLISH);
-                } else if (method.getName().startsWith("is")) {
-                    key = method.getName().substring(2).replaceAll("([a-z])([A-Z])", "$1_$2").toUpperCase(Locale.ENGLISH);
-                } else if (method.getName().startsWith("get")) {
-                    key = method.getName().substring(3).replaceAll("([a-z])([A-Z])", "$1_$2").toUpperCase(Locale.ENGLISH);
-                } else {
-                    return null;
-                }
-                Key keyAnnotation = method.getAnnotation(Key.class);
                 if (keyAnnotation != null) {
                     key = keyAnnotation.value();
                 }
-                if (ID != null) {
-                    key = ID + key;
+                if (key == null) {
+                    if (method.getName().startsWith("set")) {
+                        key = method.getName().substring(3).replaceAll("([a-z])([A-Z])", "$1_$2").toUpperCase(Locale.ENGLISH);
+                    } else if (method.getName().startsWith("is")) {
+                        key = method.getName().substring(2).replaceAll("([a-z])([A-Z])", "$1_$2").toUpperCase(Locale.ENGLISH);
+                    } else if (method.getName().startsWith("get")) {
+                        key = method.getName().substring(3).replaceAll("([a-z])([A-Z])", "$1_$2").toUpperCase(Locale.ENGLISH);
+                    } else {
+                        return null;
+                    }
                 }
-                return key;
+                if (ID != null) {
+                    return ID + key;
+                } else {
+                    return key;
+                }
             }
 
             @Override
@@ -2197,23 +2197,21 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
                     throw new WTFException("Only Setter and getter are allowed");
                 }
                 if (method.getName().startsWith("set")) {
-
                     if (method.getParameterTypes().length != 1) {
                         throw new WTFException("Setter " + method + " should have 1 parameter. instead: " + Arrays.toString(method.getParameterTypes()));
                     }
                     if (!Clazz.isVoid(method.getReturnType())) {
                         throw new WTFException("Setter " + method + " must not have any return type. Has: " + method.getReturnType());
                     }
-
                     Class<?> param = method.getParameterTypes()[0];
                     Object arg = args[0];
                     if (Clazz.isPrimitiveWrapper(param) && arg == null) {
-                        property.setProperty(key, Property.NULL);
+                        property.removeProperty(key);
                         return null;
                     }
                     if (Clazz.isEnum(param)) {
                         if (arg == null) {
-                            property.setProperty(key, Property.NULL);
+                            property.removeProperty(key);
                         } else {
                             property.setProperty(key, ((Enum<?>) arg).name());
                         }
@@ -2228,7 +2226,6 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
                     if (Clazz.isVoid(method.getReturnType())) {
                         throw new WTFException("Getter " + method + " must have a return type. is Void.");
                     }
-
                     Object value = property.getProperty(key);
                     if (Clazz.isBoolean(returnType)) {
                         if (value == null) {
@@ -2349,18 +2346,32 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
 
     public void setVariant(LinkVariant variant) {
         if (!StringUtils.equals(getStringProperty("VARIANT"), variant._getUniqueId())) {
-            final String orgLinkID = getStringProperty("ORG_LINKID");
-            if (orgLinkID == null) {
-                final String linkID = getLinkID();
-                setProperty("ORG_LINKID", linkID);
-            }
             this.setProperty("VARIANT", variant._getUniqueId());
             setVariantSupport(true);
             final LinkVariant existingVariant = (LinkVariant) getTempProperties().getProperty("VARIANT");
             if (existingVariant != null && !variant._getUniqueId().equals(existingVariant._getUniqueId())) {
                 getTempProperties().setProperty("VARIANT", null);
             }
-            setLinkID(getStringProperty("ORG_LINKID") + "_" + variant._getUniqueId());
+            final PluginForHost plugin = getDefaultPlugin();
+            if (plugin != null) {
+                plugin.setLinkID(this, variant);
+            } else {
+                final boolean isOriginal = variant == null || GenericVariants.ORIGINAL.equals(variant);
+                final String orgLinkID = getStringProperty("ORG_LINKID");
+                if (isOriginal) {
+                    if (orgLinkID != null) {
+                        setLinkID(orgLinkID);
+                    }
+                } else {
+                    if (orgLinkID == null) {
+                        final String linkID = getLinkID();
+                        setProperty("ORG_LINKID", linkID);
+                        setLinkID(linkID + "_" + variant._getUniqueId());
+                    } else {
+                        setLinkID(orgLinkID + "_" + variant._getUniqueId());
+                    }
+                }
+            }
             if (hasNotificationListener()) {
                 notifyChanges(AbstractNodeNotifier.NOTIFY.PROPERTY_CHANCE, new DownloadLinkProperty(this, DownloadLinkProperty.Property.VARIANT, variant));
             }
@@ -2396,7 +2407,6 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
             }
         }
         return null;
-
     }
 
     public boolean isGenericVariantSupport() {
@@ -2429,7 +2439,6 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
                 final ArrayList<Object> basic = JSonStorage.restoreFromString(variantsID, new TypeRef<ArrayList<Object>>() {
                 });
                 for (Object o : basic) {
-
                     T restored = JSonStorage.convert(o, new TypeRef<T>() {
                         @Override
                         public Type getType() {
@@ -2437,7 +2446,6 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
                         }
                     });
                     ret.add(restored);
-
                 }
                 getTempProperties().setProperty("VARIANTS", ret);
                 return ret;
@@ -2455,7 +2463,6 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
         if (!StringUtils.equals(old, extension) && hasNotificationListener()) {
             notifyChanges(AbstractNodeNotifier.NOTIFY.PROPERTY_CHANCE, new DownloadLinkProperty(this, DownloadLinkProperty.Property.NAME, extension));
         }
-
     }
 
     public String getCustomExtension() {
@@ -2508,5 +2515,4 @@ public class DownloadLink extends Property implements Serializable, AbstractPack
             return history.get(history.size() - 1);
         }
     }
-
 }

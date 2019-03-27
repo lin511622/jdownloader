@@ -11,21 +11,27 @@ import org.appwork.utils.encoding.URLEncode;
 import org.jdownloader.plugins.components.youtube.variants.generics.AbstractGenericVariantInfo;
 
 public class YoutubeSubtitleStorable extends AbstractGenericVariantInfo implements Storable {
-
     public static final TypeRef<YoutubeSubtitleStorable> TYPE = new TypeRef<YoutubeSubtitleStorable>(YoutubeSubtitleStorable.class) {
-    };
+                                                              };
 
     public YoutubeSubtitleStorable(/* Storable */) {
-
     }
 
     public boolean _isTranslated() {
-
         return StringUtils.isNotEmpty(sourceLanguage);
     }
 
     private String language;
     private Locale locale;
+    private int    multi = -1;
+
+    public int getMulti() {
+        return multi;
+    }
+
+    public void setMulti(int multi) {
+        this.multi = multi;
+    }
 
     public Locale _getLocale() {
         return locale;
@@ -64,46 +70,58 @@ public class YoutubeSubtitleStorable extends AbstractGenericVariantInfo implemen
 
     private String kind;
     private String base;
+    private String fullUrl;
+
+    public String getFullUrl() {
+        return fullUrl;
+    }
+
+    public void setFullUrl(String fullUrl) {
+        this.fullUrl = fullUrl;
+    }
+
     private String name;
 
-    public YoutubeSubtitleStorable(String base, String name, String language, String source, String kind) {
+    public String getName() {
+        return name;
+    }
 
+    public void setName(String name) {
+        if (StringUtils.isEmpty(name)) {
+            this.name = null;
+        } else {
+            this.name = name;
+        }
+    }
+
+    public YoutubeSubtitleStorable(String base, String name, String language, String source, String kind) {
         this.base = base;
         setLanguage(language);
         this.sourceLanguage = source;
         this.kind = kind;
         this.name = name;
-
     }
 
-    public String createUrl() {
-        String url = null;
-        if (StringUtils.isNotEmpty(sourceLanguage)) {
-            url = base + "&lang=" + encode(sourceLanguage) + "&tlang=" + encode(language);
+    public String getUrl() {
+        final String ret = getFullUrl();
+        if (ret != null) {
+            return ret;
         } else {
-            url = base + "&lang=" + encode(language);
+            final StringBuilder url = new StringBuilder();
+            url.append(base);
+            if (StringUtils.isNotEmpty(sourceLanguage)) {
+                url.append("&lang=").append(encode(sourceLanguage));
+            }
+            url.append("&lang=").append(encode(language));
+            if (StringUtils.isNotEmpty(kind)) {
+                url.append("&kind=").append(encode(kind));
+            }
+            if (StringUtils.isNotEmpty(name)) {
+                url.append("&name=").append(encode(name));
+            }
+            return url.toString();
         }
-        if (StringUtils.isNotEmpty(kind)) {
-            url += "&kind=" + encode(kind);
-        }
-        if (StringUtils.isNotEmpty(name)) {
-            url += "&name=" + encode(name);
-        }
-        return url;
     }
-
-    // public String getIdentifier() {
-    //
-    // String ret = "&lng=" + encode(language);
-    // if (StringUtils.isNotEmpty(sourceLanguage)) {
-    // ret += "&src=" + encode(sourceLanguage);
-    // }
-    // if (StringUtils.isNotEmpty(kind)) {
-    // ret += "&kind=" + encode(kind);
-    // }
-    // return ret;
-    //
-    // }
 
     private String encode(String kind2) {
         try {
@@ -121,20 +139,21 @@ public class YoutubeSubtitleStorable extends AbstractGenericVariantInfo implemen
         if (language == null) {
             return null;
         }
-
-        String ret = "&lng=" + encode(language);
+        final StringBuilder url = new StringBuilder();
+        url.append("&lng=").append(encode(language));
         if (StringUtils.isNotEmpty(sourceLanguage)) {
-            ret += "&src=" + encode(sourceLanguage);
+            url.append("&src=").append(encode(sourceLanguage));
         }
         if (StringUtils.isNotEmpty(kind)) {
-            ret += "&kind=" + encode(kind);
+            url.append("&kind=").append(encode(kind));
         }
-        return ret;
+        if (StringUtils.isNotEmpty(name)) {
+            url.append("&name=").append(encode(name));
+        }
+        return url.toString();
     }
 
     public boolean _isSpeechToText() {
-        return "asr".equalsIgnoreCase(kind);
-
+        return kind != null && "asr".equalsIgnoreCase(kind);
     }
-
 }

@@ -1,9 +1,13 @@
 package org.jdownloader.captcha.v2.solver.cheapcaptcha;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+
+import javax.imageio.ImageIO;
 
 import jd.http.Browser;
 import jd.http.Request;
@@ -12,16 +16,15 @@ import jd.http.requests.FormData;
 import jd.http.requests.PostFormDataRequest;
 import jd.nutils.encoding.Encoding;
 
-import org.appwork.exceptions.WTFException;
 import org.appwork.storage.config.JsonConfig;
 import org.appwork.utils.Regex;
 import org.appwork.utils.StringUtils;
+import org.appwork.utils.encoding.Base64;
 import org.appwork.utils.logging2.LogSource;
 import org.appwork.utils.parser.UrlQuery;
 import org.jdownloader.captcha.v2.AbstractResponse;
 import org.jdownloader.captcha.v2.Challenge;
 import org.jdownloader.captcha.v2.SolverStatus;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v2.AbstractRecaptcha2FallbackChallenge;
 import org.jdownloader.captcha.v2.challenge.recaptcha.v2.RecaptchaV2Challenge;
 import org.jdownloader.captcha.v2.challenge.stringcaptcha.BasicCaptchaChallenge;
 import org.jdownloader.captcha.v2.solver.CESChallengeSolver;
@@ -35,7 +38,6 @@ import org.jdownloader.settings.staticreferences.CFG_CHEAP_CAPTCHA;
 import org.seamless.util.io.IO;
 
 public class CheapCaptchaSolver extends CESChallengeSolver<String> {
-
     private CheapCaptchaConfigInterface     config;
     private static final CheapCaptchaSolver INSTANCE   = new CheapCaptchaSolver();
     private ThreadPoolExecutor              threadPool = new ThreadPoolExecutor(0, 1, 30000, TimeUnit.MILLISECONDS, new LinkedBlockingDeque<Runnable>(), Executors.defaultThreadFactory());
@@ -60,9 +62,7 @@ public class CheapCaptchaSolver extends CESChallengeSolver<String> {
         getService().setSolver(this);
         config = JsonConfig.create(CheapCaptchaConfigInterface.class);
         logger = LogController.getInstance().getLogger(CheapCaptchaSolver.class.getName());
-
         threadPool.allowCoreThreadTimeOut(true);
-
     }
 
     @Override
@@ -70,7 +70,7 @@ public class CheapCaptchaSolver extends CESChallengeSolver<String> {
         if (!validateBlackWhite(c)) {
             return false;
         }
-        if (c instanceof RecaptchaV2Challenge || c instanceof AbstractRecaptcha2FallbackChallenge) {
+        if (c instanceof RecaptchaV2Challenge) {
             // does not accept this annoted image yet
             return false;
         }
@@ -78,7 +78,6 @@ public class CheapCaptchaSolver extends CESChallengeSolver<String> {
     }
 
     protected void solveBasicCaptchaChallenge(CESSolverJob<String> job, BasicCaptchaChallenge challenge) throws InterruptedException, SolverException {
-
         job.showBubble(this);
         checkInterruption();
         try {
@@ -90,19 +89,26 @@ public class CheapCaptchaSolver extends CESChallengeSolver<String> {
             job.setStatus(SolverStatus.SOLVING);
             long startTime = System.currentTimeMillis();
             PostFormDataRequest r = new PostFormDataRequest("http://api.cheapcaptcha.com/api/captcha");
-
             r.addFormData(new FormData("username", (config.getUserName())));
             r.addFormData(new FormData("password", (config.getPassword())));
-
-            final byte[] data;
-            if (challenge instanceof AbstractRecaptcha2FallbackChallenge) {
-                data = challenge.getAnnotatedImageBytes();
-            } else {
-                data = IO.readBytes(challenge.getImageFile());
+            final byte[] data = IO.readBytes(challenge.getImageFile());
+            final int mode = 0;
+            switch (mode) {
+            case 0:
+                final ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                ImageIO.write(ImageIO.read(new ByteArrayInputStream(data)), "jpg", bos);
+                r.addFormData(new FormData("captchafile", "image.jpg", "image/jpg", bos.toByteArray()));
+                break;
+            case 1:
+                r.addFormData(new FormData("captchafile", "base64:" + Base64.encodeToString(data)));
+                break;
+            default:
+                r.addFormData(new FormData("captchafile", "ByteData.captcha", data));
+                break;
             }
-            r.addFormData(new FormData("captchafile", "ByteData.captcha", data));
-
-            URLConnectionAdapter conn = br.openRequestConnection(r);
+            final URLConnectionAdapter conn = br.openRequestConnection(r);
+            conn.setAllowedResponseCodes(new int[] { conn.getResponseCode() });
+            br.loadConnection(conn);
             // 303 See Other if your CAPTCHA was successfully uploaded: Location HTTP header will point you to the uploaded CAPTCHA status
             // page, you may follow the Location to get the uploaded CAPTCHA status or parse the CAPTCHA unique ID out of Location URL — the
             // scheme is http://api.cheapcaptcha.com/api/captcha/%CAPTCHA_ID%;
@@ -113,7 +119,6 @@ public class CheapCaptchaSolver extends CESChallengeSolver<String> {
             // sending properly prepared requests, and your CAPTCHA images are valid, yet the problem persists, please contact our live
             // support and tell them in details how to reproduce the issue;
             // 503 Service Temporarily Unavailable when our service is overloaded (usually around 3:00–6:00 PM EST), try again later.
-
             if (conn.getResponseCode() == 403) {
                 CheapCaptchaAccount acc = loadAccount();
                 if (acc.isValid()) {
@@ -121,16 +126,12 @@ public class CheapCaptchaSolver extends CESChallengeSolver<String> {
                 } else {
                     throw new SolverException("Wrong Logins");
                 }
-
             } else if (conn.getResponseCode() == 503) {
                 // overload
                 throw new SolverException("Server Overload");
             }
-
             // Poll for the uploaded CAPTCHA status.
-            br.loadConnection(conn);
             String checkUrl = br.getRedirectLocation();
-
             String id = new Regex(checkUrl, ".*/(\\d+)$").getMatch(0);
             if (null != checkUrl) {
                 job.setStatus(new SolverStatus(_GUI.T.DeathByCaptchaSolver_solveBasicCaptchaChallenge_solving(), NewTheme.I().getIcon(IconKey.ICON_WAIT, 20)));
@@ -143,24 +144,19 @@ public class CheapCaptchaSolver extends CESChallengeSolver<String> {
                         throw new SolverException("Failed:" + id);
                     }
                     job.getLogger().info(br.toString());
-
                     if (solved) {
                         job.getLogger().info("CAPTCHA " + challenge.getImageFile() + " solved: " + pollResponse.get("text"));
                         job.setAnswer(new CheapCaptchaResponse(challenge, this, id, txt));
                         return;
                     } else {
                         Thread.sleep(1 * 1000);
-
                     }
                 }
-
             }
-
         } catch (Exception e) {
             job.getChallenge().sendStatsError(this, e);
             job.getLogger().log(e);
         }
-
     }
 
     protected boolean validateLogins() {
@@ -173,7 +169,6 @@ public class CheapCaptchaSolver extends CESChallengeSolver<String> {
         if (StringUtils.isEmpty(CFG_CHEAP_CAPTCHA.PASSWORD.getValue())) {
             return false;
         }
-
         return true;
     }
 
@@ -181,7 +176,6 @@ public class CheapCaptchaSolver extends CESChallengeSolver<String> {
     public boolean setInvalid(final AbstractResponse<?> response) {
         if (config.isFeedBackSendingEnabled() && response instanceof CheapCaptchaResponse) {
             threadPool.execute(new Runnable() {
-
                 @Override
                 public void run() {
                     try {
@@ -190,21 +184,17 @@ public class CheapCaptchaSolver extends CESChallengeSolver<String> {
                         if (challenge instanceof BasicCaptchaChallenge) {
                             Browser br = new Browser();
                             PostFormDataRequest r = new PostFormDataRequest(" http://api.cheapcaptcha.com/api/captcha/" + captcha + "/report");
-
                             r.addFormData(new FormData("username", (config.getUserName())));
                             r.addFormData(new FormData("password", (config.getPassword())));
-
                             URLConnectionAdapter conn = br.openRequestConnection(r);
                             br.loadConnection(conn);
                             System.out.println(conn);
                         }
-
                         // // Report incorrectly solved CAPTCHA if neccessary.
                         // // Make sure you've checked if the CAPTCHA was in fact
                         // // incorrectly solved, or else you might get banned as
                         // // abuser.
                         // Client client = getClient();
-
                     } catch (final Throwable e) {
                         logger.log(e);
                     }
@@ -216,30 +206,24 @@ public class CheapCaptchaSolver extends CESChallengeSolver<String> {
     }
 
     public CheapCaptchaAccount loadAccount() {
-
         CheapCaptchaAccount ret = new CheapCaptchaAccount();
         try {
-            Browser br = new Browser();
-            PostFormDataRequest r = new PostFormDataRequest("http://api.cheapcaptcha.com/api/user");
-
+            final Browser br = new Browser();
+            final PostFormDataRequest r = new PostFormDataRequest("http://api.cheapcaptcha.com/api/user");
             r.addFormData(new FormData("username", (config.getUserName())));
             r.addFormData(new FormData("password", (config.getPassword())));
-
-            URLConnectionAdapter conn = br.openRequestConnection(r);
+            final URLConnectionAdapter conn = br.openRequestConnection(r);
             br.loadConnection(conn);
             if (br.getRequest().getHttpConnection().getResponseCode() != 200) {
-                throw new WTFException(br.toString());
+                throw new SolverException(br.toString());
             }
-            UrlQuery response = Request.parseQuery(br.toString());
+            final UrlQuery response = Request.parseQuery(br.toString());
             ret.setUserName(response.get("user") + " (" + config.getUserName() + ")");
             ret.setBalance(Double.parseDouble(response.get("balance")) / 100);
-
         } catch (Exception e) {
             logger.log(e);
             ret.setError(e.getMessage());
         }
         return ret;
-
     }
-
 }

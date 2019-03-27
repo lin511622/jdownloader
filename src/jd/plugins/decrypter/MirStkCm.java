@@ -13,48 +13,45 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
-import java.io.IOException;
 import java.util.ArrayList;
-import java.util.List;
+
+import org.appwork.utils.StringUtils;
+import org.jdownloader.plugins.components.antiDDoSForDecrypt;
 
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
 import jd.http.Browser;
-import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.parser.html.Form;
 import jd.parser.html.HTMLParser;
-import jd.parser.html.InputField;
 import jd.plugins.CryptedLink;
-import jd.plugins.DecrypterException;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
+import jd.plugins.FilePackage;
 import jd.plugins.components.SiteType.SiteTemplate;
 
-import org.jdownloader.plugins.components.antiDDoSForDecrypt;
-
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "uploadmagnet.com", "filemack.com" }, urls = { "https?://(?:www\\.)?(?:multi\\.hotshare\\.biz|uploadmagnet\\.com|pdownload\\.net|zlinx\\.me|filesuploader\\.com|onmirror\\.com|multiupload\\.biz|mirrorhive\\.com|multimirrorupload\\.com)/([a-z0-9]{1,2}_)?([a-z0-9]{12})", "https?://(?:www\\.)?filemack\\.com/(?:en/)?([a-zA-Z0-9]{12}|[a-z0-9]{2}_[a-zA-Z0-9]{16})" })
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "uploadmagnet.com", "mirr.re" }, urls = { "https?://(?:www\\.)?(?:multi\\.hotshare\\.biz|uploadmagnet\\.com|pdownload\\.net|zlinx\\.me|filesuploader\\.com|multiupload\\.biz|multimirrorupload\\.com|multifilemirror\\.com)/([a-zA-Z0-9]{1,2}_)?([a-zA-Z0-9]{12})", "https?://(?:www\\.)?(?:mirr\\.re)/d/([a-zA-Z0-9]+)" })
 public class MirStkCm extends antiDDoSForDecrypt {
-
-    /*
-     * TODO many sites are using this type of script. Rename this plugin into general/template type plugin naming scheme (find the name of
-     * the script and rename). Do this after next major update, when we can delete plugins again.
-     */
+    @Override
+    public String[] siteSupportedNames() {
+        if ("uploadmagnet.com".equals(getHost())) {
+            return new String[] { "multi.hotshare.biz", "uploadmagnet.com", "pdownload.net", "zlinx.me", "filesuploader.com", "multiupload.biz", "multimirrorupload.com", "multifilemirror.com", "mirr.re" };
+        }
+        return null;
+    }
 
     /*
      * DEV NOTES: (mirrorshack) - provider has issues at times, and doesn't unhash stored data values before exporting them into redirects.
      * I've noticed this with mediafire links for example http://mirrorstack.com/mf_dbfzhyf2hnxm will at times return
      * http://www.mediafire.com/?HASH(0x15053b48), you can then reload a couple times and it will work in jd.. provider problem not plugin.
      * Other example links I've used seem to work fine. - Please keep code generic as possible.
-     * 
+     *
      * Don't use package name as these type of link protection services export a list of hoster urls of a single file. When one imports many
      * links (parts), JD loads many instances of the decrypter and each url/parameter/instance gets a separate packagename and that sucks.
      * It's best to use linkgrabbers default auto packagename sorting.
      */
-
     // 16/12/2012
     // mirrorstack.com = up, multiple pages deep, requiring custom r_counter, link offline errorhandling
     // uploading.to = down/sudoparked = 173.192.223.71-static.reverse.softlayer.com
@@ -62,20 +59,16 @@ public class MirStkCm extends antiDDoSForDecrypt {
     // onmirror.com = up, finallink are redirects on first singleLink page
     // multiupload.biz = up, multiple pages deep, with waits on last page
     // mirrorhive.com = up, finallink are redirects on first singleLink page
-
     // 05/07/2013
     // filesuploader.com = up, finallink are redirects on first singleLink page
     // 09/09/2013
     // pdownload.net = up, finallinks are redriects on first singleLink page
-
     // version 0.6
-
     // Tags: Multi file upload, mirror, mirrorstack, GeneralMultiuploadDecrypter
-
     // Single link format eg. http://sitedomain/xx_uid. xx = hoster abbreviation
-    private final String regexSingleLink = "(https?://[^/]+/(?:en/)?[a-z0-9]{1,2}_(?:[a-z0-9]{12}|[a-zA-Z0-9]{16}))";
+    private final String regexSingleLink = "(https?://[^/]+/(?:en/)?[a-zA-Z0-9]{1,2}_(?:[a-zA-Z0-9]{12}|[a-zA-ZA-Z0-9]{16}))";
     // Normal link format eg. http://sitedomain/uid
-    private final String regexNormalLink = "(https?://[^/]+/[a-z0-9]{12})";
+    private final String regexNormalLink = "(https?://[^/]+/[a-zA-Z0-9]{12})";
 
     public MirStkCm(PluginWrapper wrapper) {
         super(wrapper);
@@ -87,10 +80,20 @@ public class MirStkCm extends antiDDoSForDecrypt {
         br = new Browser();
         // Easier to set redirects on and off than to define every provider. It also creates less maintenance if provider changes things up.
         br.setFollowRedirects(true);
+        br.setAllowedResponseCodes(new int[] { 500 });
         getPage(parameter);
-        if (br.containsHTML(">(File )?Not Found</")) {
+        if (br.containsHTML(">(File )?Not Found</|>404 ERROR<") || br.getHttpConnection().getResponseCode() == 404 || br.getHttpConnection().getResponseCode() == 500) {
             logger.warning("Invalid URL, either removed or never existed :" + parameter);
+            decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
+        }
+        final String fileName = br.getRegex("File:</b>\\s*(.*?)\\s*(\\(|<)").getMatch(0);
+        final FilePackage fp;
+        if (fileName != null) {
+            fp = FilePackage.getInstance();
+            fp.setName(fileName);
+        } else {
+            fp = null;
         }
         br.setFollowRedirects(false);
         String[] singleLinks = null;
@@ -104,28 +107,36 @@ public class MirStkCm extends antiDDoSForDecrypt {
             if (singleLinks == null || singleLinks.length == 0) {
                 singleLinks = br.getRegex(regexSingleLink).getColumn(0);
             }
+            if (singleLinks == null || singleLinks.length == 0) {
+                singleLinks = br.getRegex("btn-large[^<>]+href='([^']+)'.*?Click to view link").getColumn(0);
+            }
         }
         if ((singleLinks == null || singleLinks.length == 0) && parameter.contains("pdownload.net/") && br.containsHTML("</b> \\| \\(")) {
             logger.info("Link offline: " + parameter);
             return decryptedLinks;
         }
         if (singleLinks == null || singleLinks.length == 0) {
-
             logger.warning("Couldn't find singleLinks... :" + parameter);
             return null;
         }
         // make sites with long waits return back into the script making it multi-threaded, otherwise singleLinks * results = long time.
         if (singleLinks.length > 1 && parameter.matches(".+(multiupload\\.biz)/.+")) {
             for (String singleLink : singleLinks) {
-                decryptedLinks.add(createDownloadlink(singleLink));
+                final DownloadLink link = createDownloadlink(singleLink);
+                if (fp != null) {
+                    fp.add(link);
+                }
+                decryptedLinks.add(link);
             }
         } else {
             // Process links found. Each provider has a slightly different requirement and outcome
-
             for (String singleLink : singleLinks) {
                 String finallink = null;
                 if (!singleLink.matches(regexSingleLink)) {
                     finallink = singleLink;
+                }
+                if (isAbort()) {
+                    break;
                 }
                 final Browser brc = br.cloneBrowser();
                 if (finallink == null) {
@@ -135,82 +146,53 @@ public class MirStkCm extends antiDDoSForDecrypt {
                     }
                     finallink = brc.getRedirectLocation();
                     if (finallink == null) {
-                        if (this.getHost().equals("filemack.com")) {
-                            /* 2016-10-24: For the next change of this plugin: Please move the code into a separate class! */
-                            Form f = null;
-                            for (final Form aform : brc.getForms()) {
-                                if (aform.hasInputFieldByName("_token") && !aform.containsHTML("/login")) {
-                                    f = aform;
-                                    break;
+                        String referer = null;
+                        String add_char = "";
+                        Integer wait = 0;
+                        if (parameter.matches(".+(multiupload\\.biz)/.+")) {
+                            add_char = "?";
+                            referer = new Regex(br.getURL(), "(https?://[^/]+)/").getMatch(0) + "/r_counter";
+                            wait = 10;
+                        } else {
+                            referer = new Regex(br.getURL(), "(https?://[^/]+)/").getMatch(0) + "/r_counter";
+                        }
+                        brc.getHeaders().put("Referer", referer);
+                        sleep(wait * 1000, param);
+                        getPage(brc, singleLink + add_char);
+                        finallink = brc.getRedirectLocation();
+                        if (StringUtils.isEmpty(finallink)) {
+                            finallink = brc.getRegex("name\\s*=\\s*\"shturl\"[^>]*value\\s*=\\s*\"(https?://[^>]*?)\"").getMatch(0);
+                            if (StringUtils.isEmpty(finallink)) {
+                                final Form button = brc.getFormBySubmitvalue("Download");
+                                if (button != null) {
+                                    final Browser br2 = brc.cloneBrowser();
+                                    br2.submitForm(button);
+                                    finallink = br2.getRedirectLocation();
                                 }
-                            }
-                            if (f == null) {
-                                throw new DecrypterException(DecrypterException.PLUGIN_DEFECT);
-                            }
-                            if (f.getAction() == null) {
-                                f.setAction(brc.getURL());
-                            }
-                            String js_source = brc.getRegex("var\\s*?hp=\\s*?\\[(.*?)\\]").getMatch(0);
-                            if (js_source != null) {
-                                /* Fix form-bullshit */
-                                js_source = js_source.replace("'", "");
-                                final String[] delete_values = js_source.split(",");
-                                final List<InputField> inputfields = f.getInputFields();
-                                Form newform = new Form();
-                                for (final InputField inputfield : inputfields) {
-                                    final String key = inputfield.getKey();
-                                    String value = inputfield.getValue();
-                                    for (String deletekey : delete_values) {
-                                        deletekey = Encoding.Base64Decode(deletekey);
-                                        if (key.equals(deletekey)) {
-                                            value = "";
-                                            break;
+                                if (StringUtils.isEmpty(finallink)) {
+                                    // fail over
+                                    final String[] links = HTMLParser.getHttpLinks(brc.toString(), "");
+                                    for (final String link : links) {
+                                        if (!Browser.getHost(link).contains(Browser.getHost(brc.getURL()))) {
+                                            final DownloadLink dl = createDownloadlink(link);
+                                            if (fp != null) {
+                                                fp.add(dl);
+                                            }
+                                            decryptedLinks.add(dl);
+                                            distribute(dl);
                                         }
                                     }
-                                    inputfield.setValue(value);
-                                    newform.addInputField(inputfield);
+                                    continue;
                                 }
-                                newform.setAction(f.getAction());
-                                f = newform;
-                            }
-                            submitForm(brc, f);
-                            finallink = brc.getRedirectLocation();
-                            if (finallink != null) {
-                                this.sleep(1200, param);
-                            }
-
-                        } else {
-                            String referer = null;
-                            String add_char = "";
-                            Integer wait = 0;
-                            if (parameter.matches(".+(multiupload\\.biz)/.+")) {
-                                add_char = "?";
-                                referer = new Regex(br.getURL(), "(https?://[^/]+)/").getMatch(0) + "/r_counter";
-                                wait = 10;
-                            } else {
-                                referer = new Regex(br.getURL(), "(https?://[^/]+)/").getMatch(0) + "/r_counter";
-                            }
-                            brc.getHeaders().put("Referer", referer);
-                            sleep(wait * 1000, param);
-                            getPage(brc, singleLink + add_char);
-                            finallink = brc.getRedirectLocation();
-                            if (finallink == null) {
-                                // fail over
-                                final String[] links = HTMLParser.getHttpLinks(brc.toString(), "");
-                                for (final String link : links) {
-                                    if (!Browser.getHost(link).contains(Browser.getHost(brc.getURL()))) {
-                                        final DownloadLink dl = createDownloadlink(link);
-                                        decryptedLinks.add(dl);
-                                        distribute(dl);
-                                    }
-                                }
-                                continue;
                             }
                         }
                     }
                 }
                 if (!Browser.getHost(finallink).contains(Browser.getHost(brc.getURL()))) {
                     final DownloadLink dl = createDownloadlink(finallink);
+                    if (fp != null) {
+                        fp.add(dl);
+                    }
                     decryptedLinks.add(dl);
                     distribute(dl);
                 }
@@ -224,10 +206,10 @@ public class MirStkCm extends antiDDoSForDecrypt {
      *
      * @param parameter
      * @param singleLinks
-     * @throws IOException
+     * @throws Exception
      */
     @SuppressWarnings("unused")
-    private void notused(String parameter, String[] singleLinks) throws IOException {
+    private void notused(String parameter, String[] singleLinks) throws Exception {
         // all links still found on main page
         singleLinks = br.getRegex("<a href='" + regexSingleLink + "'").getColumn(0);
         if (singleLinks == null || singleLinks.length == 0) {
@@ -258,10 +240,4 @@ public class MirStkCm extends antiDDoSForDecrypt {
     public SiteTemplate siteTemplateType() {
         return SiteTemplate.Unknown_MirrorStack;
     }
-
-    @Override
-    public String[] siteSupportedNames() {
-        return new String[] { "multi.hotshare.biz", "uploadmagnet.com", "pdownload.net", "zlinx.me", "filesuploader.com", "onmirror.com", "multiupload.biz", "mirrorhive.com" };
-    }
-
 }

@@ -13,14 +13,13 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
+import java.util.regex.Pattern;
 
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
-import jd.http.Browser.BrowserException;
 import jd.parser.Regex;
 import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterPlugin;
@@ -29,12 +28,34 @@ import jd.plugins.PluginForDecrypt;
 import jd.plugins.components.SiteType.SiteTemplate;
 
 //When adding new domains here also add them to the hosterplugin (TurboBitNet)
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "turbobit.net" }, urls = { "http://(www\\.)?(ifolder\\.com\\.ua|wayupload\\.com|turo-bit\\.net|depositfiles\\.com\\.ua|dlbit\\.net|hotshare\\.biz|mnogofiles\\.com|sibit\\.net|turbobit\\.net|turbobit\\.ru|xrfiles\\.ru|turbabit\\.net|filedeluxe\\.com|savebit\\.net|filemaster\\.ru|файлообменник\\.рф|turboot\\.ru|filez\\.ninja|kilofile\\.com|twobit\\.ru)/download/folder/\\d+" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = {}, urls = {})
 public class TurboBitNetFolder extends PluginForDecrypt {
-
     @Override
     public String[] siteSupportedNames() {
-        return new String[] { "ifolder.com.ua", "wayupload.com", "turo-bit.net", "depositfiles.com.ua", "dlbit.net", "hotshare.biz", "mnogofiles.com", "sibit.net", "turbobit.net", "turbobit.ru", "xrfiles.ru", "turbabit.net", "filedeluxe.com", "savebit.net", "filemaster.ru", "файлообменник.рф", "turboot.ru", "filez.ninja", "kilofile.com", "twobit.ru" };
+        return jd.plugins.hoster.TurboBitNet.domains;
+    }
+
+    public static String[] getAnnotationNames() {
+        return new String[] { "turbobit.net" };
+    }
+
+    /**
+     * returns the annotation pattern array
+     *
+     */
+    public static String[] getAnnotationUrls() {
+        // construct pattern
+        final String host = getHostsPattern();
+        return new String[] { host + "/download/folder/\\d+" };
+    }
+
+    private static String getHostsPattern() {
+        final StringBuilder pattern = new StringBuilder();
+        for (final String name : jd.plugins.hoster.TurboBitNet.domains) {
+            pattern.append((pattern.length() > 0 ? "|" : "") + Pattern.quote(name));
+        }
+        final String hosts = "https?://(?:www\\.)?" + "(?:" + pattern.toString() + ")";
+        return hosts;
     }
 
     public TurboBitNetFolder(PluginWrapper wrapper) {
@@ -51,13 +72,8 @@ public class TurboBitNetFolder extends PluginForDecrypt {
             return null;
         }
         // rows = 100 000 makes sure that we only get one page with all links
-        try {
-            // br.getPage("http://turbobit.net/downloadfolder/gridFile?id_folder=" + id + "&_search=false&nd=&rows=100000&page=1");
-            br.getPage("http://turbobit.net/downloadfolder/gridFile?rootId=" + id + "?currentId=" + id + "&_search=false&nd=&rows=100000&page=1&sidx=file_type&sord=asc");
-        } catch (final BrowserException e) {
-            logger.info("Link offline (server error): " + parameter);
-            return decryptedLinks;
-        }
+        // br.getPage("http://turbobit.net/downloadfolder/gridFile?id_folder=" + id + "&_search=false&nd=&rows=100000&page=1");
+        br.getPage("http://turbobit.net/downloadfolder/gridFile?rootId=" + id + "?currentId=" + id + "&_search=false&nd=&rows=100000&page=1&sidx=file_type&sord=asc");
         if (br.containsHTML("\"records\":0,\"total\":0,\"")) {
             logger.info("Link offline: " + parameter);
             return decryptedLinks;
@@ -72,7 +88,6 @@ public class TurboBitNetFolder extends PluginForDecrypt {
                 decryptedLinks.add(createDownloadlink("http://turbobit.net/" + singleID + ".html"));
             }
         }
-
         return decryptedLinks;
     }
 
@@ -85,5 +100,4 @@ public class TurboBitNetFolder extends PluginForDecrypt {
     public SiteTemplate siteTemplateType() {
         return SiteTemplate.Turbobit_Turbobit;
     }
-
 }

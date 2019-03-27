@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.File;
@@ -24,10 +23,6 @@ import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
-
-import org.appwork.utils.formatter.SizeFormatter;
-import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
 
 import jd.PluginWrapper;
 import jd.config.Property;
@@ -50,9 +45,12 @@ import jd.plugins.components.SiteType.SiteTemplate;
 import jd.utils.JDUtilities;
 import jd.utils.locale.JDL;
 
+import org.appwork.utils.formatter.SizeFormatter;
+import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+
 @HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "bezsms.org" }, urls = { "https?://(www\\.)?bezsms\\.org/(embed\\-)?[a-z0-9]{12}" })
 public class BezsmsOrg extends PluginForHost {
-
     private String                         correctedBR                  = "";
     private String                         passCode                     = null;
     private static final String            PASSWORDTEXT                 = "<br><b>Passwor(d|t):</b> <input";
@@ -100,7 +98,6 @@ public class BezsmsOrg extends PluginForHost {
     // captchatype: null
     // other:
     // TODO: Add case maintenance + alternative filesize check
-
     @SuppressWarnings("deprecation")
     @Override
     public void correctDownloadLink(final DownloadLink link) {
@@ -126,14 +123,18 @@ public class BezsmsOrg extends PluginForHost {
     @SuppressWarnings("deprecation")
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
+        // yet to see any links online
+        if (true) {
+            // throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND); // 20170628 seems normal now
+        }
         final String[] fileInfo = new String[3];
-        final Browser altbr = br.cloneBrowser();
         br.setFollowRedirects(true);
         correctDownloadLink(link);
         prepBrowser(br);
         setFUID(link);
         getPage(link.getDownloadURL());
-        if (new Regex(correctedBR, "(No such file|>File Not Found<|>The file was removed by|Reason for deletion:\n|File Not Found|>The file expired)").matches()) {
+        final Browser altbr = br.cloneBrowser();
+        if (new Regex(correctedBR, "(No such file|File Not Found<|>The file was removed by|Reason for deletion:\n|>The file expired|>Скачать файл с торрента)").matches()) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         if (new Regex(correctedBR, MAINTENANCE).matches()) {
@@ -145,42 +146,37 @@ public class BezsmsOrg extends PluginForHost {
             link.getLinkStatus().setStatusText(MAINTENANCEUSERTEXT);
             return AvailableStatus.UNCHECKABLE;
         }
-        if (br.getURL().contains("/?op=login&redirect=")) {
+        if (true || br.getURL().contains("/?op=login&redirect=")) {
             logger.info("PREMIUMONLY handling: Trying alternative linkcheck");
             link.getLinkStatus().setStatusText(PREMIUMONLY2);
-            try {
-                fileInfo[0] = this.getFnameViaAbuseLink(altbr, link);
-                if (br.containsHTML(">No such file<")) {
-                    throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            fileInfo[0] = this.getFnameViaAbuseLink(altbr, link);
+            if (br.containsHTML(">No such file<")) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
+            altbr.getPage("/?op=report_file&id=" + fuid);
+            if (altbr.containsHTML(">No such file<")) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
+            fileInfo[0] = altbr.getRegex("<b>Filename:</b></td><td>([^<>\"]*?)</td>").getMatch(0);
+            if (SUPPORTS_ALT_AVAILABLECHECK) {
+                altbr.postPage(COOKIE_HOST + "/?op=checkfiles", "op=checkfiles&process=Check+URLs&list=" + Encoding.urlEncode(link.getDownloadURL()));
+                fileInfo[1] = altbr.getRegex(">" + link.getDownloadURL() + "</td><td style=\"color:green;\">Found</td><td>([^<>\"]*?)</td>").getMatch(0);
+            }
+            /* 2nd offline check */
+            if ((SUPPORTS_ALT_AVAILABLECHECK && altbr.containsHTML("(>" + link.getDownloadURL() + "</td><td style=\"color:red;\">Not found\\!</td>|" + this.fuid + " not found\\!</font>)")) && fileInfo[0] == null) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            } else if (fileInfo[0] != null || fileInfo[1] != null) {
+                /* We know the link is online, set all information we got */
+                link.setAvailable(true);
+                if (fileInfo[0] != null) {
+                    link.setName(Encoding.htmlDecode(fileInfo[0].trim()));
+                } else {
+                    link.setName(fuid);
                 }
-                altbr.getPage("http://" + NICE_HOST + "/?op=report_file&id=" + fuid);
-                if (altbr.containsHTML(">No such file<")) {
-                    throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+                if (fileInfo[1] != null) {
+                    link.setDownloadSize(SizeFormatter.getSize(fileInfo[1]));
                 }
-                fileInfo[0] = altbr.getRegex("<b>Filename:</b></td><td>([^<>\"]*?)</td>").getMatch(0);
-                if (SUPPORTS_ALT_AVAILABLECHECK) {
-                    altbr.postPage(COOKIE_HOST + "/?op=checkfiles", "op=checkfiles&process=Check+URLs&list=" + Encoding.urlEncode(link.getDownloadURL()));
-                    fileInfo[1] = altbr.getRegex(">" + link.getDownloadURL() + "</td><td style=\"color:green;\">Found</td><td>([^<>\"]*?)</td>").getMatch(0);
-                }
-                /* 2nd offline check */
-                if ((SUPPORTS_ALT_AVAILABLECHECK && altbr.containsHTML("(>" + link.getDownloadURL() + "</td><td style=\"color:red;\">Not found\\!</td>|" + this.fuid + " not found\\!</font>)")) && fileInfo[0] == null) {
-                    throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-                } else if (fileInfo[0] != null || fileInfo[1] != null) {
-                    /* We know the link is online, set all information we got */
-                    link.setAvailable(true);
-                    if (fileInfo[0] != null) {
-                        link.setName(Encoding.htmlDecode(fileInfo[0].trim()));
-                    } else {
-                        link.setName(fuid);
-                    }
-                    if (fileInfo[1] != null) {
-                        link.setDownloadSize(SizeFormatter.getSize(fileInfo[1]));
-                    }
-                    return AvailableStatus.TRUE;
-                }
-            } catch (final Throwable e) {
-                logger.info("Unknown error occured in alternative linkcheck:");
-                e.printStackTrace();
+                return AvailableStatus.TRUE;
             }
             logger.warning("Alternative linkcheck failed!");
             return AvailableStatus.UNCHECKABLE;
@@ -256,7 +252,7 @@ public class BezsmsOrg extends PluginForHost {
     }
 
     private String getFnameViaAbuseLink(final Browser br, final DownloadLink dl) throws IOException, PluginException {
-        br.getPage("http://" + NICE_HOST + "/?op=report_file&id=" + fuid);
+        br.getPage("/?op=report_file&id=" + fuid);
         return br.getRegex("<b>Filename\\s*:?\\s*</b></td><td>([^<>\"]*?)</td>").getMatch(0);
     }
 
@@ -574,14 +570,11 @@ public class BezsmsOrg extends PluginForHost {
     public void correctBR() throws NumberFormatException, PluginException {
         correctedBR = br.toString();
         ArrayList<String> regexStuff = new ArrayList<String>();
-
         // remove custom rules first!!! As html can change because of generic cleanup rules.
-
         /* generic cleanup */
         regexStuff.add("<\\!(\\-\\-.*?\\-\\-)>");
         regexStuff.add("(display: ?none;\">.*?</div>)");
         regexStuff.add("(visibility:hidden>.*?<)");
-
         for (String aRegex : regexStuff) {
             String results[] = new Regex(correctedBR, aRegex).getColumn(0);
             if (results != null) {
@@ -609,33 +602,28 @@ public class BezsmsOrg extends PluginForHost {
             }
         }
         if (dllink == null) {
-            dllink = br.getRegex("nofollow\" href=\"([^\"]*?)\"").getMatch(0);
+            dllink = br.getRegex("nofollow\" href=\"(?:http://bezsms.org/go/\\?)?([^\"]*?)\"").getMatch(0);
         }
         return dllink;
     }
 
     private String decodeDownloadLink(final String s) {
         String decoded = null;
-
         try {
             Regex params = new Regex(s, "\\'(.*?[^\\\\])\\',(\\d+),(\\d+),\\'(.*?)\\'");
-
             String p = params.getMatch(0).replaceAll("\\\\", "");
             int a = Integer.parseInt(params.getMatch(1));
             int c = Integer.parseInt(params.getMatch(2));
             String[] k = params.getMatch(3).split("\\|");
-
             while (c != 0) {
                 c--;
                 if (k[c].length() != 0) {
                     p = p.replaceAll("\\b" + Integer.toString(c, a) + "\\b", k[c]);
                 }
             }
-
             decoded = p;
         } catch (Exception e) {
         }
-
         String finallink = null;
         if (decoded != null) {
             /* Open regex is possible because in the unpacked JS there are usually only 1 links */
@@ -947,5 +935,4 @@ public class BezsmsOrg extends PluginForHost {
     public SiteTemplate siteTemplateType() {
         return SiteTemplate.SibSoft_XFileShare;
     }
-
 }

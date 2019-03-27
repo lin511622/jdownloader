@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.io.IOException;
@@ -29,10 +28,10 @@ import jd.plugins.FilePackage;
 import jd.plugins.PluginForDecrypt;
 import jd.utils.JDUtilities;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "motherless.com" }, urls = { "http://(www\\.)?(members\\.)?motherless\\.com/(g(i|v)?/[\\w\\-_]+/[A-Z0-9]{7}|[A-Z0-9]{6,9}(/[A-Z0-9]{7})?)|http://(?:www\\.)?motherless\\.com/f/[^/]+/videos" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "motherless.com" }, urls = { "https?://(www\\.)?(members\\.)?motherless\\.com/(g(i|v)?/[\\w\\-_]+/[A-Z0-9]{7}|[A-Z0-9]{6,9}(/[A-Z0-9]{7})?)|https?://(?:www\\.)?motherless\\.com/f/[^/]+/videos" })
 public class MotherLessCom extends PluginForDecrypt {
-
-    private String fpName = null;
+    private String      fpName = null;
+    private FilePackage fp;
 
     public MotherLessCom(PluginWrapper wrapper) {
         super(wrapper);
@@ -51,13 +50,21 @@ public class MotherLessCom extends PluginForDecrypt {
     // - Server issues can return many 503's in high load situations.
     // - Server also punishes user who downloads with too many connections. This is a linkchecking issue also, as grabs info from headers.
     // - To reduce server loads associated with linkchecking, I've set 'setAvailable(true) for greater than 5 pages.
-
-    private static final String TYPE_INVALID           = "http://(?:www\\.)?(members\\.)?motherless\\.com/(?:privacy|popular|register|premium|members|galleries|contact).*?";
-    private static final String TYPE_FAVOURITES_VIDEOS = "http://(?:www\\.)?motherless\\.com/f/[^/]+/videos";
+    private static final String TYPE_INVALID           = "https?://(?:www\\.)?(members\\.)?motherless\\.com/(?:privacy|popular|register|premium|members|galleries|contact).*?";
+    private static final String TYPE_FAVOURITES_VIDEOS = "https?://(?:www\\.)?motherless\\.com/f/[^/]+/videos";
 
     @SuppressWarnings("deprecation")
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
-        final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
+        final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>() {
+            @Override
+            public boolean add(DownloadLink e) {
+                if (fp != null) {
+                    fp.add(e);
+                }
+                distribute(e);
+                return super.add(e);
+            }
+        };
         br.setLoadLimit(4194304);
         br.setFollowRedirects(true);
         br.setAllowedResponseCodes(503);
@@ -106,7 +113,6 @@ public class MotherLessCom extends PluginForDecrypt {
             decryptedLinks.add(dl);
             return decryptedLinks;
         }
-
         if (parameter.matches(TYPE_FAVOURITES_VIDEOS)) {
             fpName = this.br.getRegex("<title>([^<>\"]*?)\\- MOTHERLESS\\.COM</title>").getMatch(0);
             gallery(decryptedLinks, parameter, progress);
@@ -114,13 +120,8 @@ public class MotherLessCom extends PluginForDecrypt {
             String[] SubGal = br.getRegex("<a href=\"(/[A-Z0-9]+)\" title=\"More [^ ]+ in this gallery\" class=\"pop plain more\">See More &raquo;</a>").getColumn(0);
             if (SubGal != null && SubGal.length != 0) {
                 for (String subuid : SubGal) {
-                    br.getPage("http://motherless.com" + subuid);
+                    br.getPage("://motherless.com" + subuid);
                     gallery(decryptedLinks, parameter, progress);
-                }
-                if (fpName != null) {
-                    FilePackage fp = FilePackage.getInstance();
-                    fp.setName(fpName.trim());
-                    fp.addLinks(decryptedLinks);
                 }
                 return decryptedLinks;
             }
@@ -142,11 +143,6 @@ public class MotherLessCom extends PluginForDecrypt {
                 fina.setProperty("dltype", "image");
                 decryptedLinks.add(fina);
             }
-            if (fpName != null) {
-                FilePackage fp = FilePackage.getInstance();
-                fp.setName(fpName.trim());
-                fp.addLinks(decryptedLinks);
-            }
         }
         return decryptedLinks;
     }
@@ -156,7 +152,7 @@ public class MotherLessCom extends PluginForDecrypt {
         if (singlelink.startsWith("/")) {
             singlelink = "http://motherless.com" + singlelink;
         }
-        String ID = new Regex(singlelink, "http://motherless\\.com/[A-Z0-9]+/([A-Z0-9]+)").getMatch(0);
+        String ID = new Regex(singlelink, "https?://motherless\\.com/[A-Z0-9]+/([A-Z0-9]+)").getMatch(0);
         if (ID != null) {
             singlelink = "http://motherless.com/" + ID;
         }
@@ -175,6 +171,10 @@ public class MotherLessCom extends PluginForDecrypt {
                 }
             }
         }
+        if (fpName != null) {
+            fp = FilePackage.getInstance();
+            fp.setName(fpName.trim());
+        }
         String GM = br.getRegex("<a href=\"(/GM\\w+)\"").getMatch(0); // Gallery Mixed
         if (GM != null) {
             br.getPage(GM);
@@ -191,7 +191,6 @@ public class MotherLessCom extends PluginForDecrypt {
         if (totalpages == null) {
             totalpages = "1";
         }
-
         int numberOfPages = Integer.parseInt(totalpages);
         progress.setRange(numberOfPages);
         logger.info("Found " + numberOfPages + " page(s), decrypting now...");
@@ -219,7 +218,7 @@ public class MotherLessCom extends PluginForDecrypt {
                     ret.add(dl);
                 }
             }
-            String[] videolinks = br.getRegex("<[^>]+data-mediatype=\"video\"[^>]+>[\r\n\t ]+<a href=\"((http://(?:www\\.)?motherless\\.com)?/[a-zA-Z0-9]+){1,2}\" class=\"img-container\"").getColumn(0);
+            String[] videolinks = br.getRegex("<[^>]+data-mediatype=\"video\"[^>]+>[\r\n\t ]+<a href=\"((https?://(?:www\\.)?motherless\\.com)?/[a-zA-Z0-9]+){1,2}\" class=\"img-container\"").getColumn(0);
             if (videolinks != null && videolinks.length != 0) {
                 for (String singlelink : videolinks) {
                     String linkID = new Regex(singlelink, "/g/.*?/([A-Z0-9]+$)").getMatch(0);
@@ -250,5 +249,4 @@ public class MotherLessCom extends PluginForDecrypt {
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

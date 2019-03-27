@@ -38,7 +38,7 @@ public class ImgShotDecrypt extends antiDDoSForDecrypt {
      * Returns the annotations names array
      */
     public static String[] getAnnotationNames() {
-        return new String[] { "imgtrial.com", "imgtwyti.com", "imagefolks.com", "pixup.us", "imgcandy.net", "imgnext.com", "hosturimage.com", "img.yt", "imgupload.yt", "damimage.com", "imgstudio.org", "imgshot.com", "imgease.re", "fireimg.cc", "imgsen.se", "erimge.com", "imgspot.org", "imgserve.net", "shotimg.org", "adultimg.org", "imagehorse.com", "imageon.org", "gogoimage.org", "dimtus.com", "imagedecode.com", "imageontime.com", "imageteam.org", "fireimg.net", "imgadult.com", "fapat.me" };
+        return new String[] { "pixup.us", "damimage.com", "imgstudio.org", "imgshot.com", "imgspot.org", "imgserve.net", "dimtus.com", "imagedecode.com", "imageteam.org", "imgadult.com", "imgtornado.com", "acidimg.cc" };
     }
 
     /**
@@ -81,18 +81,24 @@ public class ImgShotDecrypt extends antiDDoSForDecrypt {
         }
         final DownloadLink link;
         decryptedLinks.add(link = createDownloadlink("directhttp://" + finallink));
-        if ("img.yt".equals(getHost())) {
-            final String title = br.getRegex("title=(\"|')(.*?)\\1").getMatch(1);
+        if ("acidimg.cc".equals(getHost())) {
+            final String title = br.getRegex("<title>(?:ACiDiMG / )?(.*?)</title>").getMatch(0);
             if (StringUtils.isNotEmpty(title)) {
                 final String extension = Plugin.getFileNameExtensionFromURL(finallink);
                 link.setForcedFileName(title + extension);
+            }
+        }
+        if ("imgadult.com".equals(getHost())) {
+            final String title = br.getRegex("<title>(.*?) \\|").getMatch(0);
+            if (StringUtils.isNotEmpty(title)) {
+                link.setForcedFileName(title);
             }
         }
         return decryptedLinks;
     }
 
     public static boolean isOffline(final Browser br) {
-        if (br.containsHTML(">Image Removed or Bad Link<") || br.getURL().contains("/noimage.php") || br.getHttpConnection().getResponseCode() == 404) {
+        if (br.containsHTML(">Image Removed or Bad Link<|>This image has been removed") || br.getURL().contains("/noimage.php") || br.getHttpConnection().getResponseCode() == 404) {
             return true;
         }
         return false;

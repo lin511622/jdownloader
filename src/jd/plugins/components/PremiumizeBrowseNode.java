@@ -1,11 +1,27 @@
 package jd.plugins.components;
 
-import java.util.Map;
-
 import org.appwork.storage.Storable;
 
 public class PremiumizeBrowseNode implements Storable {
-    private String name = null;
+    private String name       = null;
+    private String parentName = null;
+    private String parentID   = null;
+
+    public String _getParentID() {
+        return parentID;
+    }
+
+    public void _setParentID(String parentID) {
+        this.parentID = parentID;
+    }
+
+    public String _getParentName() {
+        return parentName;
+    }
+
+    public void _setParentName(String parentName) {
+        this.parentName = parentName;
+    }
 
     public String getName() {
         return name;
@@ -24,7 +40,7 @@ public class PremiumizeBrowseNode implements Storable {
     }
 
     public String getUrl() {
-        return url;
+        return link;
     }
 
     public boolean _isFile() {
@@ -32,11 +48,11 @@ public class PremiumizeBrowseNode implements Storable {
     }
 
     public boolean _isDirectory() {
-        return "dir".equals(getType());
+        return "folder".equals(getType());
     }
 
-    public void setUrl(String url) {
-        this.url = url;
+    public void setLink(String link) {
+        this.link = link;
     }
 
     public String getType() {
@@ -47,18 +63,18 @@ public class PremiumizeBrowseNode implements Storable {
         this.type = type;
     }
 
-    public Map<String, PremiumizeBrowseNode> getChildren() {
-        return children;
+    public String getID() {
+        return this.id;
     }
 
-    public void setChildren(Map<String, PremiumizeBrowseNode> children) {
-        this.children = children;
+    public void setID(String id) {
+        this.id = id;
     }
 
-    private long                              size     = -1;
-    private String                            url      = null;
-    private String                            type     = null;
-    private Map<String, PremiumizeBrowseNode> children = null;
+    private long   size = -1;
+    private String link = null;
+    private String type = null;
+    private String id   = null;
 
     public PremiumizeBrowseNode(/* Storable */) {
     }
@@ -68,14 +84,8 @@ public class PremiumizeBrowseNode implements Storable {
         if (_isFile()) {
             return "File>Name:" + getName() + "|Size:" + getSize() + "|URL:" + getUrl();
         } else if (_isDirectory()) {
-            final Map<String, PremiumizeBrowseNode> lChildren = getChildren();
-            if (lChildren == null) {
-                return "Dir>Name:" + getName() + "|Children:0";
-            } else {
-                return "Dir>Name:" + getName() + "|Children:" + children.size();
-            }
+            return "Dir>Name:" + getName() + "|NumberOfChildren:Unknown";
         }
         return super.toString();
     }
-
 }

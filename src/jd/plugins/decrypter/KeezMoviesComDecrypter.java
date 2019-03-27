@@ -13,10 +13,11 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
+
+import org.appwork.utils.StringUtils;
 
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
@@ -24,11 +25,8 @@ import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 
-import org.appwork.utils.StringUtils;
-
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "keezmovies.com" }, urls = { "http://(www\\.)?keezmovies\\.com/(video|embed)/[\\w\\-]+" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "keezmovies.com" }, urls = { "https?://(www\\.)?keezmovies\\.com/(video|embed)/[\\w\\-]+" })
 public class KeezMoviesComDecrypter extends PornEmbedParser {
-
     public KeezMoviesComDecrypter(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -40,10 +38,10 @@ public class KeezMoviesComDecrypter extends PornEmbedParser {
 
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
         final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
-        final String parameter = param.toString().replace("/embed/", "/video/");
+        final String parameter = param.toString().replace("/embed/", "/video/").replace("http:", "https:");
         final DownloadLink decryptedMainlink = createDownloadlink(parameter.replace("keezmovies.com/", "keezmoviesdecrypted.com/"));
         getPage(parameter);
-        if (br.getHttpConnection().getResponseCode() == 404) {
+        if (br.getHttpConnection().getResponseCode() == 404 || br.containsHTML("player_double_block removed_video_page")) {
             decryptedLinks.add(createOfflinelink(parameter));
             return decryptedLinks;
         }
@@ -55,7 +53,7 @@ public class KeezMoviesComDecrypter extends PornEmbedParser {
             // cleanup
             filename = StringUtils.startsWithCaseInsensitive(StringUtils.trim(filename), "http") ? null : filename;
         }
-        decryptedLinks.addAll(findEmbedUrls(filename));
+        decryptedLinks.addAll(findEmbedUrl(filename));
         if (!decryptedLinks.isEmpty()) {
             return decryptedLinks;
         }
@@ -63,5 +61,4 @@ public class KeezMoviesComDecrypter extends PornEmbedParser {
         decryptedLinks.add(decryptedMainlink);
         return decryptedLinks;
     }
-
 }

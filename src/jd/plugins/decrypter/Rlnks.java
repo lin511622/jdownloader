@@ -13,13 +13,13 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
 import jd.PluginWrapper;
@@ -39,16 +39,13 @@ import jd.plugins.PluginException;
 import jd.plugins.components.UserAgents;
 import jd.utils.JDUtilities;
 
-import org.appwork.storage.JSonStorage;
 import org.appwork.utils.StringUtils;
-import org.appwork.utils.formatter.HexFormatter;
 import org.jdownloader.captcha.v2.challenge.antibotsystem.AntiBotSystem;
 import org.jdownloader.captcha.v2.challenge.clickcaptcha.ClickedPoint;
 import org.jdownloader.plugins.components.antiDDoSForDecrypt;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "relink.us" }, urls = { "http://(www\\.)?relink\\.(?:us|to)/(?:(f/|(go|view|container_captcha)\\.php\\?id=)[0-9a-f]{30}|f/linkcrypt[0-9a-z]{15})" })
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "relink.us" }, urls = { "https?://(www\\.)?relink\\.(?:us|to)/(?:(f/|(go|view|container_captcha)\\.php\\?id=)[0-9a-f]{30}|f/linkcrypt[0-9a-z]{15}|f/[a-f0-9]{10})" })
 public class Rlnks extends antiDDoSForDecrypt {
-
     @Override
     public String[] siteSupportedNames() {
         return new String[] { "relink.to", "relink.us" };
@@ -62,17 +59,6 @@ public class Rlnks extends antiDDoSForDecrypt {
         super(wrapper);
     }
 
-    @Override
-    protected DownloadLink createDownloadlink(String link) {
-        DownloadLink ret = super.createDownloadlink(link);
-        try {
-            ret.setUrlProtection(org.jdownloader.controlling.UrlProtection.PROTECTED_DECRYPTER);
-        } catch (Throwable e) {
-
-        }
-        return ret;
-    }
-
     private String correctCryptedLink(final String input) {
         return input.replaceAll("(go|view|container_captcha)\\.php\\?id=", "f/");
         // they are not redirecting as of yet.
@@ -83,7 +69,7 @@ public class Rlnks extends antiDDoSForDecrypt {
         final String containerURL = new Regex(page, "(/?download\\.php\\?id=[a-zA-z0-9]+\\&" + containerFormat + "=\\d+)").getMatch(0);
         if (containerURL != null) {
             final File container = JDUtilities.getResourceFile("container/" + System.currentTimeMillis() + "." + containerFormat);
-            final Browser browser = br.cloneBrowser();
+            final Browser browser = getCaptchaBrowser(br);
             browser.getHeaders().put("Referer", cryptedLink);
             browser.getDownload(container, Encoding.htmlDecode(containerURL));
             decryptedLinks.addAll(loadContainerFile(container));
@@ -105,7 +91,6 @@ public class Rlnks extends antiDDoSForDecrypt {
         setBrowserExclusive();
         br.setFollowRedirects(true);
         br.getHeaders().put("User-Agent", UserAgents.stringUserAgent());
-
         /* Handle Captcha and/or password */
         handleCaptchaAndPassword(parameter, param);
         if (!new Regex(br.getURL(), domains).matches()) {
@@ -113,7 +98,7 @@ public class Rlnks extends antiDDoSForDecrypt {
             logger.info("Link offline: " + parameter);
             return decryptedLinks;
         }
-        if (br.containsHTML("<title>404</title>") || br.getURL().endsWith("/notfound.php")) {
+        if (br.containsHTML("<title>404</title>") || br.getURL().endsWith("/notfound.php") || br.getURL().endsWith("/notfound/")) {
             decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
         }
@@ -121,9 +106,8 @@ public class Rlnks extends antiDDoSForDecrypt {
             throw new DecrypterException(DecrypterException.PASSWORD);
         }
         if (allForm != null && allForm.getRegex("captcha").matches()) {
-            throw new DecrypterException(DecrypterException.CAPTCHA);
+            throw new PluginException(LinkStatus.ERROR_CAPTCHA);
         }
-
         final String page = br.toString();
         String title = br.getRegex("shrink\"><th>(Titel|Baslik|Title)</th><td>(.*?)</td></tr>").getMatch(1);
         if (title != null && title.contains("No title")) {
@@ -136,12 +120,10 @@ public class Rlnks extends antiDDoSForDecrypt {
             fp.setName(title);
             fp.setProperty("ALLOW_MERGE", true);
         }
-
         /* use cnl2 button if available */
         final String cnlUrl = "http://127\\.0\\.0\\.1:9666/flash/addcrypted2";
         if (br.containsHTML(cnlUrl)) {
             final Browser cnlbr = br.cloneBrowser();
-
             Form cnlForm = null;
             for (Form f : cnlbr.getForms()) {
                 if (f.containsHTML(cnlUrl)) {
@@ -151,18 +133,13 @@ public class Rlnks extends antiDDoSForDecrypt {
             }
             if (cnlForm != null) {
                 String jk = cnlbr.getRegex("<input type=\"hidden\" name=\"jk\" value=\"([^\"]+)\"").getMatch(0);
-                HashMap<String, String> infos = new HashMap<String, String>();
-                infos.put("crypted", Encoding.urlDecode(cnlForm.getInputField("crypted").getValue(), false));
-                infos.put("jk", jk);
                 String source = cnlForm.getInputField("source").getValue();
                 if (StringUtils.isEmpty(source)) {
                     source = parameter.toString();
                 } else {
                     source = Encoding.urlDecode(source, true);
                 }
-                infos.put("source", source);
-                String json = JSonStorage.toString(infos);
-                final DownloadLink dl = createDownloadlink("http://dummycnl.jdownloader.org/" + HexFormatter.byteArrayToHex(json.getBytes("UTF-8")));
+                final DownloadLink dl = DummyCNL.createDummyCNL(Encoding.urlDecode(cnlForm.getInputField("crypted").getValue(), false), jk, null, source);
                 if (fp != null) {
                     fp.add(dl);
                 }
@@ -181,11 +158,14 @@ public class Rlnks extends antiDDoSForDecrypt {
         }
         /* Webdecryption */
         if (decryptedLinks.isEmpty()) {
-            decryptLinks(decryptedLinks, param);
-            final String more_links[] = new Regex(page, Pattern.compile("<a href=\"(go\\.php\\?id=[a-zA-Z0-9]+\\&seite=\\d+)\">", Pattern.CASE_INSENSITIVE)).getColumn(0);
-            for (final String link : more_links) {
-                getPage(link);
-                decryptLinks(decryptedLinks, param);
+            if (decryptLinks(decryptedLinks, param)) {
+                final String more_links[] = new Regex(page, Pattern.compile("<a href=\"(go\\.php\\?id=[a-zA-Z0-9]+\\&seite=\\d+)\">", Pattern.CASE_INSENSITIVE)).getColumn(0);
+                for (final String link : more_links) {
+                    getPage(link);
+                    if (!decryptLinks(decryptedLinks, param)) {
+                        break;
+                    }
+                }
             }
         }
         if (decryptedLinks.isEmpty() && br.containsHTML(cnlUrl)) {
@@ -198,13 +178,21 @@ public class Rlnks extends antiDDoSForDecrypt {
         return decryptedLinks;
     }
 
-    private void decryptLinks(final ArrayList<DownloadLink> decryptedLinks, final CryptedLink param) throws Exception {
+    private boolean decryptLinks(final ArrayList<DownloadLink> decryptedLinks, final CryptedLink param) throws Exception {
         br.setFollowRedirects(false);
         final String[] matches = br.getRegex("getFile\\('(cid=\\w*?&lid=\\d*?)'\\)").getColumn(0);
         try {
             Browser brc = null;
             for (final String match : matches) {
-                sleep(2333, param);
+                try {
+                    sleep(2333, param);
+                } catch (InterruptedException e) {
+                    logger.log(e);
+                    return false;
+                }
+                if (isAbort()) {
+                    return false;
+                }
                 handleCaptchaAndPassword("/frame.php?" + match, param);
                 if (allForm != null && allForm.getRegex("captcha").matches()) {
                     logger.warning("Falsche Captcheingabe, Link wird übersprungen!");
@@ -216,24 +204,29 @@ public class Rlnks extends antiDDoSForDecrypt {
                 }
                 if (brc.getRedirectLocation() != null) {
                     final DownloadLink dl = createDownloadlink(Encoding.htmlDecode(brc.getRedirectLocation()));
+                    dl.setUrlProtection(org.jdownloader.controlling.UrlProtection.PROTECTED_DECRYPTER);
                     distribute(dl);
                     decryptedLinks.add(dl);
                 } else {
-                    final String url = brc.getRegex("iframe.*?src=\"(.*?)\"").getMatch(0);
-                    final DownloadLink dl = createDownloadlink(Encoding.htmlDecode(url));
+                    final String url = brc.getRegex("iframe\\s*name=\"Container\".*?src=\"(https?://.*?)\"").getMatch(0);
                     if (url != null) {
+                        final DownloadLink dl = createDownloadlink(Encoding.htmlDecode(url));
+                        dl.setUrlProtection(org.jdownloader.controlling.UrlProtection.PROTECTED_DECRYPTER);
                         distribute(dl);
                         decryptedLinks.add(dl);
                     } else {
                         /* as bot detected */
-                        return;
+                        return false;
                     }
                 }
             }
+            return true;
         } finally {
             br.setFollowRedirects(true);
         }
     }
+
+    private static AtomicReference<String> LASTSESSIONPASSWORD = new AtomicReference<String>();
 
     private void handleCaptchaAndPassword(final String partLink, final CryptedLink param) throws Exception {
         getPage(partLink);
@@ -252,16 +245,28 @@ public class Rlnks extends antiDDoSForDecrypt {
                 logger.warning("Possible Plugin Defect!");
             }
         }
-
         if (b) {
             allForm = br.getForm(0);
-            allForm = allForm != null && allForm.getAction() != null && allForm.getAction().matches("^https?://(\\w+\\.)?" + domains + "/container_password\\d*\\.php.*") ? allForm : null;
+            allForm = allForm != null && allForm.getAction() != null && allForm.getAction().matches("^.*/container_password\\d*\\.php.*") ? allForm : null;
         }
         if (allForm != null) {
+            final List<String> passwords = getPreSetPasswords();
+            final String lastSessionPassword = LASTSESSIONPASSWORD.get();
+            if (lastSessionPassword != null && !passwords.contains(lastSessionPassword)) {
+                passwords.add(lastSessionPassword);
+            }
             for (int i = 0; i < 5; i++) {
+                final String passCode;
                 if (allForm.containsHTML("password")) {
-                    final String passCode = Plugin.getUserInput(null, param);
+                    if (passwords.size() > 0) {
+                        passCode = passwords.remove(0);
+                        i = 0;
+                    } else {
+                        passCode = Plugin.getUserInput(null, param);
+                    }
                     allForm.put("password", passCode);
+                } else {
+                    passCode = null;
                 }
                 if (allForm.containsHTML("captcha")) {
                     // fail over is circle, but they do randomly show antibotsystem captchas
@@ -274,9 +279,10 @@ public class Rlnks extends antiDDoSForDecrypt {
                         allForm.remove("button");
                         final String captchaLink = allForm.getRegex("src=\"(.*?)\"").getMatch(0);
                         if (captchaLink == null) {
-                            break;
-                        }
-                        if (StringUtils.containsIgnoreCase(captchaLink, "solvemedia.com")) {
+                            if (!allForm.containsHTML("Disabled\\s*-\\s*Enter\\s*Password")) {
+                                break;
+                            }
+                        } else if (StringUtils.containsIgnoreCase(captchaLink, "solvemedia.com")) {
                             final org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia sm = new org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia(br);
                             try {
                                 final File cf = sm.downloadCaptcha(getLocalCaptchaFile());
@@ -298,6 +304,9 @@ public class Rlnks extends antiDDoSForDecrypt {
                             final File captchaFile = this.getLocalCaptchaFile();
                             Browser.download(captchaFile, br.cloneBrowser().openGetConnection(captchaLink));
                             final ClickedPoint cp = getCaptchaClickedPoint(getHost(), captchaFile, param, getHost() + " | " + String.valueOf(i + 1) + "/5", null);
+                            if (cp == null) {
+                                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                            }
                             allForm.put("button.x", String.valueOf(cp.getX()));
                             allForm.put("button.y", String.valueOf(cp.getY()));
                         }
@@ -315,6 +324,9 @@ public class Rlnks extends antiDDoSForDecrypt {
                     continue;
                 }
                 allForm = null;
+                if (passCode != null) {
+                    LASTSESSIONPASSWORD.set(passCode);
+                }
                 break;
             }
         }
@@ -324,5 +336,4 @@ public class Rlnks extends antiDDoSForDecrypt {
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return true;
     }
-
 }

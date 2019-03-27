@@ -13,20 +13,17 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.net.InetAddress;
-import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-
-import org.jdownloader.plugins.components.antiDDoSForDecrypt;
+import java.util.regex.Pattern;
 
 import jd.PluginWrapper;
-import jd.config.SubConfiguration;
 import jd.controlling.ProgressController;
-import jd.gui.UserIO;
 import jd.http.Browser;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
@@ -34,34 +31,75 @@ import jd.parser.html.HTMLParser;
 import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
+import jd.plugins.components.SiteType.SiteTemplate;
 import jd.plugins.components.UserAgents.BrowserName;
-import jd.utils.locale.JDL;
+import jd.utils.RazStringBuilder;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "adf.ly" }, urls = { "https?://(www\\.)?(adf\\.ly|j\\.gs|q\\.gs|adclicks\\.pw|ay\\.gy|(dl|david|down)\\.nhachot\\.info|chathu\\.apkmania\\.co|alien\\.apkmania\\.co|n\\.shareme\\.in|free\\.singlem4a\\.com|adf\\.acb\\.im|ddl\\.tiramisubs\\.tk|packs\\.redmusic\\.pl|dl\\.android-zone\\.org|out\\.unionfansub\\.com|sostieni\\.ilwebmaster21\\.com|fuyukai\\-desu\\.garuda\\-raws\\.net|zo\\.ee)/[^<>\r\n\t]+" })
-@SuppressWarnings("deprecation")
+import org.appwork.utils.net.httpconnection.HTTPConnectionUtils;
+import org.jdownloader.plugins.components.antiDDoSForDecrypt;
+
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = {}, urls = {})
 public class AdfLy extends antiDDoSForDecrypt {
+    private static final String[] domains = { "adf.ly", "j.gs", "q.gs", "ay.gy", "zo.ee", "babblecase.com", "riffhold.com", "microify.com", "pintient.com", "tinyium.com", "atominik.com", "bluenik.com", "bitigee.com", "atomcurve.com", "picocurl.com", "tinyical.com", "casualient.com", "battleate.com", "mmoity.com", "simizer.com", "dataurbia.com", "viahold.com", "coginator.com", "cogismith.com", "kaitect.com", "yoalizer.com", "kibuilder.com", "kimechanic.com", "quainator.com", "tinyium.com", "pintient.com", "quamiller.com", "yobuilder.com", "skamason.com", "twineer.com", "vializer.com", "viwright.com", "yabuilder.com", "yamechanic.com", "kializer.com", "yoineer.com", "skamaker.com", "yoitect.com", "activeation.com", "brisktopia.com", "queuecosm.bid", "nimbleinity.com", "rapidtory.com", "swiftation.com", "velocicosm.com", "zipteria.com", "zipvale.com", "agileurbia.com", "briskrange.com",
+            "threadsphere.bid", "dashsphere.com", "fasttory.com", "rapidteria.com", "sprysphere.com", "swifttopia.com", "restorecosm.bid", "bullads.net", "velociterium.com", "zipansion.com", "activeterium.com", "clearload.bid", "brightvar.bid", "activetect.net", "swiftviz.net", "kudoflow.com", "infopade.com", "linkjaunt.com", "combostruct.com", "turboagram.com", "wirecellar.com", "streamvoyage.com", "metastead.com", "briskgram.net", "swarife.com", "baymaleti.net", "dapalan.com", "cinebo.net", "stratoplot.com", "thouth.net", "atabencot.net", "ecleneue.com", "twiriock.com", "uclaut.net", "linkup.pro", "lopoteam.com", "keistaru.com",
+            /** <-- full domains & subdomains --> */
+            "chathu.apkmania.co", "alien.apkmania.co", "adf.acb.im", "packs.redmusic.pl", "packs2.redmusic.pl", "dl.android-zone.org", "out.unionfansub.com", "sostieni.ilwebmaster21.com", "fuyukai-desu.garuda-raws.net" };
+
+    @Override
+    public String[] siteSupportedNames() {
+        return domains;
+    }
 
     // DEV NOTES:
     // uids are not transferable between domains.
     // alternative domains do not support https
-
     public AdfLy(PluginWrapper wrapper) {
         super(wrapper);
     }
 
-    private static final String adfPre        = "https?://(?:www\\.)?";
-    // belongs to adfly group
-    private static final String adfDomains    = "adf\\.ly|j\\.gs|q\\.gs|adclicks\\.pw|ay\\.gy";
-    // belongs to other people who use subdomains and use adf.ly service
-    private static final String subDomains    = "(?:dl|david|down)\\.nhachot\\.info|chathu\\.apkmania\\.co|alien\\.apkmania\\.co|n\\.shareme\\.in|free\\.singlem4a\\.com|adf\\.acb\\.im|ddl\\.tiramisubs\\.tk|packs\\.redmusic\\.pl|dl\\.android-zone\\.org|out\\.unionfansub\\.com|sostieni\\.ilwebmaster21\\.com|fuyukai\\-desu\\.garuda\\-raws\\.net|zo\\.ee";
-    // builds final String for method calling (no need to edit).
-    private static final String HOSTS         = adfPre + "(?:" + adfDomains + "|" + subDomains + ")";
-    private static final String INVALIDLINKS  = "/(link-deleted\\.php|index|login|static).+";
-    private static Object       LOCK          = new Object();
+    /**
+     * Returns the annotations names array
+     *
+     * @return
+     */
+    public static String[] getAnnotationNames() {
+        return new String[] { "adf.ly" };
+    }
 
-    private String              protocol      = null;
-    private final boolean       supportsHTTPS = true;
-    private String              hosts         = HOSTS;
+    /**
+     * returns the annotation pattern array
+     *
+     */
+    public static String[] getAnnotationUrls() {
+        final String host = getHostsPattern();
+        return new String[] { host + "/[^<>\r\n\t]+" };
+    }
+
+    private static String getHostsPattern() {
+        final StringBuilder pattern = new StringBuilder();
+        for (final String name : domains) {
+            pattern.append((pattern.length() > 0 ? "|" : "") + Pattern.quote(name));
+        }
+        final String hosts = adfPre + "(?:" + pattern.toString() + ")";
+        return hosts;
+    }
+
+    @Override
+    public void init() {
+        // first run -1 && revision change == sync.
+        if (this.getVersion() > HOSTS_REFERENCE.get()) {
+            HOSTS.set(getHostsPattern());
+            HOSTS_REFERENCE.set(this.getVersion());
+        }
+    }
+
+    private static final String            adfPre          = "https?://(?:www\\.)?";
+    // builds final String for method calling (no need to edit).
+    private static AtomicReference<String> HOSTS           = new AtomicReference<String>(null);
+    private static AtomicLong              HOSTS_REFERENCE = new AtomicLong(-1);
+    private static final String            INVALIDLINKS    = "/(link-deleted\\.php|index|login|static).+";
+    private static Object                  LOCK            = new Object();
+    private String                         protocol        = null;
 
     @Override
     protected boolean useRUA() {
@@ -76,34 +114,33 @@ public class AdfLy extends antiDDoSForDecrypt {
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
         final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         final String parameter = param.toString().replace("www.", "");
-        if (parameter.matches(HOSTS + INVALIDLINKS)) {
-            logger.info("adf.ly link invalid: " + parameter);
+        final String hosts = HOSTS.get();
+        if (parameter.matches(hosts + INVALIDLINKS)) {
+            logger.info("Invalid: " + parameter);
             return decryptedLinks;
         }
-
-        // imported protocol choice
-        protocol = new Regex(parameter, "(https?://)").getMatch(0);
-        // poll plugin setting for default protocol, if not set ask the user.
+        // poll plugin setting for default protocol
         protocol = getDefaultProtocol();
         if (!parameter.contains("adf.ly/") && protocol.equalsIgnoreCase("https://")) {
-            logger.info("sorry, HTTPS option is not aviable for this host '" + new Regex(parameter, "://([^/]+)").getMatch(0) + "'");
+            logger.info("sorry, HTTPS option is not aviable for this host '" + Browser.getHost(parameter) + "'");
             protocol = "http://";
         }
         br.setFollowRedirects(false);
-
         if (parameter.matches(hosts + "/\\d+/.+")) {
             String linkInsideLink = new Regex(parameter, hosts + "/\\d+/(.+)").getMatch(0);
             if (!linkInsideLink.matches("^(?-i)(?:https?|ftp)://.+$")) {
                 // we assume they are http
                 linkInsideLink = "http://" + linkInsideLink;
             }
-            if (!linkInsideLink.matches(hosts + "/.+")) {
+            if (!linkInsideLink.matches(hosts + "/.+") && linkInsideLink.matches("(.+)\\.(.+)")) {
                 // lets try dns method to verify if the link is actually valid
                 // re: https://board.jdownloader.org/showthread.php?p=363462#post363462
                 InetAddress[] inetAddress = null;
                 try {
-                    inetAddress = InetAddress.getAllByName(Browser.getHost(linkInsideLink, true));
-                } catch (final UnknownHostException u) {
+                    final String host = Browser.getHost(linkInsideLink, true);
+                    inetAddress = HTTPConnectionUtils.resolvHostIP(host, br.getIPVersion());
+                    // TODO: this will fail in full proxied environment
+                } catch (final Throwable u) {
                 }
                 if (inetAddress != null && inetAddress.length > 0) {
                     decryptedLinks.add(createDownloadlink(linkInsideLink));
@@ -111,7 +148,18 @@ public class AdfLy extends antiDDoSForDecrypt {
                 }
             }
         }
-
+        {
+            final String redirect = new Regex(parameter, "/redirecting/(.+)").getMatch(0);
+            if (redirect != null) {
+                final HashSet<String> results = GenericBase64Decrypter.handleBase64Decode(redirect);
+                for (final String result : results) {
+                    decryptedLinks.add(createDownloadlink(result));
+                }
+                if (!decryptedLinks.isEmpty()) {
+                    return decryptedLinks;
+                }
+            }
+        }
         boolean skipWait = true;
         String finallink = null;
         for (int i = 0; i <= 2; i++) {
@@ -125,13 +173,13 @@ public class AdfLy extends antiDDoSForDecrypt {
                     decryptedLinks.add(createDownloadlink(redir));
                     return decryptedLinks;
                 } else if (redir != null && redir.matches("https?://adf\\.ly/?")) {
-                    logger.info("adf.ly link offline: " + parameter);
+                    logger.info("Link offline: " + parameter);
                     return decryptedLinks;
                 } else if (br.containsHTML("(<b style=\"font-size: 20px;\">Sorry the page you are looking for does not exist|>404 Not Found<|>Not Found<|>Sorry, but the requested page was not found)") || (br.getRedirectLocation() != null && (br.getRedirectLocation().contains("ink-deleted.php") || br.getRedirectLocation().contains("/suspended")))) {
-                    logger.info("adf.ly link offline: " + parameter);
+                    logger.info("Link ink offline: " + parameter);
                     return decryptedLinks;
                 } else if (br.containsHTML("Sorry, there has been a problem\\.")) {
-                    logger.info("adf.ly link offline: " + parameter);
+                    logger.info("Link ink offline: " + parameter);
                     return decryptedLinks;
                 }
             }
@@ -146,6 +194,10 @@ public class AdfLy extends antiDDoSForDecrypt {
             String url = br.getRegex("var url\\s?+=\\s?+'?([^\';]+)'?;").getMatch(0);
             // 201307xx
             String ysmm = br.getRegex("var ysmm = '([^\';]+)'").getMatch(0);
+            if (ysmm == null) {
+                // 20170419
+                ysmm = br.getRegex("ysmm=\"(.*?)\"").getMatch(0);
+            }
             if (ysmm != null) {
                 String C = "";
                 String h = "";
@@ -156,8 +208,35 @@ public class AdfLy extends antiDDoSForDecrypt {
                         h = ysmm.charAt(s) + h;
                     }
                 }
-                String sec = Encoding.Base64Decode(C + h);
-                finallink = sec.substring(sec.length() - (sec.length() - 2));
+                // new 20170914
+                final String[] a = (C + h).split("");
+                for (int b = 0; b < a.length; b++) {
+                    if (a[b].matches("\\d")) {
+                        for (int c = b + 1; c < a.length; c++) {
+                            if (a[c].matches("\\d")) {
+                                final int d = Integer.parseInt(a[b]) ^ Integer.parseInt(a[c]);
+                                if (d < 10) {
+                                    a[b] = d + "";
+                                }
+                                b = c;
+                                c = a.length;
+                            }
+                        }
+                    }
+                }
+                String sec = Encoding.Base64Decode(RazStringBuilder.buildString(a, ""));
+                // remove padding, I went with auto padding correction.
+                int pcount = sec.indexOf("http");
+                if (pcount == -1) {
+                    pcount = sec.indexOf("ftp");
+                }
+                if (pcount > -1) {
+                    // this works on the assumption that it's the same offset
+                    finallink = sec.substring(pcount, sec.length() - pcount);
+                } else {
+                    // At this time its 16 chars, prefix and postfix.
+                    finallink = sec.substring(16, sec.length() - 16);
+                }
             }
             if (finallink == null) {
                 finallink = br.getRedirectLocation();
@@ -205,9 +284,9 @@ public class AdfLy extends antiDDoSForDecrypt {
                 if (skipWait) {
                     skipWait();
                     // Wait a seconds. Not waiting can cause the skipWait feature to fail
-                    Thread.sleep(1 * 10001l);
+                    sleep(1 * 10001l, param);
                 } else {
-                    Thread.sleep(wait * 1000l);
+                    sleep(wait * 1000l, param);
                 }
                 getPage(extendedProtectionPage);
                 String tempLink = br.getRedirectLocation();
@@ -218,7 +297,7 @@ public class AdfLy extends antiDDoSForDecrypt {
                         logger.info("Blocked, re-trying with waittime...");
                         skipWait = false;
                         try {
-                            br.clearCookies("http://adf.ly/");
+                            br.clearCookies(br.getURL());
                         } catch (final Exception e) {
                         }
                         continue;
@@ -241,7 +320,7 @@ public class AdfLy extends antiDDoSForDecrypt {
         } else if (finallink != null) {
             decryptedLinks.add(createDownloadlink(finallink.replace("\\", "")));
         } else {
-            logger.warning("adf.ly single regex broken for link: " + parameter);
+            logger.warning("single regex broken for link: " + parameter);
             logger.info("Adding all available links on page");
             // Use this because they often change the page
             final String[] lol = HTMLParser.getHttpLinks(br.toString(), "");
@@ -271,19 +350,6 @@ public class AdfLy extends antiDDoSForDecrypt {
         }
     }
 
-    public void addHost(final String h) {
-        if (h == null) {
-            return;
-        }
-        final String domain = new Regex(h, "https?://([^/]+)/").getMatch(0);
-        // only add it if it's not already inside hosts pattern
-        if (!hosts.replace("\\.", ".").contains(domain)) {
-            hosts = hosts.substring(0, hosts.length() - 1) + "|" + domain.replace(".", "\\.") + ")";
-        }
-    }
-
-    private static AtomicReference<String> defaultProtocol = new AtomicReference<String>(null);
-
     /**
      * Issue the user with a dialog prompt, ask them to select a default request protocol.<br/>
      * Save users preference in memory for given session. Each Start = new session<br/>
@@ -294,49 +360,7 @@ public class AdfLy extends antiDDoSForDecrypt {
      * @author raztoki
      */
     private String getDefaultProtocol() {
-        if (true) {
-            return "https://";
-        } else {
-            if (!supportsHTTPS) {
-                defaultProtocol.set("http://");
-            } else {
-                SubConfiguration config = null;
-                synchronized (LOCK) {
-                    try {
-                        config = SubConfiguration.getConfig("adf.ly", false);
-                        defaultProtocol.set(config.getStringProperty("savedDefaultProtocol", null));
-                        if (defaultProtocol.get() != null) {
-                            return defaultProtocol.get();
-                        }
-                        if (defaultProtocol.get() == null) {
-                            String lng = System.getProperty("user.language");
-                            String message = null;
-                            String title = null;
-                            if ("de".equalsIgnoreCase(lng)) {
-                                title = "Wähle bitte Dein Standard Request Protokoll aus.";
-                                message = "Dies ist eine einmalige Auswahl. Einmal gespeichert, nutzt der JDownloader Dein\r\ngewähltes Standard Protokoll auch für alle zukünftigen Verbindungen zu adf.ly.";
-                            } else {
-                                title = "Please select your default Request Protocol.";
-                                message = "This is a once off choice. Once saved, JDownloader will reuse\r\n your default Protocol for all future requests to adf.ly.";
-                            }
-                            String[] select = new String[] { "http (insecure)", "https (secure)" };
-                            int userSelect = UserIO.getInstance().requestComboDialog(0, JDL.L("plugins.decrypter.adfly.SelectDefaultProtocolTitle", title), JDL.L("plugins.decrypter.adfly.SelectDefaultProtocolMessage", message), select, 0, null, null, null, null);
-                            if (userSelect != -1) {
-                                defaultProtocol.set(userSelect == 0 ? "http://" : "https://");
-
-                                config.setProperty("savedDefaultProtocol", defaultProtocol.get());
-                                config.save();
-                            } else {
-                                // 'cancelled/closed/time outed' dialog, returns import protocol.
-                                return protocol;
-                            }
-                        }
-                    } catch (final Throwable e) {
-                    }
-                }
-            }
-            return defaultProtocol.get();
-        }
+        return "https://";
     }
 
     /**
@@ -344,7 +368,7 @@ public class AdfLy extends antiDDoSForDecrypt {
      *
      */
     private boolean isProtocolHTTPS() {
-        if ("https://".equalsIgnoreCase(this.protocol)) {
+        if (protocol != null && "https://".equalsIgnoreCase(this.protocol)) {
             return true;
         } else {
             return false;
@@ -356,4 +380,8 @@ public class AdfLy extends antiDDoSForDecrypt {
         return false;
     }
 
+    @Override
+    public SiteTemplate siteTemplateType() {
+        return SiteTemplate.AdfLy_AdfLy;
+    }
 }

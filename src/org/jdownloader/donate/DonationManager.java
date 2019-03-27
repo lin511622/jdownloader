@@ -6,11 +6,9 @@ import org.jdownloader.settings.staticreferences.CFG_GUI;
 
 public class DonationManager {
     private static final DonationManager INSTANCE = new DonationManager();
-    private boolean                      hasDonated;
 
     private DonationManager() {
-
-        hasDonated = Application.getResource("cfg/donation_0.json").exists();
+        final boolean hasDonated = Application.getResource("cfg/donation_0.json").exists();
         if (hasDonated) {
             switch (CFG_GUI.CFG.getDonateButtonState()) {
             case AUTO_VISIBLE:
@@ -23,7 +21,7 @@ public class DonationManager {
             switch (CFG_GUI.CFG.getDonateButtonState()) {
             case CUSTOM_HIDDEN:
             case AUTO_HIDDEN:
-                if ((System.currentTimeMillis() - CFG_GUI.CFG.getDonateButtonLatestAutoChange()) > 6 * 30 * 24 * 60 * 60 * 1000l) {
+                if ((System.currentTimeMillis() - CFG_GUI.CFG.getDonateButtonLatestAutoChange()) > 4 * 30 * 24 * 60 * 60 * 1000l) {
                     CFG_GUI.CFG.setDonateButtonLatestAutoChange(System.currentTimeMillis());
                     CFG_GUI.CFG.setDonateButtonState(DonateButtonState.AUTO_VISIBLE);
                 }
@@ -32,28 +30,17 @@ public class DonationManager {
                 break;
             }
         }
-
-    }
-
-    public void autoHide() {
-        CFG_GUI.CFG.setDonateButtonLatestAutoChange(System.currentTimeMillis());
-        CFG_GUI.CFG.setDonateButtonState(DonateButtonState.AUTO_HIDDEN);
-        CFG_GUI.ULBANNER_ENABLED.setValue(false);
-
     }
 
     public static DonationManager getInstance() {
-
         return INSTANCE;
     }
 
     public boolean isButtonVisible() {
         switch (CFG_GUI.CFG.getDonateButtonState()) {
-
         case CUSTOM_VISIBLE:
         case AUTO_VISIBLE:
             return true;
-
         default:
             return false;
         }

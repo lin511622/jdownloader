@@ -13,13 +13,24 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import javax.swing.JComponent;
+import javax.swing.JLabel;
+
+import org.appwork.swing.MigPanel;
+import org.appwork.swing.components.ExtPasswordField;
+import org.appwork.utils.StringUtils;
+import org.appwork.utils.formatter.SizeFormatter;
+import org.appwork.utils.formatter.TimeFormatter;
+import org.jdownloader.gui.InputChangedCallbackInterface;
+import org.jdownloader.plugins.accounts.AccountBuilderInterface;
+import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
 
 import jd.PluginWrapper;
 import jd.config.Property;
@@ -33,35 +44,26 @@ import jd.plugins.AccountInfo;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
-import jd.plugins.LetitBitAccountBuilderImpl;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
+import jd.plugins.components.PluginJSonUtils;
 
-import org.appwork.utils.formatter.SizeFormatter;
-import org.appwork.utils.formatter.TimeFormatter;
-import org.jdownloader.gui.InputChangedCallbackInterface;
-import org.jdownloader.plugins.accounts.AccountBuilderInterface;
-import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "multivip.net" }, urls = { "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsfs2133" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "multivip.net" }, urls = { "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsfs2133" })
 public class MultiVipNet extends PluginForHost {
-
     private static HashMap<Account, HashMap<String, Long>> hostUnavailableMap = new HashMap<Account, HashMap<String, Long>>();
     private static final String                            NOCHUNKS           = "NOCHUNKS";
-
     private static final String                            NICE_HOST          = "multivip.net";
     private static final String                            NICE_HOSTproperty  = "multivipnet";
     private static final String                            APIKEY             = "amQy";
     private static final boolean                           USE_API            = true;
-
     /* Default value is 10 */
     private static AtomicInteger                           maxPrem            = new AtomicInteger(10);
 
     public MultiVipNet(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium("http://multivip.net/");
-        this.setAccountwithoutUsername(true);
+        // this.setAccountwithoutUsername(true);
     }
 
     @Override
@@ -82,7 +84,7 @@ public class MultiVipNet extends PluginForHost {
 
     @Override
     public AccountBuilderInterface getAccountFactory(InputChangedCallbackInterface callback) {
-        return new LetitBitAccountBuilderImpl(callback);
+        return new MultiVipNetAccountFactory(callback);
     }
 
     @Override
@@ -179,7 +181,6 @@ public class MultiVipNet extends PluginForHost {
     @SuppressWarnings("deprecation")
     @Override
     public void handleMultiHost(final DownloadLink link, final Account account) throws Exception {
-
         synchronized (hostUnavailableMap) {
             HashMap<String, Long> unavailableMap = hostUnavailableMap.get(account);
             if (unavailableMap != null) {
@@ -195,7 +196,6 @@ public class MultiVipNet extends PluginForHost {
                 }
             }
         }
-
         this.br = newBrowser();
         br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
         showMessage(link, "Task 1: Generating Link");
@@ -205,7 +205,7 @@ public class MultiVipNet extends PluginForHost {
             if (USE_API) {
                 br.getPage("http://multivip.net/api.php?apipass=" + Encoding.Base64Decode(APIKEY) + "&do=addlink&vipkey=" + Encoding.urlEncode(account.getPass()) + "&ip=&link=" + Encoding.urlEncode(link.getDownloadURL()));
                 /* Should never happen because size limit is set in fetchAccountInfo and handled via canHandle */
-                if ("204".equals(getJson(br.toString(), "error"))) {
+                if ("204".equals(PluginJSonUtils.getJsonValue(br, "error"))) {
                     /*
                      * Should never happen because size limit is set in fetchAccountInfo and handled via canHandle. Update 16.05.2015: This
                      * can indeed happen for links with unknown filesize!
@@ -214,7 +214,7 @@ public class MultiVipNet extends PluginForHost {
                     account.getAccountInfo().setStatus("Free account");
                     throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "This link too big to download via " + this.getHost());
                 }
-                dllink = getJson(br.toString(), "directlink");
+                dllink = PluginJSonUtils.getJsonValue(br, "directlink");
             } else {
                 br.postPage("http://multivip.net/links.php", "do=addlinks&links=" + Encoding.urlEncode(link.getDownloadURL()) + "&vipkey=" + Encoding.urlEncode(account.getPass()));
                 if (br.containsHTML("Universal VIP key is missing or incorrect")) {
@@ -230,7 +230,7 @@ public class MultiVipNet extends PluginForHost {
                      * can indeed happen for links with unknown filesize!
                      */
                     account.setType(AccountType.FREE);
-                    account.getAccountInfo().setStatus("Free account");
+                    account.getAccountInfo().setStatus("Free Account");
                     throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "This link too big to download via " + this.getHost());
                 } else if (br.containsHTML("Unfortunately this key was expired")) {
                     /* Our account has expired */
@@ -300,7 +300,7 @@ public class MultiVipNet extends PluginForHost {
         account.setMaxSimultanDownloads(20);
         maxPrem.set(20);
         br.getPage("http://multivip.net/api.php?apipass=" + Encoding.Base64Decode(APIKEY) + "&do=keycheck&vipkey=" + Encoding.urlEncode(account.getPass()));
-        final String error = getJson(br.toString(), "error");
+        final String error = PluginJSonUtils.getJsonValue(br, "error");
         if (error != null) {
             if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                 throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Vip key!", PluginException.VALUE_ID_PREMIUM_DISABLE);
@@ -308,9 +308,9 @@ public class MultiVipNet extends PluginForHost {
                 throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid Vip key!", PluginException.VALUE_ID_PREMIUM_DISABLE);
             }
         }
-        final String expire = getJson(br.toString(), "diedate");
-        final String max_downloadable_filesize = getJson(br.toString(), "limit");
-        final String traffic_left_kb = getJson(br.toString(), "points");
+        final String expire = PluginJSonUtils.getJsonValue(br, "diedate");
+        final String max_downloadable_filesize = PluginJSonUtils.getJsonValue(br, "limit");
+        final String traffic_left_kb = PluginJSonUtils.getJsonValue(br, "points");
         ai.setValidUntil(Long.parseLong(expire) * 1000);
         ai.setTrafficLeft(Long.parseLong(traffic_left_kb) * 1024);
         account.setProperty("max_downloadable_filesize", Long.parseLong(max_downloadable_filesize) * 1024);
@@ -345,14 +345,6 @@ public class MultiVipNet extends PluginForHost {
         link.getLinkStatus().setStatusText(message);
     }
 
-    private String getJson(final String source, final String parameter) {
-        String result = new Regex(source, "\"" + parameter + "\":([\t\n\r ]+)?([0-9\\.]+)").getMatch(1);
-        if (result == null) {
-            result = new Regex(source, "\"" + parameter + "\":([\t\n\r ]+)?\"([^<>\"]*?)\"").getMatch(1);
-        }
-        return result;
-    }
-
     private void tempUnavailableHoster(final Account account, final DownloadLink downloadLink, final long timeout) throws PluginException {
         if (downloadLink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "Unable to handle this errorcode!");
@@ -369,6 +361,81 @@ public class MultiVipNet extends PluginForHost {
         throw new PluginException(LinkStatus.ERROR_RETRY);
     }
 
+    public static class MultiVipNetAccountFactory extends MigPanel implements AccountBuilderInterface {
+        /**
+         *
+         */
+        private static final long serialVersionUID = 1L;
+        private final String      PINHELP          = "Enter your MultiVIP Key";
+
+        private String getPassword() {
+            if (this.pass == null) {
+                return null;
+            }
+            if (EMPTYPW.equals(new String(this.pass.getPassword()))) {
+                return null;
+            }
+            return new String(this.pass.getPassword());
+        }
+
+        public boolean updateAccount(Account input, Account output) {
+            boolean changed = false;
+            if (!StringUtils.equals(input.getUser(), output.getUser())) {
+                output.setUser(input.getUser());
+                changed = true;
+            }
+            if (!StringUtils.equals(input.getPass(), output.getPass())) {
+                output.setPass(input.getPass());
+                changed = true;
+            }
+            return changed;
+        }
+
+        private final ExtPasswordField pass;
+        private static String          EMPTYPW = "                 ";
+
+        public MultiVipNetAccountFactory(final InputChangedCallbackInterface callback) {
+            super("ins 0, wrap 2", "[][grow,fill]", "");
+            add(new JLabel("MultiVIP Key:"));
+            add(this.pass = new ExtPasswordField() {
+                @Override
+                public void onChanged() {
+                    callback.onChangedInput(this);
+                }
+            }, "");
+            pass.setHelpText(PINHELP);
+        }
+
+        @Override
+        public JComponent getComponent() {
+            return this;
+        }
+
+        @Override
+        public void setAccount(Account defaultAccount) {
+            if (defaultAccount != null) {
+                // name.setText(defaultAccount.getUser());
+                pass.setText(defaultAccount.getPass());
+            }
+        }
+
+        @Override
+        public boolean validateInputs() {
+            // final String userName = getUsername();
+            // if (userName == null || !userName.trim().matches("^\\d{9}$")) {
+            // idLabel.setForeground(Color.RED);
+            // return false;
+            // }
+            // idLabel.setForeground(Color.BLACK);
+            return getPassword() != null;
+        }
+
+        @Override
+        public Account getAccount() {
+            return new Account(null, getPassword());
+        }
+    }
+
     @Override
     public int getMaxSimultanDownload(final DownloadLink link, final Account account) {
         return maxPrem.get();
@@ -381,5 +448,4 @@ public class MultiVipNet extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

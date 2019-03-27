@@ -7,18 +7,16 @@ import java.util.ArrayList;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
+import jd.plugins.DownloadLink;
+import jd.plugins.download.HashInfo;
+
 import org.appwork.storage.JSonStorage;
 import org.appwork.storage.Storable;
 import org.appwork.storage.TypeRef;
 import org.appwork.utils.IO;
 
-import jd.plugins.DownloadLink;
-import jd.plugins.download.HashInfo;
-
 public class UsenetFile implements Storable {
-
     private String hash = null;
-
     private long   size = -1;
 
     public void _setHashInfo(HashInfo hashInfo) {
@@ -77,6 +75,7 @@ public class UsenetFile implements Storable {
     public static UsenetFile _read(final DownloadLink downloadLink) throws IOException {
         final String compressedJSonString = downloadLink.getStringProperty(PROPERTY, null);
         if (compressedJSonString != null) {
+            /* TODO: refactor to work directly on inputStream (gzip->base64input->charsequenceinput) */
             final byte[] bytes = org.appwork.utils.encoding.Base64.decode(compressedJSonString);
             final String jsonString = IO.readInputStreamToString(new GZIPInputStream(new ByteArrayInputStream(bytes)));
             return JSonStorage.restoreFromString(jsonString, new TypeRef<UsenetFile>() {
@@ -86,6 +85,9 @@ public class UsenetFile implements Storable {
     }
 
     public void _write(final DownloadLink downloadLink) throws IOException {
+        /*
+         * TODO: refactor to work directly on outputstream (gzip->base64->charsequence)
+         */
         final String jsonString = JSonStorage.serializeToJson(this);
         final ByteArrayOutputStream bos = new ByteArrayOutputStream();
         final GZIPOutputStream gos = new GZIPOutputStream(bos);
@@ -109,5 +111,4 @@ public class UsenetFile implements Storable {
     public void setHash(String hash) {
         this.hash = hash;
     }
-
 }

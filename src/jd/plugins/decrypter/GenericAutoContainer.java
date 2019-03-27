@@ -17,9 +17,10 @@ import jd.plugins.PluginForDecrypt;
 
 import org.appwork.storage.config.JsonConfig;
 import org.appwork.utils.StringUtils;
+import org.jdownloader.plugins.controller.crawler.LazyCrawlerPlugin.FEATURE;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "genericautocontainer" }, urls = { "https?://[\\w\\.:\\-@]*/.*\\.(dlc|ccf|rsdf|nzb)$" }) public class GenericAutoContainer extends PluginForDecrypt {
-
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "genericautocontainer" }, urls = { "https?://[\\w\\.:\\-@]*/.*\\.(dlc|ccf|rsdf|nzb)$" })
+public class GenericAutoContainer extends PluginForDecrypt {
     @Override
     public Boolean siteTesterDisabled() {
         return Boolean.TRUE;
@@ -30,6 +31,11 @@ import org.appwork.utils.StringUtils;
     }
 
     @Override
+    public FEATURE[] getFeatures() {
+        return new FEATURE[] { FEATURE.GENERIC };
+    }
+
+    @Override
     public ArrayList<DownloadLink> decryptIt(CryptedLink parameter, ProgressController progress) throws Exception {
         final ArrayList<DownloadLink> ret = new ArrayList<DownloadLink>();
         final String url = parameter.getCryptedUrl();
@@ -37,13 +43,12 @@ import org.appwork.utils.StringUtils;
             ret.add(createDownloadlink(url));
         } else {
             final String type = new Regex(url, this.getSupportedLinks()).getMatch(0);
-            URLConnectionAdapter con = null;
+            final URLConnectionAdapter con = br.openGetConnection(url);
             File containerTemp = null;
             try {
-                con = br.openGetConnection(url);
                 if (con.isOK()) {
                     boolean seemsValidContainer = StringUtils.containsIgnoreCase(con.getContentType(), type);
-                    seemsValidContainer = seemsValidContainer | (con.isContentDisposition() && StringUtils.containsIgnoreCase(Plugin.getFileNameFromHeader(con), type));
+                    seemsValidContainer = seemsValidContainer | (con.isContentDisposition() && StringUtils.containsIgnoreCase(Plugin.getFileNameFromHeader(con), type)) || (con.getContentLength() > 100 && (con.getContentType() == null || !StringUtils.containsIgnoreCase(con.getContentType(), "text")));
                     if (seemsValidContainer) {
                         containerTemp = org.appwork.utils.Application.getResource("tmp/autocontainer/" + System.nanoTime() + "." + type);
                         br.downloadConnection(containerTemp, con);
@@ -61,9 +66,7 @@ import org.appwork.utils.StringUtils;
                 if (containerTemp != null && containerTemp.exists()) {
                     containerTemp.delete();
                 }
-                if (con != null) {
-                    con.disconnect();
-                }
+                con.disconnect();
             }
             if (containerTemp != null && ret.size() == 0) {
                 ret.add(createDownloadlink(url));
@@ -71,5 +74,4 @@ import org.appwork.utils.StringUtils;
         }
         return ret;
     }
-
 }

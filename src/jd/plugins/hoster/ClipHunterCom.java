@@ -13,16 +13,16 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 import javax.script.Invocable;
 import javax.script.ScriptEngine;
 import javax.script.ScriptEngineManager;
+
+import org.jdownloader.scripting.JavaScriptEngineFactory;
 
 import jd.PluginWrapper;
 import jd.config.ConfigContainer;
@@ -38,11 +38,8 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.utils.locale.JDL;
 
-import org.jdownloader.scripting.JavaScriptEngineFactory;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "cliphunter.com" }, urls = { "http://cliphunterdecrypted\\.com/\\d+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "cliphunter.com" }, urls = { "http://cliphunterdecrypted\\.com/\\d+" })
 public class ClipHunterCom extends PluginForHost {
-
     private String dllink = null;
 
     public ClipHunterCom(final PluginWrapper wrapper) {
@@ -61,7 +58,7 @@ public class ClipHunterCom extends PluginForHost {
     /**
      * sync with decrypter
      */
-    public static final String[][] qualities     = { { "_fhd.mp4", "p1080.mp4" }, { "_hd.mp4", "p720.mp4" }, { "_h.flv", "540p.flv" }, { "_p.mp4", "_p480.mp4", "480p.mp4", "_p.mp4" }, { "_l.flv", "_p360.mp4", "360pflv.flv" }, { "_i.mp4", "360p.mp4" }, { "unknown", "_s.flv", "_p.mp4" } };
+    public static final String[][] qualities     = jd.plugins.decrypter.ClipHunterComDecrypt.qualities;
 
     @Override
     public String getAGBLink() {
@@ -82,7 +79,6 @@ public class ClipHunterCom extends PluginForHost {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         dllink = downloadLink.getStringProperty("directlink");
-
         if (!linkOk(downloadLink)) {
             br.getPage(downloadLink.getStringProperty("originallink"));
             if (br.getURL().contains("error/missing") || br.containsHTML("(>Ooops, This Video is not available|>This video was removed and is no longer available at our site|<title></title>)")) {
@@ -107,7 +103,7 @@ public class ClipHunterCom extends PluginForHost {
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception {
         requestFileInformation(downloadLink);
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 0);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, true, 0);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -115,12 +111,12 @@ public class ClipHunterCom extends PluginForHost {
         dl.startDownload();
     }
 
-    private boolean linkOk(final DownloadLink dl) throws IOException {
+    private boolean linkOk(final DownloadLink dl) throws Exception {
         boolean linkOk = false;
         URLConnectionAdapter con = null;
         try {
             con = br.openGetConnection(dllink);
-            if (!con.getContentType().contains("html")) {
+            if (con.getResponseCode() == 200 && !con.getContentType().contains("html")) {
                 dl.setDownloadSize(con.getLongContentLength());
                 linkOk = true;
             }
@@ -158,6 +154,7 @@ public class ClipHunterCom extends PluginForHost {
         final String jsUrl = br.getRegex("<script.*?src=\"(https?://\\S+gexo\\S+player[_a-z\\d]+\\.js)\"").getMatch(0);
         final String[] encryptedUrls = br.getRegex("\"url\":\"([^<>\"]*?)\"").getColumn(0);
         final String json_full = br.getRegex("var gexoFiles = (\\{.+\\});").getMatch(0);
+        // System.out.println("json_full: " + json_full);
         if (jsUrl == null || ((encryptedUrls == null || encryptedUrls.length == 0) && json_full == null)) {
             if (!br.containsHTML("var flashVars")) {
                 /* Offline / Player missing */
@@ -178,30 +175,42 @@ public class ClipHunterCom extends PluginForHost {
         if (json_full != null) {
             /* 2016-03-30: New json handling */
             final LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(json_full);
+            final boolean has_only_one_entry = entries.size() == 1;
             LinkedHashMap<String, Object> videoinfo = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(json_full);
-            for (final Map.Entry<String, Object> cookieEntry : entries.entrySet()) {
-                final String videoname = cookieEntry.getKey();
-                videoinfo = (LinkedHashMap<String, Object>) cookieEntry.getValue();
+            for (final Map.Entry<String, Object> videoQualityEntry : entries.entrySet()) {
+                final String videoname = videoQualityEntry.getKey();
+                videoinfo = (LinkedHashMap<String, Object>) videoQualityEntry.getValue();
                 ext = (String) videoinfo.get("fmt");
                 final String url = (String) videoinfo.get("url");
+                System.out.println("url: " + url);
                 tmpUrl = decryptUrl(decryptAlgo, url);
+                // System.out.println("tmpUrl: " + tmpUrl);
+                if (tmpUrl == null) {
+                    tmpUrl = url;
+                }
                 currentSr = new Regex(videoname, "(_[A-Za-z0-9]+\\.(?:mp4|flv))$").getMatch(0);
+                System.out.println("currentSr: " + currentSr);
                 if (currentSr == null || tmpUrl == null) {
                     continue;
                 }
+                boolean foundKnownQuality = false;
                 for (final String quality[] : qualities) {
-                    if (quality.length == 3) {
+                    if (quality.length >= 3) {
                         if (currentSr.contains(quality[1]) || currentSr.contains(quality[2])) {
                             foundQualities.put(quality[0], tmpUrl);
+                            foundKnownQuality = true;
                             break;
                         }
-
                     } else {
                         if (currentSr.contains(quality[0])) {
                             foundQualities.put(quality[0], tmpUrl);
+                            foundKnownQuality = true;
                             break;
                         }
                     }
+                }
+                if (!foundKnownQuality && has_only_one_entry) {
+                    foundQualities.put(currentSr, tmpUrl);
                 }
             }
         } else {
@@ -226,7 +235,6 @@ public class ClipHunterCom extends PluginForHost {
                     if (foundFittingQuality) {
                         break;
                     }
-
                 }
             }
         }
@@ -268,5 +276,4 @@ public class ClipHunterCom extends PluginForHost {
     @Override
     public void resetPluginGlobals() {
     }
-
 }

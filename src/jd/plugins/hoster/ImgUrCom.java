@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -45,9 +44,8 @@ import org.appwork.utils.StringUtils;
  * IMPORTANT: Never grab IDs bigger than 7 characters because these are Thumbnails - see API description: http://api.imgur.com/models/image
  * (scroll down to "Image thumbnails"
  */
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "imgur.com" }, urls = { "https?://imgurdecrypted\\.com/download/([A-Za-z0-9]{7}|[A-Za-z0-9]{5})" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "imgur.com" }, urls = { "https?://imgurdecrypted\\.com/download/([A-Za-z0-9]{7}|[A-Za-z0-9]{5})" })
 public class ImgUrCom extends PluginForHost {
-
     public ImgUrCom(PluginWrapper wrapper) {
         super(wrapper);
         setConfigElements();
@@ -76,14 +74,13 @@ public class ImgUrCom extends PluginForHost {
     private static final String SETTING_GRAB_SOURCE_URL_VIDEO   = "SETTING_GRAB_SOURCE_URL_VIDEO";
     private static final String SETTING_CUSTOM_FILENAME         = "SETTING_CUSTOM_FILENAME";
     private static final String SETTING_CUSTOM_PACKAGENAME      = "SETTING_CUSTOM_PACKAGENAME";
-
     /* Constants */
     public static final long    view_filesizelimit              = 20447232l;
     public static final int     responsecode_website_overloaded = 502;
-
     /* Variables */
     private String              dllink                          = null;
     private boolean             dl_IMPOSSIBLE_APILIMIT_REACHED  = false;
+    private boolean             dl_IMPOSSIBLE_SERVER_ISSUE      = false;
     private String              imgUID                          = null;
     private boolean             start_DL                        = false;
 
@@ -96,8 +93,10 @@ public class ImgUrCom extends PluginForHost {
     public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         imgUID = getImgUID(link);
         dllink = link.getStringProperty("directlink", null);
-        br.setFollowRedirects(true);
+        dl_IMPOSSIBLE_SERVER_ISSUE = false;
         /* Avoid unneccessary requests --> If we have the directlink, filesize and a nice filename, do not access site/API! */
+        String filename_formatted = null;
+        TYPE type = null;
         if (dllink == null || link.getLongProperty("decryptedfilesize", -1) == -1 || link.getStringProperty("decryptedfinalfilename", null) == null || getFiletype(link) == null) {
             prepBRAPI(this.br);
             boolean api_failed = false;
@@ -119,7 +118,6 @@ public class ImgUrCom extends PluginForHost {
                 if (br.getHttpConnection().getResponseCode() == 404 || br.containsHTML("Unable to find an image with the id")) {
                     throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
                 }
-                TYPE type = null;
                 if (userPrefersMp4()) {
                     type = TYPE.MP4;
                     apiResponse = parseAPIData(type, this.br.toString());
@@ -145,7 +143,6 @@ public class ImgUrCom extends PluginForHost {
                 }
                 link.setProperty("filetype", apiResponse[0]);
                 link.setProperty("decryptedfinalfilename", apiResponse[2]);
-                link.setFinalFileName(apiResponse[2]);
                 /*
                  * Note that for pictures/especially GIFs over 20 MB, the "link" value will only contain a link which leads to a preview or
                  * low quality version of the picture. This is why we need a little workaround for this case (works from 19.5++ MB).
@@ -154,6 +151,7 @@ public class ImgUrCom extends PluginForHost {
                     logger.info("File is bigger than 20 (19.5) MB --> Using /downloadlink as API-workaround");
                     dllink = getURLDownload(imgUID);
                 }
+                filename_formatted = getFormattedFilename(link);
             } else {
                 /*
                  * Workaround for API limit reached or in case user disabled API - second way does return 503 response in case API limit is
@@ -173,10 +171,12 @@ public class ImgUrCom extends PluginForHost {
                     throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
                 }
                 if (userPrefersMp4()) {
-                    apiResponse = parseAPIData(TYPE.MP4, api_like_json);
+                    type = TYPE.MP4;
+                    apiResponse = parseAPIData(type, api_like_json);
                 }
                 if (apiResponse == null || Boolean.FALSE.equals(Boolean.valueOf(apiResponse[4]))) {
-                    apiResponse = parseAPIData(TYPE.JPGORGIF, api_like_json);
+                    type = TYPE.JPGORGIF;
+                    apiResponse = parseAPIData(type, api_like_json);
                 }
                 if (apiResponse == null) {
                     throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -184,7 +184,6 @@ public class ImgUrCom extends PluginForHost {
                 final String fileType = apiResponse[0];
                 link.setProperty("filetype", fileType);
                 link.setProperty("decryptedfinalfilename", apiResponse[2]);
-                link.setFinalFileName(apiResponse[2]);
                 long size = -1;
                 if (apiResponse[1] != null) {
                     size = Long.valueOf(apiResponse[1]);
@@ -193,6 +192,7 @@ public class ImgUrCom extends PluginForHost {
                 } else {
                     link.removeProperty("decryptedfilesize");
                 }
+                filename_formatted = getFormattedFilename(link);
                 /*
                  * Note that for pictures/especially GIFs over 20 MB, the "link" value will only contain a link which leads to a preview or
                  * low quality version of the picture. This is why we need a little workaround for this case (works from 19.5++ MB).
@@ -210,6 +210,17 @@ public class ImgUrCom extends PluginForHost {
         }
         if (dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
+        if (type != null) {
+            // uniqueID depends on preferred type
+            link.setLinkID(type + "/" + imgUID);
+        }
+        if (filename_formatted != null) {
+            if (start_DL) {
+                link.setFinalFileName(filename_formatted);
+            } else {
+                link.setName(filename_formatted);
+            }
         }
         if (!start_DL && link.getVerifiedFileSize() == -1) {
             /*
@@ -229,7 +240,8 @@ public class ImgUrCom extends PluginForHost {
                     } else if (con.getResponseCode() == 404) {
                         throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
                     } else if (con.getContentType().contains("html") || !con.isOK()) {
-                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                        /* E.g. HTTP/1.1 503 first byte timeout */
+                        dl_IMPOSSIBLE_SERVER_ISSUE = true;
                     }
                     final long size = con.getLongContentLength();
                     if (size >= 0) {
@@ -255,6 +267,8 @@ public class ImgUrCom extends PluginForHost {
         requestFileInformation(downloadLink);
         if (dl_IMPOSSIBLE_APILIMIT_REACHED) {
             throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "Api limit reached", 10 * 60 * 1000l);
+        } else if (this.dl_IMPOSSIBLE_SERVER_ISSUE) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown server error", 10 * 60 * 1000l);
         } else if (dllink == null) {
             /* Should never happen */
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -379,7 +393,22 @@ public class ImgUrCom extends PluginForHost {
     }
 
     public static String getFiletype(final DownloadLink dl) {
-        return dl.getStringProperty("filetype", null);
+        final String ret = dl.getStringProperty("filetype", null);
+        if (ret != null) {
+            final String image = new Regex(ret, "images/(.+)").getMatch(0);
+            if (image != null) {
+                if (StringUtils.equals("jpeg", image)) {
+                    return "jpg";
+                }
+                return image;
+            }
+            final String video = new Regex(ret, "video/(.+)").getMatch(0);
+            if (video != null) {
+                return video;
+            }
+            return ret;
+        }
+        return ".unknown";
     }
 
     public static String getFiletypeForUrl(final DownloadLink dl) {
@@ -444,6 +473,7 @@ public class ImgUrCom extends PluginForHost {
     public static Browser prepBRGeneral(final Browser br) {
         /* 502 == website overloadeds */
         br.setAllowedResponseCodes(responsecode_website_overloaded);
+        br.setFollowRedirects(true);
         return br;
     }
 
@@ -464,7 +494,7 @@ public class ImgUrCom extends PluginForHost {
         final String username = downloadLink.getStringProperty("directusername", "-");
         final String title = downloadLink.getStringProperty("directtitle", "-");
         final String imgid = downloadLink.getStringProperty("imgUID", null);
-
+        final String orderid = downloadLink.getStringProperty("orderid", "-");
         /* Date: Maybe add this in the future, if requested by a user. */
         // final long date = getLongProperty(downloadLink, "originaldate", 0l);
         // String formattedDate = null;
@@ -489,13 +519,11 @@ public class ImgUrCom extends PluginForHost {
         // /* prevent user error killing plugin */
         // time = "0000";
         // }
-
         String formattedFilename = cfg.getStringProperty(SETTING_CUSTOM_FILENAME, defaultCustomFilename);
-
         if (!formattedFilename.contains("*imgid*") && !formattedFilename.contains("*ext*")) {
             formattedFilename = defaultCustomFilename;
         }
-
+        formattedFilename = formattedFilename.replace("*orderid*", orderid);
         formattedFilename = formattedFilename.replace("*imgid*", imgid);
         formattedFilename = formattedFilename.replace("*ext*", ext);
         if (username != null) {
@@ -504,7 +532,8 @@ public class ImgUrCom extends PluginForHost {
         if (title != null) {
             formattedFilename = formattedFilename.replace("*title*", title);
         }
-        return formattedFilename;
+        formattedFilename = formattedFilename.replaceFirst("^([ \\-_]+)", "").trim();
+        return formattedFilename.trim();
     }
 
     /** Returns either the original server filename or one that is very similar to the original */
@@ -514,20 +543,16 @@ public class ImgUrCom extends PluginForHost {
         String username = params[0];
         String title = params[1];
         final String galleryid = params[2];
-
         if (username == null) {
             username = "-";
         }
         if (title == null) {
             title = "-";
         }
-
         String formattedFilename = cfg.getStringProperty(SETTING_CUSTOM_PACKAGENAME, defaultCustomPackagename);
-
         if (!formattedFilename.contains("*galleryid*")) {
             formattedFilename = defaultCustomPackagename;
         }
-
         formattedFilename = formattedFilename.replace("*galleryid*", galleryid);
         if (username != null) {
             formattedFilename = formattedFilename.replace("*username*", username);
@@ -535,23 +560,23 @@ public class ImgUrCom extends PluginForHost {
         if (title != null) {
             formattedFilename = formattedFilename.replace("*title*", title);
         }
+        formattedFilename = formattedFilename.replaceFirst("^([ \\-_]+)", "").trim();
         return formattedFilename;
     }
 
     private HashMap<String, String> phrasesEN = new HashMap<String, String>() {
         {
             put("SETTING_GRAB_SOURCE_URL_VIDEO", "For video (.gif) urls: Grab source url (e.g. youtube url)?");
-            put("SETTING_TAGS", "Explanation of the available tags:\r\n*username* = Name of the user who posted the content\r\n*title* = Title of the picture\r\n*imgid* = Internal imgur id of the picture e.g. 'BzdfkGj'\r\n*ext* = Extension of the file");
+            put("SETTING_TAGS", "Explanation of the available tags:\r\n*username* = Name of the user who posted the content\r\n*title* = Title of the picture\r\n*imgid* = Internal imgur id of the picture e.g. 'BzdfkGj'\r\n*orderid* = Order-ID of the picture e.g. '007'\r\n*ext* = Extension of the file");
             put("LABEL_FILENAME", "Define custom filename:");
             put("SETTING_TAGS_PACKAGENAME", "Explanation of the available tags:\r\n*username* = Name of the user who posted the content\r\n*title* = Title of the gallery\r\n*galleryid* = Internal imgur id of the gallery e.g. 'AxG3w'");
             put("LABEL_PACKAGENAME", "Define custom packagename for galleries:");
         }
     };
-
     private HashMap<String, String> phrasesDE = new HashMap<String, String>() {
         {
             put("SETTING_GRAB_SOURCE_URL_VIDEO", "Für video (.gif) urls: Quell-urls (z.B. youtube urls) auch hinzufügen?");
-            put("SETTING_TAGS", "Erklärung der verfügbaren Tags:\r\n*username* = Name des Benutzers, der die Inhalte hochgeladen hat\r\n*title* = Titel des Bildes\r\n*imgid* = Interne imgur id des Bildes z.B. 'DcTnzPt'\r\n*ext* = Dateiendung");
+            put("SETTING_TAGS", "Erklärung der verfügbaren Tags:\r\n*username* = Name des Benutzers, der die Inhalte hochgeladen hat\r\n*title* = Titel des Bildes\r\n*imgid* = Interne imgur id des Bildes z.B. 'DcTnzPt'\r\n*orderid* = Platzierungs-ID des Bildes z.B. '007'\r\n*ext* = Dateiendung");
             put("LABEL_FILENAME", "Gib das Muster des benutzerdefinierten Dateinamens an:");
             put("SETTING_TAGS_PACKAGENAME", "Erklärung der verfügbaren Tags:\r\n*username* = Name des Benutzers, der die Inhalte hochgeladen hat\r\n*title* = Titel der Gallerie\r\n*galleryid* = Interne imgur id der Gallerie z.B. 'AxG3w'");
             put("LABEL_PACKAGENAME", "Gib das Muster des benutzerdefinierten Paketnamens für Gallerien an:");
@@ -604,5 +629,4 @@ public class ImgUrCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

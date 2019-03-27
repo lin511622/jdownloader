@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.net.MalformedURLException;
@@ -28,6 +27,7 @@ import jd.controlling.ProgressController;
 import jd.controlling.downloadcontroller.DownloadWatchDog;
 import jd.http.Browser;
 import jd.http.Request;
+import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.parser.html.Form;
@@ -51,10 +51,9 @@ import org.jdownloader.scripting.envjs.XHRResponse;
  * @author raztoki
  *
  */
-@DecrypterPlugin(revision = "$Revision: 30210 $", interfaceVersion = 3, names = { "downl.ink" }, urls = { "https?://(?:www\\.)?downl\\.ink/(?-i)[a-f0-9]{6}" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "downl.ink" }, urls = { "https?://(?:www\\.)?downl\\.ink/(?-i)[a-f0-9]{6,}" })
 @SuppressWarnings("deprecation")
 public class DownlInk extends antiDDoSForDecrypt {
-
     public DownlInk(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -86,7 +85,6 @@ public class DownlInk extends antiDDoSForDecrypt {
             // no need for runPostRequestTask. usually cloudflare event is on FIRST request, so lets bypass.
             br.submitForm(captcha);
             // they will respond with 401 here which can throw exception without response code adding.
-
             // then another get here, here comes the JS we need
             getPage(br.getURL());
         }
@@ -113,7 +111,6 @@ public class DownlInk extends antiDDoSForDecrypt {
 
     public static class enjStorable implements Storable {
         public enjStorable(/* storable */) {
-
         }
 
         private ArrayList<Integer> usedScripts;
@@ -134,7 +131,6 @@ public class DownlInk extends antiDDoSForDecrypt {
         public void setUsedScripts(ArrayList<Integer> usedScripts) {
             this.usedScripts = usedScripts;
         }
-
     }
 
     @Override
@@ -157,14 +153,12 @@ public class DownlInk extends antiDDoSForDecrypt {
             envJs = new EnvJSBrowser(br) {
                 @Override
                 public String loadExternalScript(String type, String src, String url, Object window) {
-
                     return super.loadExternalScript(type, src, url, window);
                 }
 
                 public String xhrRequest(String url, String method, String data, String requestHeaders) throws java.io.IOException {
                     // http://code.jquery.com/jquery-1.4.4.js
                     if (br.getURL().equals(url)) {
-
                         XHRResponse ret = new XHRResponse();
                         for (Entry<String, List<String>> s : br.getRequest().getResponseHeaders().entrySet()) {
                             ret.getResponseHeader().put(s.getKey(), s.getValue().get(0));
@@ -177,8 +171,12 @@ public class DownlInk extends antiDDoSForDecrypt {
                     } else {
                         return "";
                     }
-
                 };
+
+                @Override
+                protected URLConnectionAdapter openRequestConnection(Browser br, Request request) throws Exception {
+                    return DownlInk.this.openAntiDDoSRequestConnection(br, request);
+                }
             };
             envJs.setPermissionFilter(getPermissionFilter());
             envJs.setUserAgent(br.getHeaders().get("User-Agent"));
@@ -189,9 +187,7 @@ public class DownlInk extends antiDDoSForDecrypt {
     }
 
     private PermissionFilter getPermissionFilter() {
-
         return new PermissionFilter() {
-
             @Override
             public Request onBeforeXHRRequest(Request request) {
                 // only load websites with the same domain.
@@ -249,5 +245,4 @@ public class DownlInk extends antiDDoSForDecrypt {
             }
         };
     }
-
 }

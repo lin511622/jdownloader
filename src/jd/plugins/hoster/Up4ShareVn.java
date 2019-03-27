@@ -13,10 +13,8 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.File;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -38,18 +36,17 @@ import jd.plugins.PluginForHost;
 
 import org.appwork.utils.formatter.SizeFormatter;
 import org.appwork.utils.formatter.TimeFormatter;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "up.4share.vn" }, urls = { "http://(?:www\\.)?(?:up\\.)?4share\\.vn/f/[a-f0-9]{16}" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "up.4share.vn" }, urls = { "https?://(?:www\\.)?(?:up\\.)?4share\\.vn/f/[a-f0-9]{16}" })
 public class Up4ShareVn extends PluginForHost {
-
-    private static final String MAINPAGE = "http://up.4share.vn/";
+    private static final String MAINPAGE = "https://up.4share.vn/";
     private static Object       LOCK     = new Object();
     private static final String NOCHUNKS = "NOCHUNKS";
 
     public Up4ShareVn(PluginWrapper wrapper) {
         super(wrapper);
-        this.enablePremium("http://up.4share.vn/?act=gold");
+        this.enablePremium("https://up.4share.vn/?act=gold");
     }
 
     @SuppressWarnings("deprecation")
@@ -95,8 +92,15 @@ public class Up4ShareVn extends PluginForHost {
         }
         account.setValid(true);
         getPage("/member");
-
-        ai.setUnlimitedTraffic();
+        final String[] traffic = br.getRegex("<strong>\\s*([0-9\\.,]+ [GMKB]+)\\s*</strong>\\s*/Tổng số\\s*:\\s*<strong>\\s*([0-9\\.,]+ [GMKB]+)\\s*</strong>").getRow(0);
+        if (traffic != null) {
+            final long max = SizeFormatter.getSize(traffic[1]);
+            final long left = SizeFormatter.getSize(traffic[0]);
+            ai.setTrafficMax(max);
+            ai.setTrafficLeft(left);
+        } else {
+            ai.setUnlimitedTraffic();
+        }
         final String expire = br.getRegex("Ngày hết hạn: <b>(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2})").getMatch(0);
         if (expire == null) {
             ai.setExpired(true);
@@ -137,13 +141,13 @@ public class Up4ShareVn extends PluginForHost {
         // wait = Integer.parseInt(waittime);
         // }
         // sleep(wait * 1001l, downloadLink);
-        final Recaptcha rc = new Recaptcha(br, this);
-        rc.findID();
         for (int i = 0; i <= 3; i++) {
-            rc.load();
-            final File cf = rc.downloadCaptcha(getLocalCaptchaFile());
-            final String c = getCaptchaCode("recaptcha", cf, downloadLink);
-            br.postPage(downloadLink.getDownloadURL(), "submit=DOWNLOAD+FREE&recaptcha_challenge_field=" + rc.getChallenge() + "&recaptcha_response_field=" + Encoding.urlEncode(c));
+            final CaptchaHelperHostPluginRecaptchaV2 rc2 = new CaptchaHelperHostPluginRecaptchaV2(this, br);
+            final String recaptchaV2Response = rc2.getToken();
+            if (recaptchaV2Response == null) {
+                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+            }
+            br.postPage(downloadLink.getDownloadURL(), "submit=DOWNLOAD+FREE&g-recaptcha-response=" + recaptchaV2Response);
             dllink = br.getRedirectLocation();
             if (dllink == null && br.containsHTML("(api\\.recaptcha\\.net|google\\.com/recaptcha/api/)")) {
                 continue;
@@ -161,7 +165,7 @@ public class Up4ShareVn extends PluginForHost {
         if (downloadLink.getBooleanProperty(NOCHUNKS, false)) {
             maxChunks = 1;
         }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, maxChunks);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, true, maxChunks);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             handleErrorsGeneral();
@@ -188,7 +192,6 @@ public class Up4ShareVn extends PluginForHost {
                 downloadLink.setProperty(Up4ShareVn.NOCHUNKS, Boolean.valueOf(true));
                 throw new PluginException(LinkStatus.ERROR_RETRY);
             }
-
             throw e;
         }
     }
@@ -201,9 +204,9 @@ public class Up4ShareVn extends PluginForHost {
         getPage(link.getDownloadURL());
         String dllink = br.getRedirectLocation();
         if (dllink == null) {
-            dllink = br.getRegex("class=''> <a href='(http://.*?)'").getMatch(0);
+            dllink = br.getRegex("class=''> <a href='(https?://.*?)'").getMatch(0);
             if (dllink == null) {
-                dllink = br.getRegex("('|\")(http://sv\\d+\\.4share\\.vn/[^<>\"]*?)\\1").getMatch(1);
+                dllink = br.getRegex("('|\")(https?://sv\\d+\\.4share\\.vn/[^<>\"]*?)\\1").getMatch(1);
             }
         }
         if (dllink == null) {
@@ -215,7 +218,7 @@ public class Up4ShareVn extends PluginForHost {
         if (link.getBooleanProperty(NOCHUNKS, false)) {
             maxChunks = 1;
         }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, link, dllink, true, maxChunks);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, link, dllink, true, maxChunks);
         if (dl.getConnection().getContentType().contains("html")) {
             logger.warning("The final dllink seems not to be a file!");
             br.followConnection();
@@ -243,7 +246,6 @@ public class Up4ShareVn extends PluginForHost {
                 link.setProperty(Up4ShareVn.NOCHUNKS, Boolean.valueOf(true));
                 throw new PluginException(LinkStatus.ERROR_RETRY);
             }
-
             throw e;
         }
     }
@@ -273,8 +275,8 @@ public class Up4ShareVn extends PluginForHost {
                     }
                 }
                 br.setFollowRedirects(true);
-                getPage("http://up.4share.vn/");
-                postPage("http://up.4share.vn/index/login", "username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()) + "&remember_login=on");
+                getPage("https://up.4share.vn/");
+                postPage("https://up.4share.vn/index/login", "username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()) + "&remember_login=on");
                 final String lang = System.getProperty("user.language");
                 if (br.getCookie(MAINPAGE, "info1") == null || br.getCookie(MAINPAGE, "info2") == null) {
                     if ("de".equalsIgnoreCase(lang)) {

@@ -13,13 +13,13 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -44,12 +44,14 @@ import jd.plugins.PluginForHost;
 import jd.plugins.components.PluginJSonUtils;
 import jd.utils.JDUtilities;
 
+import org.appwork.storage.JSonStorage;
+import org.appwork.storage.TypeRef;
 import org.appwork.utils.StringUtils;
 import org.appwork.utils.logging2.LogSource;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "twitch.tv" }, urls = { "https?://((www\\.|[a-z]{2}\\.|secure\\.)?(twitchtv\\.com|twitch\\.tv)/(?!directory)[^<>/\"]+/((b|c|v)/\\d+|videos(\\?page=\\d+)?)|(www\\.|secure\\.)?twitch\\.tv/archive/archive_popout\\?id=\\d+)" })
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "twitch.tv" }, urls = { "https?://((www\\.|[a-z]{2}\\.|secure\\.)?(twitchtv\\.com|twitch\\.tv)/(?!directory)(?:[^<>/\"]+/(?:(b|c|v)/\\d+|videos(\\?page=\\d+)?|video/\\d+)|videos/\\d+)|(www\\.|secure\\.)?twitch\\.tv/archive/archive_popout\\?id=\\d+)" })
 public class TwitchTvDecrypt extends PluginForDecrypt {
-
     public TwitchTvDecrypt(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -81,7 +83,7 @@ public class TwitchTvDecrypt extends PluginForDecrypt {
 
     private final String FASTLINKCHECK  = "FASTLINKCHECK";
     private final String videoSingleWeb = "https?://(?:(?:www\\.|[a-z]{2}\\.|secure\\.)?(?:twitchtv\\.com|twitch\\.tv)/[^<>/\"]+/((b|c)/\\d+)|(?:www\\.)?twitch\\.tv/archive/archive_popout\\?id=\\d+)";
-    private final String videoSingleHLS = "https?://(?:(?:www\\.|[a-z]{2}\\.|secure\\.)?(?:twitchtv\\.com|twitch\\.tv)/[^<>/\"]+/v/\\d+)";
+    private final String videoSingleHLS = "https?://(?:(?:www\\.|[a-z]{2}\\.|secure\\.)?(?:twitchtv\\.com|twitch\\.tv)/(?:[^<>/\"]+/v/\\d+|videos/\\d+))";
 
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
         final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
@@ -89,7 +91,11 @@ public class TwitchTvDecrypt extends PluginForDecrypt {
         // currently they redirect https to http
         String parameter = param.toString().replaceFirst("^http://", "https://").replaceAll("://([a-z]{2}\\.|secure\\.)?(twitchtv\\.com|twitch\\.tv)", "://www.twitch.tv");
         final String vid = new Regex(parameter, "(\\d+)$").getMatch(0);
-
+        if (parameter.matches(".*?/[^<>/\"]+/video/\\d+.*")) {
+            // /username/video/videoID -> redirect to /videos/videoID
+            decryptedLinks.add(createDownloadlink("https://twitch.tv/videos/" + vid));
+            return decryptedLinks;
+        }
         final SubConfiguration cfg = this.getPluginConfig();
         br = new Browser();
         br.setCookie("http://twitch.tv", "language", "en-au");
@@ -97,7 +103,6 @@ public class TwitchTvDecrypt extends PluginForDecrypt {
         br.getHeaders().put("Accept-Language", "en-gb");
         // currently redirect to www.
         br.setFollowRedirects(true);
-
         /* Log in if possible to be able to download "for subscribers only" videos */
         String token = null;
         String additionalparameters = "";
@@ -124,7 +129,7 @@ public class TwitchTvDecrypt extends PluginForDecrypt {
             return decryptedLinks;
         }
         pluginsLoaded();
-        if (parameter.contains("/videos")) {
+        if (parameter.contains("/videos") && !new Regex(parameter, videoSingleHLS).matches()) {
             final String username = new Regex(parameter, "/([^<>\"/]*?)/videos").getMatch(0);
             String[] decryptAgainLinks = null;
             if (br.getURL().contains("/profile")) {
@@ -166,13 +171,13 @@ public class TwitchTvDecrypt extends PluginForDecrypt {
             String date = null;
             String fpName = null;
             final FilePackage fp = FilePackage.getInstance();
-
             if (br.getURL().matches(videoSingleWeb)) {
                 // no longer get videoname from html, it requires api call.
                 Browser ajax = ajaxGetPage("https://api.twitch.tv/kraken/videos/" + (new Regex(parameter, "/b/\\d+$").matches() ? "a" : "c") + vid + "?on_site=1&");
-                filename = PluginJSonUtils.getJsonValue(ajax, "title");
-                channelName = PluginJSonUtils.getJsonValue(ajax, "display_name");
-                date = PluginJSonUtils.getJsonValue(ajax, "recorded_at");
+                final Map<String, Object> ajaxMap = JSonStorage.restoreFromString(ajax.toString(), TypeRef.HASHMAP);
+                filename = (String) ajaxMap.get("title");
+                channelName = (String) JavaScriptEngineFactory.walkJson(ajaxMap, "channel/display_name");
+                date = (String) ajaxMap.get("recorded_at");
                 final String vdne = "Video does not exist";
                 if (ajax != null && vdne.equals(PluginJSonUtils.getJsonValue(ajax, "message"))) {
                     decryptedLinks.add(createOfflinelink(parameter, vid + " - " + vdne, vdne));
@@ -224,7 +229,6 @@ public class TwitchTvDecrypt extends PluginForDecrypt {
                 filename = Encoding.htmlDecode(filename.trim());
                 filename = filename.replaceAll("[\r\n#]+", "");
                 int counter = 1;
-
                 for (final String directlink : links) {
                     final DownloadLink dlink = createDownloadlink("http://twitchdecrypted.tv/" + System.currentTimeMillis() + new Random().nextInt(100000000));
                     dlink.setProperty("directlink", "true");
@@ -248,7 +252,6 @@ public class TwitchTvDecrypt extends PluginForDecrypt {
                     decryptedLinks.add(dlink);
                     counter++;
                 }
-
                 if (channelName != null) {
                     fpName += Encoding.htmlDecode(channelName.trim()) + " - ";
                 }
@@ -261,7 +264,6 @@ public class TwitchTvDecrypt extends PluginForDecrypt {
                         Date dateStr = formatter.parse(input);
                         String formattedDate = formatter.format(dateStr);
                         Date theDate = formatter.parse(formattedDate);
-
                         formatter = new SimpleDateFormat(userDefinedDateFormat);
                         formattedDate = formatter.format(theDate);
                         fpName += formattedDate + " - ";
@@ -284,20 +286,22 @@ public class TwitchTvDecrypt extends PluginForDecrypt {
                     decryptedLinks.add(createOfflinelink(parameter, vid + " - " + message, message));
                     return decryptedLinks;
                 }
-                filename = PluginJSonUtils.getJsonValue(ajax, "title");
-                channelName = PluginJSonUtils.getJsonValue(ajax, "display_name");
-                date = PluginJSonUtils.getJsonValue(ajax, "recorded_at");
+                Map<String, Object> ajaxMap = JSonStorage.restoreFromString(ajax.toString(), TypeRef.HASHMAP);
+                filename = (String) ajaxMap.get("title");
+                channelName = (String) JavaScriptEngineFactory.walkJson(ajaxMap, "channel/display_name");
+                date = (String) ajaxMap.get("recorded_at");
                 if (filename == null) {
                     throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
                 filename = Encoding.htmlDecode(filename.trim());
                 filename = filename.replaceAll("[\r\n#]+", "");
                 ajax = this.ajaxGetPagePlayer("https://api.twitch.tv/api/vods/" + vid + "/access_token?as3=t" + (token != null ? "&oauth_token=" + token : ""));
+                ajaxMap = JSonStorage.restoreFromString(ajax.toString(), TypeRef.HASHMAP);
                 // {"token":"{\"user_id\":null,\"vod_id\":3707868,\"expires\":1421924057,\"chansub\":{\"restricted_bitrates\":[]},\"privileged\":false}","sig":"a73d0354f84e8122d78b14f47552e0f83217a89e"}
-                final String auth = PluginJSonUtils.getJsonValue(ajax, "sig");
+                final String auth = (String) ajaxMap.get("sig");
                 // final String expire = PluginJSonUtils.getJson(ajax, "expires");
-                final String privileged = PluginJSonUtils.getJsonValue(ajax, "privileged");
-                final String tokenString = PluginJSonUtils.getJsonValue(ajax, "token");
+                final String privileged = (String) ajaxMap.get("privileged");
+                final String tokenString = (String) ajaxMap.get("token");
                 // auth required
                 // http://usher.twitch.tv/vod/3707868?nauth=%7B%22user_id%22%3Anull%2C%22vod_id%22%3A3707868%2C%22expires%22%3A1421885482%2C%22chansub%22%3A%7B%22restricted_bitrates%22%3A%5B%5D%7D%2C%22privileged%22%3Afalse%7D&nauthsig=d4ecb4772b28b224accbbc4711dff1c786725ce9
                 final String a = Encoding.urlEncode(tokenString);
@@ -331,9 +335,8 @@ public class TwitchTvDecrypt extends PluginForDecrypt {
                 for (final String media : medias) {
                     // name = quality
                     // final String quality = new Regex(media, "NAME=\"(.*?)\"").getMatch(0);
-                    final String bw = new Regex(media, "BANDWIDTH=(\\d+)").getMatch(0);
+                    final String bandwidth = new Regex(media, "BANDWIDTH=(\\d+)").getMatch(0);
                     final String m3u8 = new Regex(media, "https?://[^\r\n]+").getMatch(-1);
-
                     final DownloadLink dlink = createDownloadlink("http://twitchdecrypted.tv/" + System.currentTimeMillis() + new Random().nextInt(100000000));
                     dlink.setProperty("directlink", "true");
                     dlink.setProperty("m3u", m3u8);
@@ -345,7 +348,10 @@ public class TwitchTvDecrypt extends PluginForDecrypt {
                     if (channelName != null) {
                         dlink.setProperty("channel", Encoding.htmlDecode(channelName.trim()));
                     }
-                    final String linkID = "twitch:" + vid + ":HLS:" + bw;
+                    final String linkID = "twitch:" + vid + ":HLS:" + bandwidth;
+                    if (bandwidth != null) {
+                        dlink.setProperty("hlsBandwidth", Integer.parseInt(bandwidth));
+                    }
                     dlink.setLinkID(linkID);
                     // let linkchecking routine do all this!
                     // final String formattedFilename = jd.plugins.hoster.JustinTv.getFormattedFilename(dlink);
@@ -383,7 +389,6 @@ public class TwitchTvDecrypt extends PluginForDecrypt {
                         q240 = true;
                     }
                     final boolean useBest = this.getPluginConfig().getBooleanProperty("useBest", true);
-
                     boolean chunked = false;
                     while (true) {
                         if (q1080 && (desiredLinks.isEmpty() || !useBest)) {
@@ -445,7 +450,6 @@ public class TwitchTvDecrypt extends PluginForDecrypt {
                         Date dateStr = formatter.parse(input);
                         String formattedDate = formatter.format(dateStr);
                         Date theDate = formatter.parse(formattedDate);
-
                         formatter = new SimpleDateFormat(userDefinedDateFormat);
                         formattedDate = formatter.format(theDate);
                         fpName += formattedDate + " - ";
@@ -515,7 +519,7 @@ public class TwitchTvDecrypt extends PluginForDecrypt {
         return true;
     }
 
-    private final static AtomicBoolean pL = new AtomicBoolean(false);
+    private static AtomicBoolean pL = new AtomicBoolean(false);
 
     private void pluginsLoaded() {
         if (!pL.get()) {
@@ -529,5 +533,4 @@ public class TwitchTvDecrypt extends PluginForDecrypt {
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

@@ -1,6 +1,7 @@
 package org.jdownloader.controlling.ffmpeg;
 
 import java.io.File;
+import java.util.Locale;
 
 import org.appwork.storage.config.JsonConfig;
 import org.appwork.uio.CloseReason;
@@ -8,27 +9,26 @@ import org.appwork.uio.ConfirmDialogInterface;
 import org.appwork.uio.UIOManager;
 import org.appwork.utils.Application;
 import org.appwork.utils.os.CrossSystem;
-import org.appwork.utils.os.MacOsXVersion;
+import org.appwork.utils.os.CrossSystem.OperatingSystem;
 import org.jdownloader.updatev2.UpdateController;
 
 public class FFMpegInstallThread extends Thread {
-
-    public static final String   FFMPEG        = "ffmpeg";
-
-    public static final String   FFMPEG_10_6   = "ffmpeg_10.6+";
-
-    public static final String   FFMPEG_10_5_X = "ffmpeg_10.5.x-";
-
+    public static final String   FFMPEG_GENRIC        = "ffmpeg";
+    public static final String   FFMPEG_MAC_MIN_10_10 = "ffmpeg_10.10+";
+    public static final String   FFMPEG_MAC_MIN_10_6  = "ffmpeg_10.6+";
+    public static final String   FFMPEG_MAC_10_5_X    = "ffmpeg_10.5.x-";
     /**
      *
      */
     private final FFmpegProvider fFmpegProvider;
-
-    private volatile long        progress      = -1;
-
-    private volatile boolean     success       = false;
-
+    private volatile long        progress             = -1;
+    private volatile boolean     success              = false;
     private final String         task;
+
+    public static enum BINARY {
+        FFMPEG,
+        FFPROBE
+    }
 
     public FFMpegInstallThread(FFmpegProvider fFmpegProvider, String task) {
         this.fFmpegProvider = fFmpegProvider;
@@ -46,11 +46,11 @@ public class FFMpegInstallThread extends Thread {
     @Override
     public void run() {
         try {
-            File ffmpeg = getFFmpegPath("ffmpeg");
+            File ffmpeg = getBundledBinaryPath(BINARY.FFMPEG);
             if (ffmpeg != null && !ffmpeg.exists()) {
                 ffmpeg = null;
             }
-            File ffprobe = getFFmpegPath("ffprobe");
+            File ffprobe = getBundledBinaryPath(BINARY.FFPROBE);
             if (ffprobe != null && !ffprobe.exists()) {
                 ffprobe = null;
             }
@@ -85,11 +85,11 @@ public class FFMpegInstallThread extends Thread {
                     }
                 }
             }
-            ffmpeg = getFFmpegPath("ffmpeg");
+            ffmpeg = getBundledBinaryPath(BINARY.FFMPEG);
             if (ffmpeg != null && ffmpeg.exists()) {
                 JsonConfig.create(FFmpegSetup.class).setBinaryPath(ffmpeg.getAbsolutePath());
             }
-            ffprobe = getFFmpegPath("ffprobe");
+            ffprobe = getBundledBinaryPath(BINARY.FFPROBE);
             if (ffprobe != null && ffprobe.exists()) {
                 JsonConfig.create(FFmpegSetup.class).setBinaryPathProbe(ffprobe.getAbsolutePath());
             }
@@ -103,7 +103,8 @@ public class FFMpegInstallThread extends Thread {
         }
     }
 
-    public static File getFFmpegPath(String name) {
+    public static File getBundledBinaryPath(BINARY binary) {
+        final String name = binary.name().toLowerCase(Locale.ENGLISH);
         if (CrossSystem.isWindows()) {
             if (CrossSystem.is64BitOperatingSystem()) {
                 final File x64Path = Application.getResource("tools/Windows/ffmpeg/x64/" + name + ".exe");
@@ -119,10 +120,14 @@ public class FFMpegInstallThread extends Thread {
             }
         } else if (CrossSystem.isMac()) {
             // different ffmpeg version for 10.6-
-            if (CrossSystem.getMacOSVersion() < MacOsXVersion.MAC_OSX_10p6_SNOW_LEOPARD.getVersionID() || !CrossSystem.is64BitOperatingSystem()) {
+            if (!CrossSystem.getOS().isMinimum(OperatingSystem.MAC_SNOW_LEOPOARD) || !CrossSystem.is64BitOperatingSystem()) {
                 return Application.getResource("tools/mac/ffmpeg_10.5.x-/" + name);
             } else {
-                return Application.getResource("tools/mac/ffmpeg_10.6+/" + name);
+                if (CrossSystem.getOS().isMinimum(OperatingSystem.MAC_YOSEMITE)) {
+                    return Application.getResource("tools/mac/ffmpeg_10.10+/" + name);
+                } else {
+                    return Application.getResource("tools/mac/ffmpeg_10.6+/" + name);
+                }
             }
         } else if (CrossSystem.isLinux() || CrossSystem.isBSD()) {
             final String os;
@@ -160,14 +165,17 @@ public class FFMpegInstallThread extends Thread {
     public static String getFFmpegExtensionName() {
         switch (CrossSystem.getOSFamily()) {
         case MAC:
-            if (CrossSystem.getMacOSVersion() < MacOsXVersion.MAC_OSX_10p6_SNOW_LEOPARD.getVersionID() || !CrossSystem.is64BitOperatingSystem()) {
-                return FFMPEG_10_5_X;
+            if (!CrossSystem.getOS().isMinimum(OperatingSystem.MAC_SNOW_LEOPOARD) || !CrossSystem.is64BitOperatingSystem()) {
+                return FFMPEG_MAC_10_5_X;
             } else {
-                return FFMPEG_10_6;
+                if (CrossSystem.getOS().isMinimum(OperatingSystem.MAC_YOSEMITE)) {
+                    return FFMPEG_MAC_MIN_10_10;
+                } else {
+                    return FFMPEG_MAC_MIN_10_6;
+                }
             }
         default:
-            return FFMPEG;
+            return FFMPEG_GENRIC;
         }
     }
-
 }

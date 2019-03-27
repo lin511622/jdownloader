@@ -49,7 +49,6 @@ public class AventertainmentsCom extends PluginForHost {
     /* DEV NOTES */
     // Tags:
     // protocol: no https
-    // other:
 
     private final String         TYPE_IMAGE        = "https?://imgs\\.aventertainments\\.com/.+";
     private final String         TYPE_VIDEO_HTTP   = "https?://(?:www\\.)?aventertainments\\.com/newdlsample\\.aspx.*?\\.mp4";
@@ -151,7 +150,7 @@ public class AventertainmentsCom extends PluginForHost {
             if (hlsbest == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-            dllink = hlsbest.downloadurl;
+            dllink = hlsbest.getDownloadurl();
             checkFFmpeg(downloadLink, "Download a HLS Stream");
             dl = new HLSDownloader(downloadLink, br, dllink);
             dl.startDownload();

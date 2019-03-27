@@ -13,11 +13,14 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
+import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+
+import org.appwork.utils.StringUtils;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
 
 import jd.PluginWrapper;
 import jd.controlling.AccountController;
@@ -31,17 +34,13 @@ import jd.plugins.FilePackage;
 import jd.plugins.PluginForDecrypt;
 import jd.utils.JDUtilities;
 
-import org.jdownloader.scripting.JavaScriptEngineFactory;
-
 @DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "udemy.com" }, urls = { "https?://(?:www\\.)?udemy\\.com/.+" })
 public class UdemyComDecrypter extends PluginForDecrypt {
-
     public UdemyComDecrypter(PluginWrapper wrapper) {
         super(wrapper);
     }
 
     private static final String     decrypter_domain = "udemydecrypted.com";
-
     private String                  course_id        = null;
     private ArrayList<DownloadLink> decryptedLinks   = new ArrayList<DownloadLink>();
 
@@ -64,6 +63,7 @@ public class UdemyComDecrypter extends PluginForDecrypt {
         }
         jd.plugins.hoster.UdemyCom.prepBRAPI(this.br);
         br.getPage(parameter);
+        br.followRedirect();
         if (this.br.getHttpConnection().getResponseCode() == 404) {
             decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
@@ -83,17 +83,11 @@ public class UdemyComDecrypter extends PluginForDecrypt {
             return decryptedLinks;
         }
         final String fpName = new Regex(parameter, "udemy\\.com/([^/]+)").getMatch(0);
-        // final String[] links = br.getRegex("\"(/[^/]+/learn/[^<>\"]+/lecture/\\d+)\"").getColumn(0);
-        // if (links == null || links.length == 0) {
-        // logger.warning("Decrypter broken for link: " + parameter);
-        // return null;
-        // }
-
         LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaMap(br.toString());
         final LinkedHashMap<String, Object> page_info = (LinkedHashMap<String, Object>) entries.get("");
         final ArrayList<Object> ressourcelist = (ArrayList<Object>) entries.get("results");
         ArrayList<Object> ressourcelist_2 = null;
-
+        int position = 1;
         for (final Object courseo : ressourcelist) {
             entries = (LinkedHashMap<String, Object>) courseo;
             final String lecture_id = Long.toString(JavaScriptEngineFactory.toLong(entries.get("id"), 0));
@@ -107,45 +101,43 @@ public class UdemyComDecrypter extends PluginForDecrypt {
             if (entries == null) {
                 continue;
             }
-            decryptAsset(entries, lecture_id);
-
+            decryptAsset(entries, lecture_id, position);
             if (supplementary_assets != null) {
                 /* Most likely files ... */
                 ressourcelist_2 = (ArrayList<Object>) supplementary_assets;
                 for (final Object supplementary_asseto : ressourcelist_2) {
                     entries = (LinkedHashMap<String, Object>) supplementary_asseto;
-                    decryptAsset(entries, lecture_id);
+                    decryptAsset(entries, lecture_id, position);
                 }
             }
-
+            position++;
         }
-
         final FilePackage fp = FilePackage.getInstance();
         fp.setName(fpName);
         fp.addLinks(decryptedLinks);
-
         return decryptedLinks;
     }
 
-    private void decryptAsset(final LinkedHashMap<String, Object> entries, final String lecture_id) {
+    /** Crawls single object (video or document) */
+    private void decryptAsset(final LinkedHashMap<String, Object> entries, final String lecture_id, final int position) {
+        final DecimalFormat df = new DecimalFormat("000");
+        final String position_formatted = df.format(position);
         String asset_id = Long.toString(JavaScriptEngineFactory.toLong(entries.get("id"), 0));
         String title = (String) entries.get("title");
         final String filename = (String) entries.get("filename");
         /* E.g. Video, Article, File */
         final String asset_type = (String) entries.get("asset_type");
-
         if (asset_id.equals("0") || asset_type == null || asset_type.equals("")) {
             return;
         }
         String filename_temp;
-        if (filename != null && !filename.equals("")) {
-            filename_temp = filename;
-            filename_temp = course_id + "_" + lecture_id + "_" + asset_id + "_" + filename_temp;
-        } else if (title != null && !title.equals("")) {
+        if (!StringUtils.isEmpty(filename)) {
+            filename_temp = course_id + "_" + position_formatted + "_" + lecture_id + "_" + asset_id + "_" + filename;
+        } else if (!StringUtils.isEmpty(title)) {
             filename_temp = title;
-            filename_temp = course_id + "_" + lecture_id + "_" + asset_id + "_" + filename_temp;
+            filename_temp = course_id + "_" + position_formatted + "_" + lecture_id + "_" + asset_id + "_" + filename_temp;
         } else {
-            filename_temp = course_id + "_" + lecture_id + "_" + asset_id;
+            filename_temp = course_id + "_" + position_formatted + "_" + lecture_id + "_" + asset_id;
             if ("Article".equalsIgnoreCase(asset_type)) {
                 filename_temp += ".txt";
             }
@@ -168,9 +160,9 @@ public class UdemyComDecrypter extends PluginForDecrypt {
             dl.setProperty("filename_decrypter", filename_temp);
             dl.setProperty("lecture_id", lecture_id);
             dl.setProperty("course_id", course_id);
+            dl.setProperty("position", position);
             dl.setLinkID(asset_id);
         }
         decryptedLinks.add(dl);
     }
-
 }

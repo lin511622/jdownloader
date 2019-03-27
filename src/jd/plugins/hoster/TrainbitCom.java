@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -34,9 +33,8 @@ import jd.plugins.PluginForHost;
 import org.appwork.utils.Regex;
 import org.appwork.utils.formatter.SizeFormatter;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "trainbit.com" }, urls = { "http://(?:www\\.)?trainbit\\.com/files/\\d+/[^/]+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "trainbit.com" }, urls = { "https?://(?:www\\.)?trainbit\\.com/files/\\d+/[^/]+" })
 public class TrainbitCom extends PluginForHost {
-
     public TrainbitCom(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -50,6 +48,7 @@ public class TrainbitCom extends PluginForHost {
     private static final boolean FREE_RESUME       = true;
     private static final int     FREE_MAXCHUNKS    = 0;
     private static final int     FREE_MAXDOWNLOADS = 20;
+    private String               free_directlink   = null;
 
     // private static final boolean ACCOUNT_FREE_RESUME = true;
     // private static final int ACCOUNT_FREE_MAXCHUNKS = 0;
@@ -60,16 +59,23 @@ public class TrainbitCom extends PluginForHost {
     //
     // /* don't touch the following! */
     // private static AtomicInteger maxPrem = new AtomicInteger(1);
-
     @SuppressWarnings("deprecation")
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
         this.setBrowserExclusive();
         br.getPage(link.getDownloadURL());
+        if (br.getRedirectLocation() != null && br.getRedirectLocation().contains(":8080/")) {
+            free_directlink = br.getRedirectLocation();
+            return AvailableStatus.TRUE;
+        }
+        if (br.getRedirectLocation() != null) {
+            br.getPage(br.getRedirectLocation());
+        }
         if (br.getHttpConnection().getResponseCode() == 404 || this.br.containsHTML(">Desired file is removed")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-        final Regex finfo = br.getRegex("class=\"en ltr\">([^<>\"]*?) \\( *?(\\d+(?:\\.\\d+)? [A-Za-z]+) *?\\)</");
+        // final Regex finfo = br.getRegex("class=\"en ltr\">([^<>\"]*?) \\( *?(\\d+(?:\\.\\d+)? [A-Za-z]+) *?\\)</");
+        final Regex finfo = br.getRegex("<h5[^<>]*?>\\s*?([^<>]*?)\\s*?</h5>\\s*?<h6[^<>]*?>\\( *?(\\d+(?:\\.\\d+)? [A-Za-z]+) *?\\)</");
         final String filename = finfo.getMatch(0);
         final String filesize = finfo.getMatch(1);
         if (filename == null || filesize == null) {
@@ -97,9 +103,9 @@ public class TrainbitCom extends PluginForHost {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
             this.br.submitForm(dlform);
-            dllink = br.getRegex("\"(http[^<>\"]*?)\" id=\"downloadlink\"").getMatch(0);
+            dllink = br.getRegex("\"(https?[^<>\"]*?)\" id=\"downloadlink\"").getMatch(0);
             if (dllink == null) {
-                dllink = br.getRegex("href=\"(http[^<>\"]*?)\">Download</a>").getMatch(0);
+                dllink = br.getRegex("href=\"(https?[^<>\"]*?)\">Download</a>").getMatch(0);
             }
             if (dllink == null) {
                 dllink = br.getRegex("\"(https?://[^/]+/files/\\d+/[^<>\"]*?)\"").getMatch(0);
@@ -119,6 +125,9 @@ public class TrainbitCom extends PluginForHost {
 
     private String checkDirectLink(final DownloadLink downloadLink, final String property) {
         String dllink = downloadLink.getStringProperty(property);
+        if (dllink == null) {
+            dllink = free_directlink;
+        }
         if (dllink != null) {
             URLConnectionAdapter con = null;
             try {
@@ -126,7 +135,7 @@ public class TrainbitCom extends PluginForHost {
                 if (isJDStable()) {
                     con = br2.openGetConnection(dllink);
                 } else {
-                    con = br2.openHeadConnection(dllink);
+                    con = br2.openGetConnection(dllink); // openHeadConnection is not allowed
                 }
                 if (con.getContentType().contains("html") || con.getLongContentLength() == -1) {
                     downloadLink.setProperty(property, Property.NULL);
@@ -161,5 +170,4 @@ public class TrainbitCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

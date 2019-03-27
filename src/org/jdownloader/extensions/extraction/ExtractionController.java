@@ -13,12 +13,12 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package org.jdownloader.extensions.extraction;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledExecutorService;
@@ -30,10 +30,14 @@ import jd.controlling.downloadcontroller.DiskSpaceManager.DISKSPACERESERVATIONRE
 import jd.controlling.downloadcontroller.DiskSpaceReservation;
 import jd.controlling.downloadcontroller.DownloadSession;
 import jd.controlling.downloadcontroller.DownloadWatchDog;
+import jd.plugins.download.DownloadLinkDownloadable;
 import jd.plugins.download.raf.FileBytesCache;
 
 import org.appwork.scheduler.DelayedRunnable;
 import org.appwork.storage.JSonStorage;
+import org.appwork.storage.config.ValidationException;
+import org.appwork.storage.config.events.GenericConfigEventListener;
+import org.appwork.storage.config.handler.KeyHandler;
 import org.appwork.utils.Exceptions;
 import org.appwork.utils.StringUtils;
 import org.appwork.utils.event.queue.QueueAction;
@@ -44,6 +48,7 @@ import org.jdownloader.controlling.UniqueAlltimeID;
 import org.jdownloader.extensions.extraction.ExtractionEvent.Type;
 import org.jdownloader.extensions.extraction.bindings.downloadlink.DownloadLinkArchiveFile;
 import org.jdownloader.extensions.extraction.bindings.file.FileArchiveFile;
+import org.jdownloader.extensions.extraction.multi.ArchiveType;
 import org.jdownloader.logging.LogController;
 import org.jdownloader.settings.IfFileExistsAction;
 
@@ -53,16 +58,16 @@ import org.jdownloader.settings.IfFileExistsAction;
  * @author botzi
  *
  */
-public class ExtractionController extends QueueAction<Void, RuntimeException> {
+public class ExtractionController extends QueueAction<Void, RuntimeException> implements GenericConfigEventListener<Enum> {
     private List<String>       passwordList;
     private Exception          exception;
     private final Archive      archive;
     private final IExtraction  extractor;
     private ScheduledFuture<?> timer;
     private Type               latestEvent;
-
     private final AtomicLong   completeBytes  = new AtomicLong(0);
     private final AtomicLong   processedBytes = new AtomicLong(0);
+    private volatile IO_MODE   crcHashing     = IO_MODE.NORMAL;
 
     public long getCompleteBytes() {
         return completeBytes.get();
@@ -80,8 +85,40 @@ public class ExtractionController extends QueueAction<Void, RuntimeException> {
         this.processedBytes.set(Math.max(0, processedBytes));
     }
 
-    public long addAndGetProcessedBytes(long processedBytes) {
-        return this.processedBytes.addAndGet(Math.max(0, processedBytes));
+    public IO_MODE getIOModeForCrcHashing() {
+        final IO_MODE mode = crcHashing;
+        switch (mode) {
+        case PAUSE:
+        case THROTTLE:
+            if (DownloadLinkDownloadable.isCrcHashingInProgress()) {
+                return mode;
+            }
+        default:
+        case NORMAL:
+            return IO_MODE.NORMAL;
+        }
+    }
+
+    public void addProcessedBytesAndPauseIfNeeded(long processedBytes) {
+        try {
+            if (!IO_MODE.NORMAL.equals(getIOModeForCrcHashing())) {
+                crcHashing: while (true) {
+                    switch (getIOModeForCrcHashing()) {
+                    case PAUSE:
+                        Thread.sleep(1000);
+                        break;
+                    case THROTTLE:
+                        Thread.sleep(100);
+                    default:
+                    case NORMAL:
+                        break crcHashing;
+                    }
+                }
+            }
+        } catch (InterruptedException e) {
+            logger.log(e);
+        }
+        this.processedBytes.addAndGet(Math.max(0, processedBytes));
     }
 
     private final ExtractionExtension extension;
@@ -94,7 +131,6 @@ public class ExtractionController extends QueueAction<Void, RuntimeException> {
     private Item                      currentActiveItem;
     private final ExtractionProgress  extractionProgress;
     protected final FileBytesCache    fileBytesCache;
-
     private final UniqueAlltimeID     uniqueID              = new UniqueAlltimeID();
 
     public UniqueAlltimeID getUniqueID() {
@@ -153,6 +189,8 @@ public class ExtractionController extends QueueAction<Void, RuntimeException> {
         passwordList = new CopyOnWriteArrayList<String>();
         archive.setExtractionController(this);
         fileBytesCache = DownloadSession.getDownloadWriteCache();
+        CFG_EXTRACTION.IOMODE_CRCHASHING.getEventSender().addListener(this, true);
+        crcHashing = (IO_MODE) CFG_EXTRACTION.IOMODE_CRCHASHING.getValue();
     }
 
     public ExtractionQueue getExtractionQueue() {
@@ -216,14 +254,12 @@ public class ExtractionController extends QueueAction<Void, RuntimeException> {
         try {
             fireEvent(ExtractionEvent.Type.START);
             archive.onStartExtracting();
-            crashLog.write("Date: " + new Date());
+            crashLog.write("Date:" + new Date());
             crashLog.write("Start Extracting");
             crashLog.write("Extension Setup: \r\n" + extension.getSettings().toString());
-
             crashLog.write("Archive Setup: \r\n" + JSonStorage.toString(archive.getSettings()));
             extractor.setCrashLog(crashLog);
             crashLog.write("Start unpacking of " + firstArchiveFile.getFilePath());
-
             for (final ArchiveFile archiveFile : archive.getArchiveFiles()) {
                 if (!archiveFile.exists()) {
                     if (archiveFile instanceof DownloadLinkArchiveFile) {
@@ -239,11 +275,11 @@ public class ExtractionController extends QueueAction<Void, RuntimeException> {
                 } else {
                     if (archiveFile instanceof DownloadLinkArchiveFile) {
                         final DownloadLinkArchiveFile downloadLinkArchiveFile = (DownloadLinkArchiveFile) archiveFile;
-                        crashLog.write(" (DownloadLinkArchiveFile)File: " + archiveFile.getFilePath() + "|FileArchiveFileExists:" + downloadLinkArchiveFile.isFileArchiveFileExists());
+                        crashLog.write(" (DownloadLinkArchiveFile)File:" + archiveFile.getFilePath() + "|FileArchiveFileExists:" + downloadLinkArchiveFile.isFileArchiveFileExists() + "|FileSize:" + archiveFile.getFileSize());
                     } else if (archiveFile instanceof FileArchiveFile) {
-                        crashLog.write(" (FileArchiveFile)File: " + archiveFile.getFilePath());
+                        crashLog.write(" (FileArchiveFile)File:" + archiveFile.getFilePath() + "|FileSize:" + archiveFile.getFileSize());
                     } else {
-                        crashLog.write(" File: " + archiveFile.getFilePath());
+                        crashLog.write(" File:" + archiveFile.getFilePath() + "|FileSize:" + archiveFile.getFileSize());
                     }
                 }
             }
@@ -305,7 +341,6 @@ public class ExtractionController extends QueueAction<Void, RuntimeException> {
                                 }
                             }
                         }
-
                         if (correctPW == null) {
                             fireEvent(ExtractionEvent.Type.PASSWORD_NEEDED_TO_CONTINUE);
                             crashLog.write("Ask for password");
@@ -322,7 +357,6 @@ public class ExtractionController extends QueueAction<Void, RuntimeException> {
                         }
                         fireEvent(ExtractionEvent.Type.PASSWORD_FOUND);
                         crashLog.write("Found password for " + archive + "->" + archive.getFinalPassword());
-
                     }
                     if (StringUtils.isNotEmpty(archive.getFinalPassword())) {
                         getExtension().addPassword(archive.getFinalPassword());
@@ -330,9 +364,7 @@ public class ExtractionController extends QueueAction<Void, RuntimeException> {
                 }
                 extractToFolder = getExtension().getFinalExtractToFolder(archive, false);
                 crashLog.write("Extract To: " + extractToFolder);
-
                 final DiskSpaceReservation extractReservation = new DiskSpaceReservation() {
-
                     @Override
                     public long getSize() {
                         final long completeSize = Math.max(getCompleteBytes(), archive.getContentView().getTotalSize());
@@ -381,7 +413,6 @@ public class ExtractionController extends QueueAction<Void, RuntimeException> {
                             public void run() {
                                 fireEvent(ExtractionEvent.Type.EXTRACTING);
                             }
-
                         }, 1, 1, TimeUnit.SECONDS);
                         extractor.extract(this);
                     } finally {
@@ -411,7 +442,6 @@ public class ExtractionController extends QueueAction<Void, RuntimeException> {
                 if (exception != null) {
                     crashLog.write("Exception occured: \r\n" + Exceptions.getStackTrace(exception));
                 }
-
                 crashLog.write("ExitCode: " + archive.getExitCode());
                 switch (archive.getExitCode()) {
                 case ExtractionControllerConstants.EXIT_CODE_SUCCESS:
@@ -474,8 +504,18 @@ public class ExtractionController extends QueueAction<Void, RuntimeException> {
                 }
                 return null;
             } else {
-                crashLog.write("Failed");
-                fireEvent(ExtractionEvent.Type.EXTRACTION_FAILED);
+                switch (archive.getExitCode()) {
+                case ExtractionControllerConstants.EXIT_CODE_CRC_ERROR:
+                    crashLog.write("A CRC error occurred when unpacking " + archive);
+                    crashLog.write("CRC Error occured");
+                    crashLog.write("Failed");
+                    fireEvent(ExtractionEvent.Type.EXTRACTION_FAILED_CRC);
+                    break;
+                default:
+                    crashLog.write("Failed");
+                    fireEvent(ExtractionEvent.Type.EXTRACTION_FAILED);
+                    break;
+                }
             }
         } catch (Exception e) {
             logger.log(e);
@@ -510,15 +550,32 @@ public class ExtractionController extends QueueAction<Void, RuntimeException> {
      * Deletes the archive files.
      */
     void removeArchiveFiles() {
+        final Archive archive = getArchive();
         final DeleteOption remove;
-        if (getArchive().getFactory().isDeepExtraction()) {
+        if (archive.getFactory().isDeepExtraction()) {
             remove = DeleteOption.NULL;
         } else {
-            remove = getExtension().getRemoveFilesAfterExtractAction(getArchive());
+            remove = getExtension().getRemoveFilesAfterExtractAction(archive);
         }
         if (remove != null && !DeleteOption.NO_DELETE.equals(remove)) {
-            for (ArchiveFile link : archive.getArchiveFiles()) {
+            for (final ArchiveFile link : archive.getArchiveFiles()) {
                 link.deleteFile(remove);
+            }
+            if (ArchiveType.RAR_MULTI.equals(archive.getArchiveType())) {
+                // Deleting rar recovery volumes
+                final HashSet<String> done = new HashSet<String>();
+                for (final ArchiveFile link : archive.getArchiveFiles()) {
+                    if (done.add(link.getName())) {
+                        final String filePath = link.getFilePath().replaceFirst("(?i)\\.rar$", ".rev");
+                        final File file = new File(filePath);
+                        if (file.exists() && file.isFile()) {
+                            logger.info("Deleting rar recovery volume " + file.getAbsolutePath());
+                            if (!file.delete()) {
+                                logger.warning("Could not deleting rar recovery volume " + file.getAbsolutePath());
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -622,4 +679,19 @@ public class ExtractionController extends QueueAction<Void, RuntimeException> {
         return percent;
     }
 
+    @Override
+    public void onConfigValidatorError(KeyHandler<Enum> keyHandler, Enum invalidValue, ValidationException validateException) {
+    }
+
+    @Override
+    public void onConfigValueModified(KeyHandler<Enum> keyHandler, Enum newValue) {
+        if (keyHandler == CFG_EXTRACTION.IOMODE_CRCHASHING) {
+            final IO_MODE newMode = (IO_MODE) newValue;
+            if (newMode == null) {
+                crcHashing = IO_MODE.NORMAL;
+            } else {
+                crcHashing = newMode;
+            }
+        }
+    }
 }

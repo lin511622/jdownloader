@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package org.jdownloader.extensions.extraction.split;
 
 import org.jdownloader.extensions.extraction.Archive;
@@ -26,13 +25,16 @@ import org.jdownloader.extensions.extraction.ExtractionControllerConstants;
 import org.jdownloader.extensions.extraction.ExtractionControllerException;
 import org.jdownloader.extensions.extraction.ExtractionExtension;
 import org.jdownloader.extensions.extraction.IExtraction;
-import org.jdownloader.extensions.extraction.MissingArchiveFile;
 import org.jdownloader.extensions.extraction.multi.ArchiveException;
 import org.jdownloader.extensions.extraction.multi.CheckException;
 
 public class UnixSplit extends IExtraction {
+    private final SplitType           splitType = SplitType.UNIX_SPLIT;
+    private final ExtractionExtension extension;
 
-    private final SplitType splitType = SplitType.UNIX_SPLIT;
+    public UnixSplit(ExtractionExtension extension) {
+        this.extension = extension;
+    }
 
     public Archive buildArchive(ArchiveFactory link, boolean allowDeepInspection) throws ArchiveException {
         return SplitType.createArchive(link, splitType, allowDeepInspection);
@@ -59,6 +61,7 @@ public class UnixSplit extends IExtraction {
                 }
                 return;
             } catch (ExtractionControllerException e) {
+                setException(e);
                 archive.setExitCode(e.getExitCode());
             }
         } else {
@@ -84,23 +87,20 @@ public class UnixSplit extends IExtraction {
     public DummyArchive checkComplete(Archive archive) throws CheckException {
         if (archive.getSplitType() == splitType) {
             try {
-                final DummyArchive ret = new DummyArchive(archive, splitType.name());
-                boolean hasMissingArchiveFiles = false;
-                for (ArchiveFile archiveFile : archive.getArchiveFiles()) {
-                    if (archiveFile instanceof MissingArchiveFile) {
-                        hasMissingArchiveFiles = true;
-                    }
-                    ret.add(new DummyArchiveFile(archiveFile));
+                final DummyArchive dummyArchive = new DummyArchive(archive, splitType);
+                for (final ArchiveFile archiveFile : archive.getArchiveFiles()) {
+                    dummyArchive.add(new DummyArchiveFile(archiveFile));
                 }
-                if (hasMissingArchiveFiles == false) {
+                if (dummyArchive.isComplete()) {
                     final ArchiveFile firstFile = archive.getArchiveFiles().get(0);
                     final String firstArchiveFile = firstFile.getFilePath();
                     final String partNumberOfFirstArchiveFile = splitType.getPartNumberString(firstArchiveFile);
                     if (splitType.getFirstPartIndex() != splitType.getPartNumber(partNumberOfFirstArchiveFile)) {
                         throw new CheckException("Wrong firstArchiveFile(" + firstArchiveFile + ") for Archive(" + archive.getName() + ")");
                     }
+                    SplitUtil.checkComplete(extension, archive, dummyArchive);
                 }
-                return ret;
+                return dummyArchive;
             } catch (CheckException e) {
                 throw e;
             } catch (Throwable e) {

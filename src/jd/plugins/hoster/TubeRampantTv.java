@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -32,29 +31,26 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.SiteType.SiteTemplate;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "tube.rampant.tv" }, urls = { "https?://(?:tube|videos)\\.rampant\\.tv/videos/[A-Za-z0-9\\-_]+\\.html" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "tube.rampant.tv" }, urls = { "https?://(?:tube|videos)\\.rampant\\.tv/videos/[A-Za-z0-9\\-_\\(\\)%,]+\\.html" })
 public class TubeRampantTv extends PluginForHost {
-
     public TubeRampantTv(PluginWrapper wrapper) {
         super(wrapper);
     }
 
     /* Using playerConfig script */
     /* Tags: playerConfig.php */
-
     /* Extension which will be used if no correct extension is found */
     private static final String  default_Extension = ".mp4";
     /* Connection stuff */
     private static final boolean free_resume       = true;
     private static final int     free_maxchunks    = 0;
     private static final int     free_maxdownloads = -1;
-
     private String               dllink            = null;
     private boolean              premiumonly       = false;
 
     @Override
     public String getAGBLink() {
-        return "http://emohotties.com/contact.php";
+        return "https://videos.rampant.tv/tos.php";
     }
 
     @SuppressWarnings("deprecation")
@@ -88,11 +84,20 @@ public class TubeRampantTv extends PluginForHost {
                 return AvailableStatus.TRUE;
             }
             final String playerConfigUrl = br.getRegex("(https?://[A-Za-z0-9]*?\\.rampant\\.tv/playerConfig\\.php\\?[a-z0-9]+\\.(mp4|flv))").getMatch(0);
-            if (playerConfigUrl == null) {
+            if (playerConfigUrl != null) {
+                br.getPage(playerConfigUrl);
+                dllink = br.getRegex("defaultVideo:(https?://[^<>\"]*?);").getMatch(0);
+            }
+            if (dllink == null) {
+                // iframe && then multiple qualities.
+                dllink = br.getRegex("<\\s*source\\s+[^>]*src=(\"|')((?:https?://|/).*?)\\1").getMatch(1);
+            }
+            if (dllink == null && br.containsHTML("https?://[A-Za-z0-9]*?\\.rampant\\.tv/playerConfig\\.php\\?\\.(mp4|flv)")) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
+            if (dllink == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-            br.getPage(playerConfigUrl);
-            dllink = br.getRegex("defaultVideo:(https?://[^<>\"]*?);").getMatch(0);
         }
         if (dllink != null) {
             dllink = Encoding.htmlDecode(dllink);
@@ -147,14 +152,12 @@ public class TubeRampantTv extends PluginForHost {
             }
             dl = new RTMPDownload(this, downloadLink, rtmp_host);
             final jd.network.rtmp.url.RtmpUrlConnection rtmp = ((RTMPDownload) dl).getRtmpConnection();
-
             rtmp.setPlayPath("mp4:" + rtmp_path);
             rtmp.setPageUrl(this.br.getURL());
             rtmp.setSwfVfy("https://static.rampant.tv/swf/player.swf");
             rtmp.setApp("tubevideo/");
             rtmp.setUrl(rtmp_host);
             rtmp.setResume(true);
-
             ((RTMPDownload) dl).startDownload();
         } else {
             /* HTTP */

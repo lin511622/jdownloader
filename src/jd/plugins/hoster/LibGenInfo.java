@@ -13,14 +13,11 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.IOException;
-import java.util.ArrayList;
+import org.appwork.utils.formatter.SizeFormatter;
 
 import jd.PluginWrapper;
-import jd.http.Browser.BrowserException;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
@@ -32,14 +29,12 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-import org.appwork.utils.formatter.SizeFormatter;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "libgen.info" }, urls = { "http://(www\\.)?libgen\\.net/view\\.php\\?id=\\d+|http://libgen\\.in/get\\.php\\?md5=[A-Za-z0-9]{32}|https?://(?:www\\.)?libgen\\.io/(?:ads|get)\\.php\\?md5=[a-f0-9]{32}|https?://libgen\\.(?:net|io)/covers/\\d+/[^<>\"\\']*?\\.(?:jpg|jpeg|png|gif)" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "libgen.pw" }, urls = { "https?://(?:www\\.)?libgen\\.(?:net|me|pw)/view\\.php\\?id=\\d+|https?://(?:www\\.)?libgen\\.(?:in|io)/(?:[^/]+/)?(?:get|ads)\\.php\\?md5=[A-Za-z0-9]{32}(?:\\&key=[A-Z0-9]+)?|https?://(?:www\\.)?libgen\\.(?:net|io|me|pw)/covers/\\d+/[^<>\"']*?\\.(?:jpg|jpeg|png|gif)|https?://[a-z0-9\\-]+\\.libgen\\.pw/download/book/[a-f0-9]+" })
 public class LibGenInfo extends PluginForHost {
-
     @Override
     public String[] siteSupportedNames() {
-        return new String[] { "libgen.net", "libgen.io", "golibgen.io" };
+        // libgen.info no dns
+        return new String[] { "libgen.pw", "libgen.me", "libgen.net", "libgen.io" };
     }
 
     public LibGenInfo(PluginWrapper wrapper) {
@@ -47,46 +42,48 @@ public class LibGenInfo extends PluginForHost {
     }
 
     @Override
+    public String rewriteHost(String host) {
+        if (host == null || "libgen.pw".equals(host) || "libgen.me".equals(host) || "libgen.info".equals(host)) {
+            return "libgen.pw";
+        }
+        return super.rewriteHost(host);
+    }
+
+    @Override
     public String getAGBLink() {
-        return "http://libgen.info/";
+        return "http://libgen.me/";
     }
+
+    private static final String  type_picture        = ".+/covers/\\d+/[^<>\"\\']*?\\.(?:jpg|jpeg|png)";
+    public static final String   type_libgen_get     = "/get\\.php\\?md5=[A-Za-z0-9]{32}";
+    private static final boolean FREE_RESUME         = false;
+    private static final int     FREE_MAXCHUNKS      = 1;
+    private static final int     FREE_MAXDOWNLOADS   = 2;
+    private String               dllink              = null;
+    private boolean              allow_html_download = false;
 
     @SuppressWarnings("deprecation")
     @Override
-    public void correctDownloadLink(DownloadLink link) {
-        link.setUrlDownload(link.getDownloadURL().replaceAll("libgen\\.net/", "golibgen.io/"));
-    }
-
-    private static final String  type_picture      = "https?://libgen\\.(?:net|io)/covers/\\d+/[^<>\"\\']*?\\.(?:jpg|jpeg|png)";
-    public static final String   type_libgen_in    = "/get\\.php\\?md5=[A-Za-z0-9]{32}";
-
-    private static final boolean FREE_RESUME       = false;
-    private static final int     FREE_MAXCHUNKS    = 1;
-    private static final int     FREE_MAXDOWNLOADS = 2;
-
-    private String               dllink            = null;
-
-    @SuppressWarnings("deprecation")
-    @Override
-    public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         dllink = null;
+        allow_html_download = false;
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         br.setCustomCharset("utf-8");
-
         URLConnectionAdapter con = null;
         try {
-            try {
-                con = br.openGetConnection(link.getDownloadURL());
-            } catch (final BrowserException e) {
-                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            con = br.openGetConnection(link.getDownloadURL());
+            final String server_filename = getFileNameFromHeader(con);
+            if (server_filename != null && server_filename.matches(".+\\.html?$")) {
+                allow_html_download = true;
             }
-            if (!con.getContentType().contains("html")) {
+            final boolean is_a_downloadable_file = !con.getContentType().contains("html") || allow_html_download;
+            if (is_a_downloadable_file) {
                 dllink = link.getDownloadURL();
                 link.setDownloadSize(con.getLongContentLength());
                 /* Final filename is sometimes set in decrypter */
                 if (link.getFinalFileName() == null) {
-                    link.setFinalFileName(Encoding.htmlDecode(getFileNameFromHeader(con)));
+                    link.setFinalFileName(Encoding.htmlDecode(server_filename));
                 }
                 return AvailableStatus.TRUE;
             } else {
@@ -98,7 +95,6 @@ public class LibGenInfo extends PluginForHost {
             } catch (final Throwable e) {
             }
         }
-
         if (br.containsHTML(">There are no records to display\\.<") || br.getHttpConnection().getResponseCode() == 404) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
@@ -106,10 +102,33 @@ public class LibGenInfo extends PluginForHost {
         if (link.getDownloadURL().contains("/ads.php?md5=")) {
             final String author = getBracketResult("author");
             final String title = getBracketResult("title");
-            filename = author + " - " + title;
+            final String extension = new Regex(br, "Download via torrent\\s*</a>\\s*<input\\s*.*?value=\".*?(\\.[a-z0-9]{3,4})\"").getMatch(0);
+            if (title != null) {
+                filename = (author == null || author.trim().length() != 0 ? author : "unknown") + " - " + title;
+            }
+            if (filename != null && extension != null) {
+                filename += extension;
+            }
+            final String md5 = new Regex(link.getPluginPatternMatcher(), "md5=([a-f0-9]{32})").getMatch(0);
+            // this is actually the checksum of the file, confirmed
+            link.setMD5Hash(md5);
+            if (filename == null) {
+                // some entries wont have details above to construct a filename. so lets set temp nicename
+                filename = md5;
+            }
         } else {
             filename = br.getRegex("name=\"hidden0\" type=\"hidden\"\\s+value=\"([^<>\"\\']+)\"").getMatch(0);
             filesize = br.getRegex(">size\\(bytes\\)</td>[\t\n\r ]+<td>(\\d+)</td>").getMatch(0);
+            if (filename == null) {
+                // construct
+                final String author = br.getRegex(">author\\(s\\)</td>\\s*<td>\\s*(.*?)\\s*</td>").getMatch(0);
+                final String title = br.getRegex(">title</td>\\s*<td>\\s*(.*?)\\s*</td>").getMatch(0);
+                final String type = br.getRegex(">file type</td>\\s*<td>(.*?)</td>").getMatch(0);
+                if (author == null || title == null) {
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                }
+                filename = (author == null || author.trim().length() != 0 ? author : "unknown") + " - " + title + "." + type;
+            }
         }
         if (filename == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -131,12 +150,16 @@ public class LibGenInfo extends PluginForHost {
         requestFileInformation(downloadLink);
         if (dllink == null) {
             if (downloadLink.getDownloadURL().contains("/ads.php?md5=")) {
-                dllink = br.getRegex("<a href=(\"|')(/get\\.php\\?md5=[a-f0-9]{32}.*?)\\1").getMatch(1);
+                dllink = br.getRegex("<a href=(\"|')((?:https?:)?(?://[\\w\\-\\./]+)?/get\\.php\\?md5=[a-f0-9]{32}.*?)\\1").getMatch(1);
                 if (dllink == null) {
                     throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
-                dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, FREE_RESUME, FREE_MAXCHUNKS);
+                dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, FREE_RESUME, FREE_MAXCHUNKS);
             } else {
+                final String dlUrl = br.getRegex("href=(\"|')((?:https?:)?(?://[\\w\\-\\.]+)?/download\\.php.*?)\\1").getMatch(1);
+                if (dlUrl != null) {
+                    br.getPage(dlUrl);
+                }
                 Form download = br.getFormbyProperty("name", "receive");
                 if (download == null) {
                     download = br.getForm(1);
@@ -145,17 +168,23 @@ public class LibGenInfo extends PluginForHost {
                     logger.info("Could not find download form");
                     throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
-                // they have use multiple quotation marks within form input lines. This returns null values.
-                download = cleanForm(download);
-                dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, download, FREE_RESUME, FREE_MAXCHUNKS);
+                dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, download, FREE_RESUME, FREE_MAXCHUNKS);
             }
         } else {
-            dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, FREE_RESUME, FREE_MAXCHUNKS);
+            dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, FREE_RESUME, FREE_MAXCHUNKS);
         }
-        if (dl.getConnection().getContentType().contains("html")) {
+        if (dl.getConnection().getContentType().contains("html") && !allow_html_download) {
             br.followConnection();
             if (br.containsHTML(">Sorry, huge and large files are available to download in local network only, try later")) {
                 throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, 30 * 60 * 1000l);
+            }
+            if (br.containsHTML("too many or too often downloads\\.\\.\\.")) {
+                final String wait = br.getRegex("wait for (\\d+)hrs automatic amnesty").getMatch(0);
+                if (wait != null) {
+                    throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, "Too many downloads", Integer.parseInt(wait) * 60 * 60 * 1001l);
+                } else {
+                    throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, "Too many downloads", 1 * 60 * 60 * 1001l);
+                }
             }
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
@@ -175,38 +204,6 @@ public class LibGenInfo extends PluginForHost {
     public void resetDownloadlink(DownloadLink link) {
     }
 
-    /**
-     * If form contain both " and ' quotation marks within input fields it can return null values, thus you submit wrong/incorrect data re:
-     * InputField parse(final String data). Affects revision 19688 and earlier!
-     *
-     * TODO: remove after JD2 goes stable!
-     *
-     * @author raztoki
-     */
-    private Form cleanForm(Form form) {
-        if (form == null) {
-            return null;
-        }
-        String data = form.getHtmlCode();
-        ArrayList<String> cleanupRegex = new ArrayList<String>();
-        cleanupRegex.add("(\\w+\\s*=\\s*\"[^\"]+\")");
-        cleanupRegex.add("(\\w+\\s*=\\s*'[^']+')");
-        for (String reg : cleanupRegex) {
-            String results[] = new Regex(data, reg).getColumn(0);
-            if (results != null) {
-                String quote = new Regex(reg, "(\"|')").getMatch(0);
-                for (String result : results) {
-                    String cleanedResult = result.replaceFirst(quote, "\\\"").replaceFirst(quote + "$", "\\\"");
-                    data = data.replace(result, cleanedResult);
-                }
-            }
-        }
-        Form ret = new Form(data);
-        ret.setAction(form.getAction());
-        ret.setMethod(form.getMethod());
-        return ret;
-    }
-
     public boolean hasAutoCaptcha() {
         return false;
     }
@@ -222,5 +219,4 @@ public class LibGenInfo extends PluginForHost {
         }
         return false;
     }
-
 }

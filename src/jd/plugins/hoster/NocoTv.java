@@ -13,13 +13,12 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
+import java.math.BigInteger;
+import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.Map;
-
-import org.appwork.utils.formatter.TimeFormatter;
 
 import jd.PluginWrapper;
 import jd.config.Property;
@@ -40,21 +39,24 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
+import jd.plugins.components.PluginJSonUtils;
 import jd.utils.locale.JDL;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "noco.tv" }, urls = { "http://(www\\.)?online\\.nolife\\-tv\\.com/emission/#(!|%21)/\\d+/[a-z0-9\\-_]+" })
-public class NocoTv extends PluginForHost {
+import org.appwork.utils.StringUtils;
+import org.appwork.utils.formatter.TimeFormatter;
 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "noco.tv" }, urls = { "https?://(?:www\\.)?online\\.nolife\\-tv\\.com/emission/#(!|%21)/\\d+/[a-z0-9\\-_]+|https?://(?:www\\.)?noco\\.tv/emission/\\d+/.+" })
+public class NocoTv extends PluginForHost {
     private String              dllink              = null;
     private static final String ONLYPREMIUMUSERTEXT = "Only downloadable for premium members";
     private boolean             notDownloadable     = false;
     private static Object       LOCK                = new Object();
-    private static final String MAINPAGE            = "http://noco.tv/";
+    private static final String MAINPAGE            = "https://noco.tv/";
     private static final String SALT                = "YTUzYmUxODUzNzcwZjBlYmUwMzExZDY5OTNjN2JjYmU=";
 
     public NocoTv(final PluginWrapper wrapper) {
         super(wrapper);
-        this.enablePremium("http://www.nolife-tv.com/souscription");
+        this.enablePremium("https://www.nolife-tv.com/souscription");
     }
 
     public void correctDownloadLink(final DownloadLink link) {
@@ -132,6 +134,8 @@ public class NocoTv extends PluginForHost {
                 }
             }
             throw new PluginException(LinkStatus.ERROR_FATAL, ONLYPREMIUMUSERTEXT);
+        } else if (StringUtils.isEmpty(dllink)) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 0);
         if (dl.getConnection().getContentType().contains("html")) {
@@ -177,7 +181,7 @@ public class NocoTv extends PluginForHost {
                     }
                 }
                 br.setFollowRedirects(false);
-                br.postPage("http://" + this.getHost() + "/do.php", "cookie=1&a=login&username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
+                br.postPage("https://" + this.getHost() + "/do.php", "cookie=1&a=login&username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
                 if (br.getCookie(MAINPAGE, "id_user") == null) {
                     throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
                 }
@@ -216,17 +220,20 @@ public class NocoTv extends PluginForHost {
         if (aa != null && br.getCookie(MAINPAGE, "bbpassword") == null) {
             login(aa, false);
         }
-        String dllink = downloadLink.getDownloadURL();
-        br.getPage(dllink);
+        final String url = downloadLink.getDownloadURL();
+        br.getPage(url);
+        if (this.br.containsHTML("Erreur : émission non trouvée")) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        }
         String filename = br.getRegex("<title>Nolife Online \\- ([^<>\"]+)</title>").getMatch(0);
         if (filename == null) {
-            filename = dllink.substring(dllink.lastIndexOf("/") + 1);
+            filename = new Regex(url, "https?://[^/]+/(.+)").getMatch(0);
             if (filename == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
         }
         filename = Encoding.htmlDecode(filename);
-        if (!br.containsHTML("flashvars")) {
+        if (br.containsHTML("id=\"message\\-non\\-abo\"") && br.containsHTML("class=\"noco\\-error\"")) {
             notDownloadable = true;
             downloadLink.getLinkStatus().setStatusText(JDL.L("plugins.hoster.onlinenolifetvcom.only4premium", ONLYPREMIUMUSERTEXT));
             downloadLink.setName(filename + ".mp4");
@@ -236,26 +243,21 @@ public class NocoTv extends PluginForHost {
              * Hier wird über die Kekse(Premium/Free) bestimmt welche Videoqualität man bekommt. Spart oben in den dlmethoden einige Zeilen
              * an Code. Die Methode "setBrowserExclusive()" muss dabei deaktiviert sein.
              */
-
             long ts = System.currentTimeMillis();
-            br.postPage("/_nlfplayer/api/api_player.php", "a=UEM%7CSEM%7CMEM%7CCH%7CSWQ&id%5Fnlshow=" + getId(dllink) + "&timestamp=" + ts + "&skey=" + getSKey(ts) + "&quality=0");
-            if (br.containsHTML("message=Je ne trouve pas cette émission")) {
-                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            Browser br2 = null;
+            dllink = Encoding.htmlDecode(br.getRegex("noco_media\"\\s*src\\s*=\\s*\"(https?://.*?)\"").getMatch(0));
+            if (StringUtils.isEmpty(dllink)) {
+                br2 = br.cloneBrowser();
+                callAPI(br2, getId(dllink));
+                dllink = PluginJSonUtils.getJson(br2, "file");
             }
-            if (br.containsHTML("Pour voir l'émission complète, abonnez\\-vous")) {
-                notDownloadable = true;
-                downloadLink.getLinkStatus().setStatusText(JDL.L("plugins.hoster.onlinenolifetvcom.only4premium", ONLYPREMIUMUSERTEXT));
-                downloadLink.setName(filename + ".mp4");
-                return AvailableStatus.TRUE;
-            }
-            dllink = br.getRegex("\\&url=(http://[^<>\"\\'\\&]+\\.mp4)\\&").getMatch(0);
-            if (dllink == null) {
+            if (StringUtils.isEmpty(dllink)) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
             filename = filename.trim();
             final String ext = getFileNameExtensionFromString(dllink, ".mp4");
             downloadLink.setFinalFileName(filename + ext);
-            final Browser br2 = br.cloneBrowser();
+            br2 = br.cloneBrowser();
             // In case the link redirects to the finallink
             br2.setFollowRedirects(true);
             URLConnectionAdapter con = null;
@@ -276,15 +278,38 @@ public class NocoTv extends PluginForHost {
         }
     }
 
+    /* https://github.com/rg3/youtube-dl/blob/master/youtube_dl/extractor/noco.py */
+    private void callAPI(final Browser br, final String videoID) throws Exception {
+        final String ts = Long.toString(System.currentTimeMillis());
+        // Missing encoding
+        final String hash1 = JDHash.getMD5(ts);
+        final String hexdigest1 = hexdigest(hash1);
+        final String hash2 = JDHash.getMD5(hexdigest1 + "#8S?uCraTedap6a");
+        // Mixxing encoding
+        final String tk = hexdigest(hash2);
+        // br.getPage(String.format("https://api.noco.tv/1.1/shows/%s/medias?ts=%s&tk=%s&", videoID, ts, tk));
+        br.getPage(String.format("https://api.noco.tv/1.1/shows/%s/video/hd_1080/fr?ts=%s&tk=%s&", videoID, ts, tk));
+    }
+
+    /* http://pad.yohdah.com/101/python-vs-java-md5-hexdigest */
+    public String hexdigest(final String message) throws Exception {
+        String hd;
+        MessageDigest md5 = MessageDigest.getInstance("MD5");
+        md5.update(message.getBytes());
+        BigInteger hash = new BigInteger(1, md5.digest());
+        hd = hash.toString(16); // BigInteger strips leading 0's
+        while (hd.length() < 32) {
+            hd = "0" + hd;
+        } // pad with leading 0's
+        return hd;
+    }
+
     private String getSKey(long s) {
         return JDHash.getMD5(JDHash.getMD5(String.valueOf(s)) + Encoding.Base64Decode(SALT));
     }
 
-    private String getId(String s) {
-        String id = new Regex(s, "\\?id=(\\d+)").getMatch(0);
-        if (id == null) {
-            id = new Regex(s, "/([\\d]{5})/").getMatch(0);
-        }
+    private String getId(final String url) {
+        final String id = new Regex(url, "/emission(?:/[^/]+)?/(\\d+)").getMatch(0);
         return id;
     }
 
@@ -299,5 +324,4 @@ public class NocoTv extends PluginForHost {
     @Override
     public void resetPluginGlobals() {
     }
-
 }

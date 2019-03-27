@@ -20,7 +20,7 @@ import org.appwork.utils.formatter.TimeFormatter;
 import org.jdownloader.plugins.components.usenet.UsenetAccountConfigInterface;
 import org.jdownloader.plugins.components.usenet.UsenetServer;
 
-@HostPlugin(revision = "$Revision: 31032 $", interfaceVersion = 3, names = { "giganews.com" }, urls = { "" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "giganews.com" }, urls = { "" })
 public class GiganewsCom extends UseNet {
     public GiganewsCom(PluginWrapper wrapper) {
         super(wrapper);
@@ -61,6 +61,12 @@ public class GiganewsCom extends UseNet {
                 login.put("credential_0", Encoding.urlEncode(userName));
                 login.put("credential_1", Encoding.urlEncode(account.getPass()));
                 br.submitForm(login);
+                login = br.getFormbyActionRegex("/auth");
+                if (login != null && login.containsHTML("nonce") && login.containsHTML("credential_0") && login.containsHTML("credential_1")) {
+                    login.put("credential_0", Encoding.urlEncode(userName));
+                    login.put("credential_1", Encoding.urlEncode(account.getPass()));
+                    br.submitForm(login);
+                }
                 login = br.getFormbyActionRegex("/auth");
                 if (login != null && login.containsHTML("credential_0") && login.containsHTML("credential_1")) {
                     throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);

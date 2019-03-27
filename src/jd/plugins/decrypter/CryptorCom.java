@@ -13,11 +13,11 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
@@ -34,12 +34,12 @@ import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperCrawlerPlu
 
 @DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "cryptor.to" }, urls = { "https?://(?:www\\.)?cryptor\\.to/folder/[A-Za-z0-9\\-_]+" })
 public class CryptorCom extends PluginForDecrypt {
-
     public CryptorCom(PluginWrapper wrapper) {
         super(wrapper);
     }
 
-    private final String html_passwordrequired = "folder_access";
+    private final String                   html_passwordrequired = "folder_access";
+    private static AtomicReference<String> LASTSESSIONPASSWORD   = new AtomicReference<String>();
 
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
         final ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
@@ -51,7 +51,11 @@ public class CryptorCom extends PluginForDecrypt {
             decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
         }
-
+        final List<String> passwords = getPreSetPasswords();
+        final String lastSessionPassword = CryptorCom.LASTSESSIONPASSWORD.get();
+        if (lastSessionPassword != null && !passwords.contains(lastSessionPassword)) {
+            passwords.add(lastSessionPassword);
+        }
         if (this.br.containsHTML(html_passwordrequired)) {
             boolean failed = true;
             for (int i = 0; i <= 3; i++) {
@@ -60,14 +64,21 @@ public class CryptorCom extends PluginForDecrypt {
                     final String recaptchaV2Response = new CaptchaHelperCrawlerPluginRecaptchaV2(this, br).getToken();
                     postData += "g-recaptcha-response=" + Encoding.urlEncode(recaptchaV2Response);
                 }
+                final String passCode;
                 if (this.br.containsHTML("\"folder_access_password_check\"")) {
-                    final String passCode = getUserInput("Password?", param);
+                    if (passwords.size() > 0) {
+                        passCode = passwords.remove(0);
+                        i = 0;
+                    } else {
+                        passCode = getUserInput("Password?", param);
+                    }
                     if (postData.length() == 0) {
                         postData += "folder_access%5Bpassword_check%5D=" + Encoding.urlEncode(passCode);
                     } else {
                         postData += "&folder_access%5Bpassword_check%5D=" + Encoding.urlEncode(passCode);
                     }
                 } else {
+                    passCode = null;
                     if (postData.length() == 0) {
                         postData += "folder_access";
                     } else {
@@ -83,6 +94,9 @@ public class CryptorCom extends PluginForDecrypt {
                 if (this.br.containsHTML(html_passwordrequired)) {
                     continue;
                 }
+                if (passCode != null) {
+                    CryptorCom.LASTSESSIONPASSWORD.set(passCode);
+                }
                 failed = false;
                 break;
             }
@@ -91,7 +105,6 @@ public class CryptorCom extends PluginForDecrypt {
                 throw new DecrypterException(DecrypterException.PASSWORD);
             }
         }
-
         this.br.setFollowRedirects(false);
         final String fpName = br.getRegex("class=\"text\\-center\">[\t\n\r ]*?<h1>([^<>]+)</h1>").getMatch(0);
         final String mirrors[][] = br.getRegex("option value=\"(\\d+)\"\\s*(selected)?\\s*>\\s*(.*?)\\s*<").getMatches();
@@ -124,7 +137,7 @@ public class CryptorCom extends PluginForDecrypt {
             }
             decryptedLinks.add(DummyCNL.createDummyCNL(cnlCrypted, cnlJk.replaceAll("\\\\", ""), null, cnlSource));
         }
-        final String[] links = br.getRegex("\"(/dl/[A-Za-z0-9]+\\-)\"").getColumn(0);
+        final String[] links = br.getRegex("\"(/(link|dl)/[A-Za-z0-9]+\\-)\"").getRow(0);
         if (links != null) {
             for (final String singleLink : links) {
                 if (this.isAbort()) {

@@ -13,10 +13,13 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.util.Locale;
+
+import org.appwork.utils.StringUtils;
+import org.appwork.utils.formatter.TimeFormatter;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
 
 import jd.PluginWrapper;
 import jd.controlling.AccountController;
@@ -36,12 +39,8 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.PluginJSonUtils;
 
-import org.appwork.utils.formatter.TimeFormatter;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
-
 @HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "seedr.cc" }, urls = { "https?://[A-Za-z0-9\\-]+\\.seedr\\.cc/downloads/.+|http://seedrdecrypted\\.cc/\\d+" })
 public class SeedrCc extends PluginForHost {
-
     public SeedrCc(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium("https://www.seedr.cc/premium");
@@ -62,10 +61,8 @@ public class SeedrCc extends PluginForHost {
     private final boolean       ACCOUNT_PREMIUM_RESUME       = true;
     private final int           ACCOUNT_PREMIUM_MAXCHUNKS    = -8;
     private final int           ACCOUNT_PREMIUM_MAXDOWNLOADS = 20;
-
     private static final String TYPE_DIRECTLINK              = "https?://[A-Za-z0-9\\-]+\\.seedr\\.cc/downloads/.+";
     private static final String TYPE_NORMAL                  = "http://seedrdecrypted\\.cc/\\d+";
-
     private boolean             server_issues                = false;
     private String              dllink                       = null;
 
@@ -157,7 +154,8 @@ public class SeedrCc extends PluginForHost {
                     prepAjaxBr(br);
                     br.postPage("https://www." + this.getHost() + "/content.php?action=get_settings", "");
                     if (!br.containsHTML("\"login_required\"")) {
-                        br.setCookies(account.getHoster(), cookies);
+                        /* Save new cookie timestamp */
+                        account.saveCookies(br.getCookies(account.getHoster()), "");
                         return;
                     }
                     br = new Browser();
@@ -166,22 +164,29 @@ public class SeedrCc extends PluginForHost {
                 if (dlinkbefore == null) {
                     this.setDownloadLink(new DownloadLink(this, "Account", this.getHost(), "http://" + account.getHoster(), true));
                 }
-                final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br, "6LfhAyMTAAAAAJD3uGiFfUcoXSiVsRKJedWSrSmv").getToken();
+                br.getPage("https://www." + this.getHost());
+                String reCaptchaKey = br.getRegex("data\\-sitekey=\"([^<>\"]+)\"").getMatch(0);
+                if (reCaptchaKey == null) {
+                    /* 2018-10-30 */
+                    reCaptchaKey = "6LdNI3MUAAAAAKcY5lKxRTMxg4xFWHEJWzSNJGdE";
+                }
+                final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br, reCaptchaKey).getToken();
                 if (dlinkbefore != null) {
                     this.setDownloadLink(dlinkbefore);
                 }
                 String postData = "username=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()) + "&rememberme=on";
                 postData += "&g-recaptcha-response=" + Encoding.urlEncode(recaptchaV2Response);
+                postData += "&recaptcha-version=3";
                 prepAjaxBr(br);
                 br.postPageRaw("https://www.seedr.cc/actions.php?action=login", postData);
+                final String error = PluginJSonUtils.getJson(br, "error");
+                if (!StringUtils.isEmpty(error)) {
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
+                }
                 this.br.getHeaders().put("X-Requested-With", "XMLHttpRequest");
                 this.br.postPage("https://www." + this.getHost() + "/content.php?action=get_devices", "");
                 if (br.getCookie(account.getHoster(), "remember") == null) {
-                    if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
-                    } else {
-                        throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!\r\nQuick help:\r\nYou're sure that the username and password you entered are correct?\r\nIf your password contains special characters, change it (remove them) and try again!", PluginException.VALUE_ID_PREMIUM_DISABLE);
-                    }
+                    throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
                 }
                 account.saveCookies(br.getCookies(account.getHoster()), "");
             } catch (final PluginException e) {
@@ -289,5 +294,4 @@ public class SeedrCc extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

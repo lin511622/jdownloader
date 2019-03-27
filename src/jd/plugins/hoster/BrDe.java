@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.BufferedWriter;
@@ -28,9 +27,6 @@ import java.util.Scanner;
 import java.util.TimeZone;
 
 import jd.PluginWrapper;
-import jd.config.ConfigContainer;
-import jd.config.ConfigEntry;
-import jd.http.Browser;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
 import jd.nutils.encoding.HTMLEntities;
@@ -41,78 +37,87 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
-import jd.utils.locale.JDL;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "br-online.de" }, urls = { "http://brdecrypted\\-online\\.de/\\?format=(mp4|xml)\\&quality=\\d+x\\d+\\&hash=[a-z0-9]+" }) 
+import org.appwork.storage.config.annotations.AboutConfig;
+import org.appwork.storage.config.annotations.DefaultBooleanValue;
+import org.jdownloader.plugins.config.Order;
+import org.jdownloader.plugins.config.PluginConfigInterface;
+import org.jdownloader.translate._JDT;
+
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "br-online.de" }, urls = { "http://brdecrypted\\-online\\.de/\\?format=(mp4|xml)\\&quality=\\d+x\\d+\\&hash=[a-z0-9]+" })
 public class BrDe extends PluginForHost {
-
     public BrDe(PluginWrapper wrapper) {
         super(wrapper);
-        setConfigElements();
     }
 
-    private String DLLINK = null;
+    private String  dllink             = null;
+    private boolean geo_or_age_blocked = false;
+    private boolean server_issues      = false;
 
     @Override
     public String getAGBLink() {
-        return "http://www.br.de/unternehmen/service/kontakt/index.html";
+        return "https://www.br.de/unternehmen/service/kontakt/index.html";
     }
-
-    public static final String Q_0         = "Q_0";
-    public static final String Q_A         = "Q_A";
-    public static final String Q_B         = "Q_B";
-    public static final String Q_E         = "Q_E";
-    public static final String Q_C         = "Q_C";
-    public static final String Q_X         = "Q_X";
-    public static final String Q_BEST      = "Q_BEST";
-    public static final String Q_SUBTITLES = "Q_SUBTITLES";
 
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws IOException, PluginException {
-        if (downloadLink.getBooleanProperty("offline", false)) {
+        final String startLink = downloadLink.getStringProperty("mainlink");
+        if (downloadLink.getBooleanProperty("offline", false) || startLink == null) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
+        dllink = downloadLink.getStringProperty("direct_link", null);
+        geo_or_age_blocked = false;
+        server_issues = false;
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
-        final String startLink = downloadLink.getStringProperty("mainlink");
         br.getPage(startLink);
-
         if (br.getHttpConnection().getResponseCode() == 404) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-
         final String filename = downloadLink.getStringProperty("plain_filename", null);
-        DLLINK = downloadLink.getStringProperty("direct_link", null);
-
-        DLLINK = Encoding.htmlDecode(DLLINK.trim());
+        dllink = Encoding.htmlDecode(dllink.trim());
         downloadLink.setFinalFileName(filename);
-        final Browser br2 = br.cloneBrowser();
-        // In case the link redirects to the finallink
-        br2.setFollowRedirects(true);
         URLConnectionAdapter con = null;
         try {
-            br2.getHeaders().put("Accept-Encoding", "identity");
-            con = br2.openGetConnection(DLLINK);
+            br.getHeaders().put("Accept-Encoding", "identity");
+            con = br.openGetConnection(dllink);
             if (!con.getContentType().contains("html")) {
                 downloadLink.setDownloadSize(con.getLongContentLength());
             } else {
-                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+                if (con.getResponseCode() == 403) {
+                    /* E.g. content is not available before 10PM (Germany). */
+                    geo_or_age_blocked = true;
+                } else {
+                    server_issues = true;
+                }
             }
-            return AvailableStatus.TRUE;
         } finally {
             try {
                 con.disconnect();
             } catch (Throwable e) {
             }
         }
+        return AvailableStatus.TRUE;
     }
 
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception {
         requestFileInformation(downloadLink);
+        if (server_issues) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown server error", 10 * 60 * 1000l);
+        } else if (geo_or_age_blocked) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "GEO-or age blocked", 30 * 60 * 1000l);
+        } else if (dllink == null) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
         br.getHeaders().put("Accept-Encoding", "identity");
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, DLLINK, true, 0);
+        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 0);
         if (dl.getConnection().getContentType().contains("html")) {
+            if (dl.getConnection().getResponseCode() == 403) {
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 60 * 60 * 1000l);
+            } else if (dl.getConnection().getResponseCode() == 404) {
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 404", 60 * 60 * 1000l);
+            }
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
@@ -138,18 +143,15 @@ public class BrDe extends PluginForHost {
      */
     public boolean convertSubtitle(final DownloadLink downloadlink) {
         final File source = new File(downloadlink.getFileOutput());
-
         BufferedWriter dest;
         try {
             dest = new BufferedWriter(new FileWriter(new File(source.getAbsolutePath().replace(".xml", ".srt"))));
         } catch (IOException e1) {
             return false;
         }
-
         final StringBuilder xml = new StringBuilder();
         int counter = 1;
         final String lineseparator = System.getProperty("line.separator");
-
         Scanner in = null;
         try {
             in = new Scanner(new FileReader(source));
@@ -163,7 +165,6 @@ public class BrDe extends PluginForHost {
         }
         final String xmlContent = xml.toString();
         final boolean success = convertSubtitleBrOnlineDe(downloadlink, xmlContent, 0);
-
         return success;
     }
 
@@ -174,7 +175,6 @@ public class BrDe extends PluginForHost {
      */
     public static boolean convertSubtitleBrOnlineDe(final DownloadLink downloadlink, final String xmlContent, long offset_reduce_milliseconds) {
         final File source = new File(downloadlink.getFileOutput());
-
         BufferedWriter dest;
         try {
             dest = new BufferedWriter(new FileWriter(new File(source.getAbsolutePath().replace(".xml", ".srt"))));
@@ -183,7 +183,6 @@ public class BrDe extends PluginForHost {
         }
         int counter = 1;
         final String lineseparator = System.getProperty("line.separator");
-
         try {
             /* Find hex color text --> code assignments */
             final HashMap<String, String> color_codes = new HashMap<String, String>();
@@ -236,9 +235,7 @@ public class BrDe extends PluginForHost {
                 output_date_format.setTimeZone(TimeZone.getTimeZone("GMT"));
                 final String start_formatted = output_date_format.format(start_milliseconds);
                 final String end_formatted = output_date_format.format(end_milliseconds);
-
                 dest.write(start_formatted + " --> " + end_formatted + lineseparator);
-
                 final String[][] texts = new Regex(info, "<tt:span[^>]*?style=\"([A-Za-z0-9]+)\">([^<>]*?)</tt:span>").getMatches();
                 String text = "";
                 int line_counter = 1;
@@ -269,9 +266,7 @@ public class BrDe extends PluginForHost {
             } catch (IOException e) {
             }
         }
-
         source.delete();
-
         return true;
     }
 
@@ -295,19 +290,104 @@ public class BrDe extends PluginForHost {
         return "JDownloader's BR Plugin helps downloading videoclips from br.de. You can choose between different video qualities.";
     }
 
-    private void setConfigElements() {
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), Q_SUBTITLES, JDL.L("plugins.hoster.brdemediathek.subtitles", "Download subtitle whenever possible")).setDefaultValue(false));
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_SEPARATOR));
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_LABEL, "Video settings: "));
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_SEPARATOR));
-        final ConfigEntry bestonly = new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), Q_BEST, JDL.L("plugins.hoster.brdemediathek.best", "Load best version ONLY")).setDefaultValue(false);
-        getConfig().addEntry(bestonly);
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), Q_0, JDL.L("plugins.hoster.brdemediathek.load_q0", "Load 256x144 version (XS)")).setDefaultValue(true).setEnabledCondidtion(bestonly, false));
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), Q_A, JDL.L("plugins.hoster.brdemediathek.load_qA", "Load 384x216 version (S)")).setDefaultValue(true).setEnabledCondidtion(bestonly, false));
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), Q_B, JDL.L("plugins.hoster.brdemediathek.load_qB", "Load 512x288 version (M)")).setDefaultValue(true).setEnabledCondidtion(bestonly, false));
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), Q_E, JDL.L("plugins.hoster.brdemediathek.load_qE", "Load 640x360 version (L)")).setDefaultValue(true).setEnabledCondidtion(bestonly, false));
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), Q_C, JDL.L("plugins.hoster.brdemediathek.load_qC", "Load 960x544 version (XL)")).setDefaultValue(true).setEnabledCondidtion(bestonly, false));
-        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), Q_X, JDL.L("plugins.hoster.brdemediathek.load_qX", "Load 1280x720 version (XXL)")).setDefaultValue(true).setEnabledCondidtion(bestonly, false));
+    @Override
+    public Class<? extends PluginConfigInterface> getConfigInterface() {
+        return BrDeConfigInterface.class;
+    }
+
+    public static interface BrDeConfigInterface extends PluginConfigInterface {
+        public static class TRANSLATION {
+            public String getFastLinkcheckEnabled_label() {
+                return _JDT.T.lit_enable_fast_linkcheck();
+            }
+
+            public String getGrabSubtitleEnabled_label() {
+                return _JDT.T.lit_add_subtitles();
+            }
+
+            public String getGrabAudio_label() {
+                return _JDT.T.lit_add_audio();
+            }
+
+            public String getGrabBESTEnabled_label() {
+                return _JDT.T.lit_add_only_the_best_video_quality();
+            }
+
+            public String getOnlyBestVideoQualityOfSelectedQualitiesEnabled_label() {
+                return _JDT.T.lit_add_only_the_best_video_quality_within_user_selected_formats();
+            }
+            // public String getAddUnknownQualitiesEnabled_label() {
+            // return _JDT.T.lit_add_unknown_formats();
+            // }
+        }
+
+        public static final TRANSLATION TRANSLATION = new TRANSLATION();
+
+        @DefaultBooleanValue(true)
+        @Order(9)
+        boolean isFastLinkcheckEnabled();
+
+        void setFastLinkcheckEnabled(boolean b);
+
+        @DefaultBooleanValue(false)
+        @Order(10)
+        boolean isGrabSubtitleEnabled();
+
+        void setGrabSubtitleEnabled(boolean b);
+
+        @DefaultBooleanValue(false)
+        @Order(20)
+        boolean isGrabBESTEnabled();
+
+        void setGrabBESTEnabled(boolean b);
+
+        @AboutConfig
+        @DefaultBooleanValue(false)
+        @Order(21)
+        boolean isOnlyBestVideoQualityOfSelectedQualitiesEnabled();
+
+        void setOnlyBestVideoQualityOfSelectedQualitiesEnabled(boolean b);
+
+        // @DefaultBooleanValue(true)
+        // @Order(21)
+        // boolean isAddUnknownQualitiesEnabled();
+        //
+        // void setAddUnknownQualitiesEnabled(boolean b);
+        @DefaultBooleanValue(true)
+        @Order(90)
+        boolean isGrabHTTPMp4XSVideoEnabled();
+
+        void setGrabHTTPMp4XSVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(100)
+        boolean isGrabHTTPMp4SVideoEnabled();
+
+        void setGrabHTTPMp4SVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(110)
+        boolean isGrabHTTPMp4MVideoEnabled();
+
+        void setGrabHTTPMp4MVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(111)
+        boolean isGrabHTTPMp4LVideoEnabled();
+
+        void setGrabHTTPMp4LVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(112)
+        boolean isGrabHTTPMp4XLVideoEnabled();
+
+        void setGrabHTTPMp4XLVideoEnabled(boolean b);
+
+        @DefaultBooleanValue(true)
+        @Order(113)
+        boolean isGrabHTTPMp4XXLVideoEnabled();
+
+        void setGrabHTTPMp4XXLVideoEnabled(boolean b);
     }
 
     @Override
@@ -321,5 +401,4 @@ public class BrDe extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

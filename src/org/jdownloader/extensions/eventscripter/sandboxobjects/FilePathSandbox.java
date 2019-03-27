@@ -3,16 +3,35 @@ package org.jdownloader.extensions.eventscripter.sandboxobjects;
 import java.io.File;
 import java.io.IOException;
 
+import jd.plugins.LinkInfo;
+
 import org.appwork.utils.Files;
 import org.appwork.utils.IO;
 import org.jdownloader.extensions.eventscripter.EnvironmentException;
 
 public class FilePathSandbox {
-
     protected final File file;
 
     public FilePathSandbox(String fileOrUrl) {
         file = new File(fileOrUrl);
+    }
+
+    @Override
+    public int hashCode() {
+        if (file != null) {
+            return file.hashCode();
+        } else {
+            return super.hashCode();
+        }
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (obj instanceof FilePathSandbox) {
+            return ((FilePathSandbox) obj).file == file;
+        } else {
+            return super.equals(obj);
+        }
     }
 
     public boolean isFile() throws EnvironmentException {
@@ -87,6 +106,51 @@ public class FilePathSandbox {
         return ret;
     }
 
+    public LinkInfoSandbox getLinkInfo() {
+        final File file = getFile();
+        if (file == null) {
+            return null;
+        } else {
+            final LinkInfo info = LinkInfo.getLinkInfo(file);
+            if (info != null) {
+                return new LinkInfoSandbox(info);
+            } else {
+                return null;
+            }
+        }
+    }
+
+    public boolean copyTo(String destDirectory, String destName, boolean overwrite) throws EnvironmentException {
+        if (isFile()) {
+            final File dest;
+            if (destDirectory != null && destName != null) {
+                org.jdownloader.extensions.eventscripter.sandboxobjects.ScriptEnvironment.askForPermission("copy a file to a new file");
+                dest = new File(new File(destDirectory), destName);
+            } else if (destDirectory == null && destName != null) {
+                org.jdownloader.extensions.eventscripter.sandboxobjects.ScriptEnvironment.askForPermission("copy a file to a new file");
+                dest = new File(getFile().getParentFile(), destName);
+            } else if (destDirectory != null && destName == null) {
+                org.jdownloader.extensions.eventscripter.sandboxobjects.ScriptEnvironment.askForPermission("copy a file to a new folder");
+                dest = new File(new File(destDirectory), getFile().getName());
+            } else {
+                return false;
+            }
+            if (dest.exists() && (overwrite == false || !dest.delete())) {
+                return false;
+            }
+            if (!dest.getParentFile().exists()) {
+                dest.getParentFile().mkdirs();
+            }
+            try {
+                IO.copyFile(file, dest);
+                return true;
+            } catch (final IOException e) {
+                throw new EnvironmentException(e);
+            }
+        }
+        return false;
+    }
+
     public boolean copyTo(String folder) throws EnvironmentException {
         if (isFile()) {
             org.jdownloader.extensions.eventscripter.sandboxobjects.ScriptEnvironment.askForPermission("copy a file to a new folder");
@@ -109,6 +173,10 @@ public class FilePathSandbox {
 
     public String getAbsolutePath() {
         return file.getAbsolutePath();
+    }
+
+    private File getFile() {
+        return file;
     }
 
     @Override

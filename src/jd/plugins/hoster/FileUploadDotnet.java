@@ -13,31 +13,31 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.util.regex.Pattern;
 
+import org.appwork.utils.formatter.SizeFormatter;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
+import org.jdownloader.plugins.components.antiDDoSForHost;
+
 import jd.PluginWrapper;
-import jd.http.RandomUserAgent;
+import jd.http.Browser;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
+import jd.parser.html.Form;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
-import jd.plugins.PluginForHost;
+import jd.plugins.components.UserAgents;
 
-import org.appwork.utils.formatter.SizeFormatter;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "file-upload.net" }, urls = { "http://(www\\.|en\\.)?file\\-upload\\.net/((member/){0,1}download\\-\\d+/(.*?)\\.html|view\\-\\d+/(.*?)\\.html|member/view_\\d+_(.*?)\\.html|member/data3\\.php\\?user=(.*?)\\&name=(.*))" }) 
-public class FileUploadDotnet extends PluginForHost {
-
-    private final Pattern PAT_Download = Pattern.compile("http://[\\w\\.]*?file-upload\\.net/(member/){0,1}download-\\d+/(.*?).html", Pattern.CASE_INSENSITIVE);
-    private final Pattern PAT_VIEW     = Pattern.compile("http://[\\w\\.]*?file-upload\\.net/(view-\\d+/(.*?).html|member/view_\\d+_(.*?).html)", Pattern.CASE_INSENSITIVE);
-    private final Pattern PAT_Member   = Pattern.compile("http://[\\w\\.]*?file-upload\\.net/member/data3\\.php\\?user=(.*?)&name=(.*)", Pattern.CASE_INSENSITIVE);
-    private String        UA           = RandomUserAgent.generate();
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "file-upload.net" }, urls = { "https?://(www\\.|en\\.)?file\\-upload\\.net/((member/){0,1}download\\-\\d+/(.*?)\\.html|view\\-\\d+/(.*?)\\.html|member/view_\\d+_(.*?)\\.html|member/data3\\.php\\?user=(.*?)\\&name=(.*))" })
+public class FileUploadDotnet extends antiDDoSForHost {
+    private final Pattern PAT_Download = Pattern.compile("https?://[\\w\\.]*?file-upload\\.net/(member/){0,1}download-\\d+/(.*?).html", Pattern.CASE_INSENSITIVE);
+    private final Pattern PAT_VIEW     = Pattern.compile("https?://[\\w\\.]*?file-upload\\.net/(view-\\d+/(.*?).html|member/view_\\d+_(.*?).html)", Pattern.CASE_INSENSITIVE);
+    private final Pattern PAT_Member   = Pattern.compile("https?://[\\w\\.]*?file-upload\\.net/member/data3\\.php\\?user=(.*?)&name=(.*)", Pattern.CASE_INSENSITIVE);
 
     public FileUploadDotnet(PluginWrapper wrapper) {
         super(wrapper);
@@ -45,7 +45,7 @@ public class FileUploadDotnet extends PluginForHost {
 
     @Override
     public void correctDownloadLink(final DownloadLink link) {
-        link.setUrlDownload(link.getDownloadURL().replaceAll("http://(en\\.)?file\\-upload", "http://www.file-upload"));
+        link.setUrlDownload(link.getDownloadURL().replaceAll("https?://(en\\.)?file\\-upload", "https://www.file-upload"));
     }
 
     public String getAGBLink() {
@@ -57,16 +57,14 @@ public class FileUploadDotnet extends PluginForHost {
     }
 
     public AvailableStatus requestFileInformation(DownloadLink downloadLink) throws PluginException {
-        br.setCookiesExclusive(true);
-        br.clearCookies(getHost());
-        br.getHeaders().put("User-Agent", UA);
+        br = new Browser();
+        br.getHeaders().put("User-Agent", UserAgents.stringUserAgent());
         br.setFollowRedirects(true);
         try {
             if (new Regex(downloadLink.getDownloadURL(), Pattern.compile(PAT_Download.pattern() + "|" + PAT_Member.pattern(), Pattern.CASE_INSENSITIVE)).matches()) {
                 /* LinkCheck für DownloadFiles */
                 String downloadurl = downloadLink.getDownloadURL();
-
-                br.getPage(downloadurl);
+                getPage(downloadurl);
                 if (!br.containsHTML(">Datei existiert nicht")) {
                     // Get complete name
                     String filename = br.getRegex("<title>File\\-Upload\\.net \\- ([^<>\"]*?)</title>").getMatch(0);
@@ -87,7 +85,7 @@ public class FileUploadDotnet extends PluginForHost {
             } else if (new Regex(downloadLink.getDownloadURL(), PAT_VIEW).matches()) {
                 /* LinkCheck für DownloadFiles */
                 String downloadurl = downloadLink.getDownloadURL();
-                br.getPage(downloadurl);
+                getPage(downloadurl);
                 if (!br.getURL().contains("view")) {
                     throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
                 }
@@ -102,7 +100,7 @@ public class FileUploadDotnet extends PluginForHost {
                 }
             }
         } catch (Exception e) {
-            logger.log( e);
+            logger.log(e);
         }
         throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
     }
@@ -110,15 +108,28 @@ public class FileUploadDotnet extends PluginForHost {
     @SuppressWarnings("deprecation")
     public void handleFree(DownloadLink downloadLink) throws Exception {
         requestFileInformation(downloadLink);
-        br.getHeaders().put("User-Agent", UA);
         if (new Regex(downloadLink.getDownloadURL(), Pattern.compile(PAT_Download.pattern() + "|" + PAT_Member.pattern(), Pattern.CASE_INSENSITIVE)).matches()) {
-            String dllink = br.getRegex("(http://(www\\.)file\\-upload\\.net/download(?:\\d+)?\\.php\\?valid=[\\d\\.]+&id=\\d+&name=[^\"\\']+)").getMatch(0);
-            if (dllink == null) {
+            // 20170420 raztoki, ajax
+            final String dlbutton = br.getRegex("('|\")(/downloadbutton\\.php\\?name=.*?)\\1").getMatch(1);
+            final Browser ajax = br.cloneBrowser();
+            // 20170510 dlbutton no longer used... but keep it here anyway.
+            if (dlbutton != null) {
+                ajax.getHeaders().put("Accept", "*/*");
+                ajax.getHeaders().put("X-Requested-With", "XMLHttpRequest");
+                getPage(ajax, dlbutton);
+            }
+            final Form download = ajax.getFormbyActionRegex("https?://(\\w+\\.)file-upload\\.net/download(?:\\d+)?\\.php\\?.*?");
+            if (download == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-            dllink = Encoding.htmlDecode(dllink);
-            br.setFollowRedirects(true);
-            dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink);
+            final String sitekey = download.getRegex("data\\-sitekey=\"([^<>\"]+)\"").getMatch(0);
+            if (download.containsHTML("g\\-recaptcha") && sitekey != null) {
+                /* 2017-04-25 */
+                logger.info("ReCaptchaV2 required");
+                final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, ajax, sitekey).getToken();
+                download.put("g-recaptcha-response", Encoding.urlEncode(recaptchaV2Response));
+            }
+            dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, download);
         } else if (new Regex(downloadLink.getDownloadURL(), PAT_VIEW).matches()) {
             /* DownloadFiles */
             String downloadurl = br.getRegex("<center>\n<a href=\"(.*?)\" rel=\"lightbox\"").getMatch(0);
@@ -126,7 +137,10 @@ public class FileUploadDotnet extends PluginForHost {
         } else {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-
+        if (dl.getConnection().getResponseCode() == 404) {
+            // typically referrer is incorrect!
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
         dl.startDownload();
     }
 
@@ -137,6 +151,5 @@ public class FileUploadDotnet extends PluginForHost {
     }
 
     public void resetPluginGlobals() {
-
     }
 }

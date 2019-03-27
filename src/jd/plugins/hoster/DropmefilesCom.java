@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -30,9 +29,8 @@ import jd.plugins.PluginForHost;
 
 import org.appwork.utils.formatter.SizeFormatter;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "dropmefiles.com" }, urls = { "http://(www\\.)?dropmefiles\\.com/[A-Za-z0-9]+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "dropmefiles.com" }, urls = { "https?://(www\\.)?dropmefiles\\.com/[A-Za-z0-9]+" })
 public class DropmefilesCom extends PluginForHost {
-
     public DropmefilesCom(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -43,10 +41,9 @@ public class DropmefilesCom extends PluginForHost {
     }
 
     /* Connection stuff */
-    private static final boolean FREE_RESUME       = false;
-    private static final int     FREE_MAXCHUNKS    = 1;
+    private static final boolean FREE_RESUME       = true;
+    private static final int     FREE_MAXCHUNKS    = 0;
     private static final int     FREE_MAXDOWNLOADS = -1;
-
     private String               dllink            = null;
 
     @SuppressWarnings("deprecation")
@@ -55,8 +52,9 @@ public class DropmefilesCom extends PluginForHost {
         dllink = null;
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
+        br.setCookie(getHost(), "language", "en");
         br.getPage(link.getDownloadURL());
-        if (br.containsHTML("due to ending of the share period|class=\"fileCount\">0</div>") || br.getHttpConnection().getResponseCode() == 404) {
+        if (br.containsHTML("due to ending of the share period|due to exceeding the limit|class=\"fileCount\">0</div>") || br.getHttpConnection().getResponseCode() == 404) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         String filename = null;
@@ -67,7 +65,7 @@ public class DropmefilesCom extends PluginForHost {
             if (dlinfo.length >= 3) {
                 filename = dlinfo[1];
             }
-            dllink = new Regex(downloadurl_source, "(http.+)").getMatch(0);
+            dllink = new Regex(downloadurl_source, "(https?.+)").getMatch(0);
         }
         if (filesize == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -87,12 +85,16 @@ public class DropmefilesCom extends PluginForHost {
 
     private void doFree(final DownloadLink downloadLink, final boolean resumable, final int maxchunks, final String directlinkproperty) throws Exception, PluginException {
         if (dllink == null) {
+            if (this.br.containsHTML("download when uploaded")) {
+                /* 2017-02-22: User already get their downloadlinks while the upload is still ongoing! */
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Wait until the file is uploaded to download it");
+            }
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, resumable, maxchunks);
-        if (dl.getConnection().getContentType().contains("html")) {
+        if (dl.getConnection().getContentType().contains("html") && dl.getConnection().getLongContentLength() < 1000) {
             br.followConnection();
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown server issue", 1 * 60 * 1000l);
         }
         downloadLink.setProperty(directlinkproperty, dllink);
         dl.startDownload();
@@ -114,5 +116,4 @@ public class DropmefilesCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

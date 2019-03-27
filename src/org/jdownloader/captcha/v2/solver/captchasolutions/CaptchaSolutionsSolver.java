@@ -7,6 +7,12 @@ import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
+import jd.http.Browser;
+import jd.http.URLConnectionAdapter;
+import jd.http.requests.FormData;
+import jd.http.requests.PostFormDataRequest;
+import jd.nutils.encoding.Encoding;
+
 import org.appwork.exceptions.WTFException;
 import org.appwork.storage.config.JsonConfig;
 import org.appwork.storage.config.ValidationException;
@@ -21,7 +27,6 @@ import org.jdownloader.captcha.v2.SolverStatus;
 import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptchaCategoryChallenge;
 import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptchaPuzzleChallenge;
 import org.jdownloader.captcha.v2.challenge.recaptcha.v1.RecaptchaV1CaptchaChallenge;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v2.AbstractRecaptcha2FallbackChallenge;
 import org.jdownloader.captcha.v2.challenge.recaptcha.v2.RecaptchaV2Challenge;
 import org.jdownloader.captcha.v2.challenge.solvemedia.SolveMediaCaptchaChallenge;
 import org.jdownloader.captcha.v2.challenge.stringcaptcha.BasicCaptchaChallenge;
@@ -29,14 +34,7 @@ import org.jdownloader.captcha.v2.solver.CESChallengeSolver;
 import org.jdownloader.captcha.v2.solver.CESSolverJob;
 import org.jdownloader.captcha.v2.solver.jac.SolverException;
 import org.jdownloader.logging.LogController;
-import org.jdownloader.plugins.SkipReason;
 import org.jdownloader.settings.staticreferences.CFG_CAPTCHA_SOLUTIONS;
-
-import jd.http.Browser;
-import jd.http.URLConnectionAdapter;
-import jd.http.requests.FormData;
-import jd.http.requests.PostFormDataRequest;
-import jd.nutils.encoding.Encoding;
 
 public class CaptchaSolutionsSolver extends CESChallengeSolver<String> implements GenericConfigEventListener<String> {
     private CaptchaSolutionsConfigInterface     config;
@@ -70,8 +68,8 @@ public class CaptchaSolutionsSolver extends CESChallengeSolver<String> implement
 
     @Override
     public boolean canHandle(Challenge<?> c) {
-        if (c instanceof RecaptchaV2Challenge || c instanceof AbstractRecaptcha2FallbackChallenge) {
-            return false;
+        if (c instanceof RecaptchaV2Challenge) {
+            return true;
         }
         if (c instanceof RecaptchaV1CaptchaChallenge) {
             return false;
@@ -87,46 +85,43 @@ public class CaptchaSolutionsSolver extends CESChallengeSolver<String> implement
 
     protected <T> Challenge<T> getChallenge(CESSolverJob<T> job) throws SolverException {
         final Challenge<?> challenge = job.getChallenge();
-        if (challenge instanceof RecaptchaV2Challenge) {
-            Challenge<T> ret = (Challenge<T>) ((RecaptchaV2Challenge) challenge).createBasicCaptchaChallenge();
-            if (ret == null) {
-                throw new SolverException(SkipReason.PHANTOM_JS_MISSING.getExplanation(null));
-            }
-            return ret;
-        } else {
-            return (Challenge<T>) challenge;
-        }
+        return (Challenge<T>) challenge;
     }
 
     @Override
     protected void solveCES(CESSolverJob<String> job) throws InterruptedException, SolverException {
         Challenge<String> challenge = getChallenge(job);
-        // if (challenge instanceof RecaptchaV2Challenge) {
-        // if (false) {
-        // return;
-        // }
-        // RecaptchaV2Challenge rc2 = ((RecaptchaV2Challenge) challenge);
-        // ;
-        // Browser br = new Browser();
-        // try {
-        // br.setReadTimeout(5 * 60000);
-        // // Put your CAPTCHA image file, file object, input stream,
-        // // or vector of bytes here:
-        // job.setStatus(SolverStatus.SOLVING);
-        // long startTime = System.currentTimeMillis();
-        // PostFormDataRequest r = new PostFormDataRequest("http://api.captchasolutions.com/solve");
-        // ensureAPIKey();
-        // r.addFormData(new FormData("p", "nocaptcha"));
-        // r.addFormData(new FormData("googlekey", Encoding.urlEncode(rc2.getSiteKey())));
-        // r.addFormData(new FormData("key", Encoding.urlEncode(config.getAPIKey())));
-        // r.addFormData(new FormData("secret", Encoding.urlEncode(config.getAPISecret())));
-        // br.getPage(r);
-        // System.out.println(br);
-        // } catch (Exception e) {
-        // job.getChallenge().sendStatsError(this, e);
-        // job.getLogger().log(e);
-        // }
-        // }
+        if (challenge instanceof RecaptchaV2Challenge) {
+            RecaptchaV2Challenge rc2 = ((RecaptchaV2Challenge) challenge);
+            ;
+            Browser br = new Browser();
+            try {
+                br.setReadTimeout(5 * 60000);
+                // Put your CAPTCHA image file, file object, input stream,
+                // or vector of bytes here:
+                job.setStatus(SolverStatus.SOLVING);
+                long startTime = System.currentTimeMillis();
+                PostFormDataRequest r = new PostFormDataRequest("http://api.captchasolutions.com/solve");
+                ensureAPIKey();
+                r.addFormData(new FormData("p", "nocaptcha"));
+                r.addFormData(new FormData("googlekey", Encoding.urlEncode(rc2.getSiteKey())));
+                r.addFormData(new FormData("key", Encoding.urlEncode(config.getAPIKey())));
+                r.addFormData(new FormData("secret", Encoding.urlEncode(config.getAPISecret())));
+                r.addFormData(new FormData("pageurl", Encoding.urlEncode("http://" + rc2.getSiteDomain() + "/")));
+                br.getPage(r);
+                String token = br.getRegex("<decaptcha>\\s*(\\S+)\\s*</decaptcha>").getMatch(0);
+                if (StringUtils.isNotEmpty(token)) {
+                    job.setAnswer(new CaptchaSolutionsResponse(rc2, this, null, token, 100));
+                    return;
+                } else {
+                    throw new WTFException("RC2 Failed");
+                }
+            } catch (Exception e) {
+                job.getChallenge().sendStatsError(this, e);
+                job.getLogger().log(e);
+                throw new SolverException(e);
+            }
+        }
         super.solveCES(job);
     }
 
@@ -142,63 +137,33 @@ public class CaptchaSolutionsSolver extends CESChallengeSolver<String> implement
             job.setStatus(SolverStatus.SOLVING);
             long startTime = System.currentTimeMillis();
             ensureAPIKey();
-            if (challenge instanceof AbstractRecaptcha2FallbackChallenge) {
-                PostFormDataRequest r = new PostFormDataRequest("http://api.captchasolutions.com/solve");
-                r.addFormData(new FormData("p", "recaptcha2"));
-                r.addFormData(new FormData("captchatext", Encoding.urlEncode(((AbstractRecaptcha2FallbackChallenge) challenge).getExplain())));
-                r.addFormData(new FormData("secret", Encoding.urlEncode(config.getAPISecret())));
-                // byte[] bytes = challenge.getAnnotatedImageBytes();
-                final byte[] bytes = IO.readFile(challenge.getImageFile());
-                r.addFormData(new FormData("captchafile", "image.jpg", "image/jpg", bytes));
-                URLConnectionAdapter conn = br.openRequestConnection(r);
-                br.loadConnection(conn);
-                String decaptcha = br.getRegex("<decaptcha>(.*?)</decaptcha>").getMatch(0);
-                if (StringUtils.isEmpty(decaptcha)) {
-                    throw new SolverException("API Error");
-                }
-                try {
-                    decaptcha = Encoding.urlDecode(decaptcha, false);
-                } catch (Throwable e) {
-                }
-                if (decaptcha.trim().startsWith("Error:")) {
-                    // do poll
-                    String error = decaptcha.trim().substring(6);
-                    throw new SolverException(error);
-                }
-                job.getLogger().info("CAPTCHA " + challenge.getImageFile() + " solved: " + decaptcha.trim());
-                AbstractResponse<String> answer = challenge.parseAPIAnswer(decaptcha.trim(), this);
-                job.getLogger().info("CAPTCHA " + challenge.getImageFile() + " solved: " + br.toString());
-                job.setAnswer(new CaptchaSolutionsResponse(challenge, this, null, answer.getValue(), answer.getPriority()));
-                return;
-            } else {
-                PostFormDataRequest r = new PostFormDataRequest("http://api.captchasolutions.com/solve");
-                r.addFormData(new FormData("p", "upload"));
-                r.addFormData(new FormData("key", Encoding.urlEncode(config.getAPIKey())));
-                r.addFormData(new FormData("secret", Encoding.urlEncode(config.getAPISecret())));
-                // byte[] bytes = challenge.getAnnotatedImageBytes();
-                final byte[] bytes = IO.readFile(challenge.getImageFile());
-                r.addFormData(new FormData("captcha", "image.jpg", "image/jpg", bytes));
-                URLConnectionAdapter conn = br.openRequestConnection(r);
-                br.loadConnection(conn);
-                String decaptcha = br.getRegex("<decaptcha>(.*?)</decaptcha>").getMatch(0);
-                if (StringUtils.isEmpty(decaptcha)) {
-                    throw new SolverException("API Error");
-                }
-                try {
-                    decaptcha = Encoding.urlDecode(decaptcha, false);
-                } catch (Throwable e) {
-                }
-                if (decaptcha.trim().startsWith("Error:")) {
-                    // do poll
-                    String error = decaptcha.trim().substring(6);
-                    throw new SolverException(error);
-                }
-                job.getLogger().info("CAPTCHA " + challenge.getImageFile() + " solved: " + decaptcha.trim());
-                AbstractResponse<String> answer = challenge.parseAPIAnswer(decaptcha.trim(), this);
-                job.getLogger().info("CAPTCHA " + challenge.getImageFile() + " solved: " + br.toString());
-                job.setAnswer(new CaptchaSolutionsResponse(challenge, this, null, answer.getValue(), answer.getPriority()));
-                return;
+            PostFormDataRequest r = new PostFormDataRequest("http://api.captchasolutions.com/solve");
+            r.addFormData(new FormData("p", "upload"));
+            r.addFormData(new FormData("key", Encoding.urlEncode(config.getAPIKey())));
+            r.addFormData(new FormData("secret", Encoding.urlEncode(config.getAPISecret())));
+            // byte[] bytes = challenge.getAnnotatedImageBytes();
+            final byte[] bytes = IO.readFile(challenge.getImageFile());
+            r.addFormData(new FormData("captcha", "image.jpg", "image/jpg", bytes));
+            URLConnectionAdapter conn = br.openRequestConnection(r);
+            br.loadConnection(conn);
+            String decaptcha = br.getRegex("<decaptcha>(.*?)</decaptcha>").getMatch(0);
+            if (StringUtils.isEmpty(decaptcha)) {
+                throw new SolverException("API Error");
             }
+            try {
+                decaptcha = Encoding.urlDecode(decaptcha, false);
+            } catch (Throwable e) {
+            }
+            if (decaptcha.trim().startsWith("Error:")) {
+                // do poll
+                String error = decaptcha.trim().substring(6);
+                throw new SolverException(error);
+            }
+            job.getLogger().info("CAPTCHA " + challenge.getImageFile() + " solved: " + decaptcha.trim());
+            AbstractResponse<String> answer = challenge.parseAPIAnswer(decaptcha.trim(), null, this);
+            job.getLogger().info("CAPTCHA " + challenge.getImageFile() + " solved: " + br.toString());
+            job.setAnswer(new CaptchaSolutionsResponse(challenge, this, null, answer.getValue(), answer.getPriority()));
+            return;
         } catch (Exception e) {
             job.getChallenge().sendStatsError(this, e);
             job.getLogger().log(e);

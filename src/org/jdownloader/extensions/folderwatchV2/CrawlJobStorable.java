@@ -49,7 +49,6 @@ public class CrawlJobStorable implements Storable {
 
     public BooleanStatus getAutoStart() {
         return BooleanStatus.get(autoStart);
-
     }
 
     public void setAutoStart(BooleanStatus autoStart) {
@@ -76,7 +75,7 @@ public class CrawlJobStorable implements Storable {
     private BooleanStatus forcedStart;
     private BooleanStatus enabled;
     private String        text;
-    private boolean       deepAnalyseEnabled = false;
+    private Boolean       deepAnalyseEnabled = false;
     private String        packageName;
     private Priority      priority           = null;
     private BooleanStatus extractAfterDownload;
@@ -151,12 +150,21 @@ public class CrawlJobStorable implements Storable {
     private String[] extractPasswords;
     private String   downloadPassword;
     private boolean  overwritePackagizerEnabled = true;
+    private boolean  setBeforePackagizerEnabled = false;
 
-    public boolean isDeepAnalyseEnabled() {
+    public boolean isSetBeforePackagizerEnabled() {
+        return setBeforePackagizerEnabled;
+    }
+
+    public void setSetBeforePackagizerEnabled(boolean setBeforePackagizerEnabled) {
+        this.setBeforePackagizerEnabled = setBeforePackagizerEnabled;
+    }
+
+    public Boolean isDeepAnalyseEnabled() {
         return deepAnalyseEnabled;
     }
 
-    public void setDeepAnalyseEnabled(boolean deepAnalyseEnabled) {
+    public void setDeepAnalyseEnabled(Boolean deepAnalyseEnabled) {
         this.deepAnalyseEnabled = deepAnalyseEnabled;
     }
 
@@ -178,12 +186,10 @@ public class CrawlJobStorable implements Storable {
 
     public static enum JobType {
         NORMAL
-
     }
 
     private JobType type = JobType.NORMAL;
 
     public CrawlJobStorable(/* storable */) {
-
     }
 }

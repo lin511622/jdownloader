@@ -3,37 +3,38 @@ package jd.plugins.decrypter;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map.Entry;
 import java.util.Random;
 
 import jd.PluginWrapper;
 import jd.config.SubConfiguration;
 import jd.controlling.ProgressController;
+import jd.http.Request;
 import jd.parser.Regex;
 import jd.plugins.CryptedLink;
 import jd.plugins.DecrypterException;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
+import jd.plugins.LinkStatus;
+import jd.plugins.PluginException;
 import jd.plugins.PluginForDecrypt;
 import jd.utils.JDUtilities;
 
+import org.appwork.utils.StringUtils;
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "ted.com" }, urls = { "http://(?:www\\.)?ted\\.com/(talks/(?:lang/[a-zA-Z\\-]+/)?\\w+|playlists/\\d+/[^/]+)" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "ted.com" }, urls = { "https?://(?:www\\.)?ted\\.com/(talks/(?:lang/[a-zA-Z\\-]+/)?[\\w_]+|[\\w_]+\\?language=\\w+|playlists/\\d+/[^/]+)" })
 public class TedCom extends PluginForDecrypt {
-
     public TedCom(PluginWrapper wrapper) {
         super(wrapper);
     }
 
-    private static final String     TYPE_PLAYLIST                      = "http://(?:www\\.)?ted\\.com/playlists/\\d+/[^/]+";
-    private static final String     TYPE_VIDEO                         = "http://(?:www\\.)?ted\\.com/talks/(?:lang/[a-zA-Z\\-]+/)?\\w+";
-
+    private static final String     TYPE_PLAYLIST                      = "https?://(?:www\\.)?ted\\.com/playlists/\\d+/[^/]+";
+    private static final String     TYPE_VIDEO                         = "https?://(?:www\\.)?ted\\.com/talks/(?:(?:lang/[a-zA-Z\\-]+/)?\\w+|[\\w_]+\\?language=\\w+)";
     private static final String     CHECKFAST_VIDEOS                   = "CHECKFAST_VIDEOS";
     private static final String     CHECKFAST_MP3                      = "CHECKFAST_MP3";
-    private static final String     CHECKFAST_SUBTITLES                = "CHECKFAST_SUBTITLES";
-
     private static final String     GRAB_MP3                           = "GRAB_MP3";
     private static final String     GRAB_ALL_AVAILABLE_SUBTITLES       = "GRAB_ALL_AVAILABLE_SUBTITLES";
     private static final String     GRAB_SUBTITLE_ALBANIAN             = "GRAB_SUBTITLE_ALBANIAN";
@@ -81,7 +82,6 @@ public class TedCom extends PluginForDecrypt {
     private static final String     GRAB_SUBTITLE_TURKISH              = "GRAB_SUBTITLE_TURKISH";
     private static final String     GRAB_SUBTITLE_UKRAINIAN            = "GRAB_SUBTITLE_UKRAINIAN";
     private static final String     GRAB_SUBTITLE_VIETNAMESE           = "GRAB_SUBTITLE_VIETNAMESE";
-
     private ArrayList<DownloadLink> decryptedLinks                     = new ArrayList<DownloadLink>();
     private String                  parameter                          = null;
     private SubConfiguration        cfg                                = null;
@@ -99,7 +99,6 @@ public class TedCom extends PluginForDecrypt {
      * 2323 = tedID
      *
      */
-
     @SuppressWarnings({ "deprecation" })
     @Override
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
@@ -107,16 +106,13 @@ public class TedCom extends PluginForDecrypt {
         /* Load host plugin */
         JDUtilities.getPluginForHost("ted.com");
         cfg = SubConfiguration.getConfig("ted.com");
-        this.br.setFollowRedirects(true);
+        br.setFollowRedirects(true);
         br.getPage(parameter);
-
-        if (this.br.getHttpConnection().getResponseCode() == 404) {
-            this.decryptedLinks.add(this.createOfflinelink(parameter));
+        if (br.getHttpConnection().getResponseCode() == 404) {
+            decryptedLinks.add(createOfflinelink(parameter));
             return decryptedLinks;
         }
-
         decryptAll();
-
         return decryptedLinks;
     }
 
@@ -125,11 +121,36 @@ public class TedCom extends PluginForDecrypt {
         final LinkedHashMap<String, String[]> formats = jd.plugins.hoster.TedCom.formats;
         final LinkedHashMap<String, DownloadLink> foundVideoLinks = new LinkedHashMap();
         final String json;
+        LinkedHashMap<String, Object> entries;
         if (parameter.matches(TYPE_PLAYLIST)) {
+            /*
+             * We could crawl from here straight away but this way we won't be able to find all qualities thus we prefer to decrypt one by
+             * one via their original URLs.
+             */
+            String[] links = br.getRegex("<a\\s+href=\"([^<>\"]+referrer=playlist[^<>\"]+)\"").getColumn(0);
+            logger.info("links: " + links.length);
+            for (final String link : links) {
+                logger.info("link: " + link);
+                decryptedLinks.add(createDownloadlink("https://www.ted.com" + link));
+            }
+            if (links.length > 0) {
+                return;
+            }
             json = this.br.getRegex("<script>q\\(\"permalink\\.init\",(\\{.*?)</script>").getMatch(0);
+            entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(json);
+            entries = (LinkedHashMap<String, Object>) entries.get("__INITIAL_DATA__");
+            final ArrayList<Object> videos = (ArrayList) entries.get("talks");
+            for (final Object videoo : videos) {
+                entries = (LinkedHashMap<String, Object>) videoo;
+                final String url_single_video = (String) entries.get("canonical");
+                if (url_single_video == null) {
+                    throw new DecrypterException("Decrypter broken");
+                }
+                decryptedLinks.add(createDownloadlink(url_single_video));
+            }
         } else {
             /** Look for external links */
-            String externalLink = br.getRegex("class=\"external\" href=\"(http://(www\\.)?youtube\\.com/[^<>\"]*?)\"").getMatch(0);
+            String externalLink = br.getRegex("class=\"external\" href=\"(https?://(www\\.)?youtube\\.com/[^<>\"]*?)\"").getMatch(0);
             if (externalLink == null) {
                 externalLink = br.getRegex("<iframe src=\"(https?://(www\\.)?youtube\\.com/embed/[A-Za-z0-9\\-_]+)").getMatch(0);
             }
@@ -137,125 +158,182 @@ public class TedCom extends PluginForDecrypt {
                 decryptedLinks.add(createDownloadlink(externalLink));
                 return;
             }
-            json = this.br.getRegex("<script>q\\(\"talkPage\\.init\",(\\{.*?)\\)</script>").getMatch(0);
-        }
-
-        // This is needed later for the subtitle decrypter
-        final String subtitleText = br.getRegex("<select name=\"languageCode\" id=\"languageCode\"><option value=\"\">Show transcript</option>(.*?)</select>").getMatch(0);
-
-        /** Decrypt video */
-        if (json == null) {
-            throw new DecrypterException("Decrypter broken");
-        }
-        LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(json);
-        /* Single video = videos.length = 1, playlist = videos.length >= 1 */
-        final ArrayList<Object> videos = (ArrayList) entries.get("talks");
-        for (final Object videoo : videos) {
-            entries = (LinkedHashMap<String, Object>) videoo;
+            json = this.br.getRegex("<script>q\\(\"talkPage\\.init\",\\s*?(\\{.*?)\\)</script>").getMatch(0);
+            if (json == null) {
+                this.decryptedLinks.add(this.createOfflinelink(parameter));
+                return;
+            }
+            entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(json);
+            entries = (LinkedHashMap<String, Object>) entries.get("__INITIAL_DATA__");
+            // This is needed later for the subtitle decrypter
+            final String subtitleText = br.getRegex("<select name=\"languageCode\" id=\"languageCode\"><option value=\"\">Show transcript</option>(.*?)</select>").getMatch(0);
+            /** Decrypt video */
+            final Object externalMedia = JavaScriptEngineFactory.walkJson(entries, "media/external");
+            if (externalMedia != null) {
+                logger.info("Found external media");
+                entries = (LinkedHashMap<String, Object>) externalMedia;
+                final String mediaCode = (String) entries.get("code");
+                final String service = (String) entries.get("service");
+                if (!StringUtils.isEmpty(service) && !StringUtils.isEmpty(mediaCode) && service.equalsIgnoreCase("youtube")) {
+                    decryptedLinks.add(createDownloadlink(String.format("https://www.youtube.com/watch?v=%s", mediaCode)));
+                }
+                final String uri = (String) entries.get("uri");
+                if (!StringUtils.isEmpty(uri)) {
+                    /* Sometimes, a mirror is available e.g. YouTube (above code) and vimeo (here via URL). */
+                    decryptedLinks.add(createDownloadlink(uri));
+                }
+                return;
+            }
+            LinkedHashMap<String, Object> http_stream_url_list = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.walkJson(entries, "media/internal");
+            if (http_stream_url_list == null) {
+                http_stream_url_list = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.walkJson(entries, "talks/{0}/player_talks/{0}/resources");
+            }
+            entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.walkJson(entries, "talks/{0}");
             String title = (String) entries.get("title");
-            final String url_source = (String) entries.get("canonical");
-            if (title == null || url_source == null) {
+            if (title == null) {
                 throw new DecrypterException("Decrypter broken");
             }
             final FilePackage fp = FilePackage.getInstance();
             fp.setName(title);
             final String tedID = Long.toString(JavaScriptEngineFactory.toLong(entries.get("id"), -1));
-            final ArrayList<Object> rtmp_resource_data_list = (ArrayList) JavaScriptEngineFactory.walkJson(entries, "resources/rtmp");
-            for (final Object rtmpo : rtmp_resource_data_list) {
-                final LinkedHashMap<String, Object> tmp = (LinkedHashMap<String, Object>) rtmpo;
-                final String url_rtmp = (String) tmp.get("file");
-                // final String name = (String) tmp.get("name");
-                final String bitrate = Long.toString(JavaScriptEngineFactory.toLong(tmp.get("bitrate"), -1));
-                final String width = Long.toString(JavaScriptEngineFactory.toLong(tmp.get("width"), -1));
-                final String height = Long.toString(JavaScriptEngineFactory.toLong(tmp.get("height"), -1));
-                final String url_rtmp_part = new Regex(url_rtmp, "/([^/]+\\.mp4)$").getMatch(0);
-                if (url_rtmp_part == null) {
-                    throw new DecrypterException("Decrypter broken");
+            String url_mp3 = null;
+            long filesize_mp3 = 0;
+            /*
+             * 2017-09-26: 'resources' object is still available sometimes, containing http/hls/rtmp[?] URLs but much less qualities than
+             * 'internal'.
+             */
+            // final ArrayList<Object> rtmp_resource_data_list = (ArrayList) JavaScriptEngineFactory.walkJson(entries, "resources/rtmp");
+            final Iterator<Entry<String, Object>> iteratorAvailableQualities = http_stream_url_list.entrySet().iterator();
+            while (iteratorAvailableQualities.hasNext()) {
+                final Entry<String, Object> currentObject = iteratorAvailableQualities.next();
+                if ("hls".equals(currentObject.getKey())) {
+                    // TODO: check after HLS support
+                    continue;
                 }
-                final String url_http = "http://download.ted.com/talks/" + url_rtmp_part + "?dnt";
+                final String qualityKey = currentObject.getKey();
+                final LinkedHashMap<String, Object> tmp;
+                if (currentObject.getValue() instanceof List) {
+                    tmp = (LinkedHashMap<String, Object>) ((List<Object>) currentObject.getValue()).get(0);
+                } else {
+                    tmp = (LinkedHashMap<String, Object>) currentObject.getValue();
+                }
+                final long filesize = JavaScriptEngineFactory.toLong(tmp.get("filesize_bytes"), 0);
+                String url_http = (String) tmp.get("uri");
+                if (url_http == null) {
+                    url_http = (String) tmp.get("file");
+                    if (url_http == null) {
+                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                    }
+                }
+                if (qualityKey.equalsIgnoreCase("audio-podcast")) {
+                    /* Audio download user selection is handled below. */
+                    filesize_mp3 = filesize;
+                    url_mp3 = url_http;
+                    break;
+                } else if (!formats.containsKey(qualityKey)) {
+                    /* Skip unknown qualities */
+                    // continue;
+                }
                 final DownloadLink dl = createDownloadlink("decrypted://decryptedtedcom.com/" + System.currentTimeMillis() + new Random().nextInt(100000));
                 dl.setProperty("directlink", url_http);
                 dl.setProperty("type", "video");
-                dl.setProperty("selectedvideoquality", bitrate);
+                dl.setProperty("selectedvideoquality", qualityKey);
                 if (cfg.getBooleanProperty(CHECKFAST_VIDEOS, false)) {
                     dl.setAvailable(true);
                 }
-                final String[] vidinfo = formats.get(bitrate);
+                final String[] vidinfo = formats.get(qualityKey);
                 /* Get format-String for filename */
                 String formatString = "";
-                final String videoCodec = vidinfo[0];
-                final String videoBitrate = vidinfo[1];
-                String videoResolution = vidinfo[2];
-                /* In this case the correct resolution is always given - override hard-coded values */
-                videoResolution = width + "x" + height;
-                final String audioCodec = vidinfo[3];
-                final String audioBitrate = vidinfo[4];
-                if (videoCodec != null) {
-                    formatString += videoCodec + "_";
-                }
-                if (videoResolution != null) {
-                    formatString += videoResolution + "_";
-                }
-                if (videoBitrate != null) {
-                    formatString += videoBitrate + "_";
-                }
-                if (audioCodec != null) {
-                    formatString += audioCodec + "_";
-                }
-                if (audioBitrate != null) {
-                    formatString += audioBitrate;
-                }
-                if (formatString.endsWith("_")) {
-                    formatString = formatString.substring(0, formatString.lastIndexOf("_"));
+                if (vidinfo != null) {
+                    // TODO: check after HLS support
+                    final String videoCodec = vidinfo[0];
+                    final String videoBitrate = vidinfo[1];
+                    final String videoResolution = vidinfo[2];
+                    final String audioCodec = vidinfo[3];
+                    final String audioBitrate = vidinfo[4];
+                    if (videoCodec != null) {
+                        formatString += videoCodec + "_";
+                    }
+                    if (videoResolution != null) {
+                        formatString += videoResolution + "_";
+                    }
+                    if (videoBitrate != null) {
+                        formatString += videoBitrate + "_";
+                    }
+                    if (audioCodec != null) {
+                        formatString += audioCodec + "_";
+                    }
+                    if (audioBitrate != null) {
+                        formatString += audioBitrate;
+                    }
+                    if (formatString.endsWith("_")) {
+                        formatString = formatString.substring(0, formatString.lastIndexOf("_"));
+                    }
                 }
                 final String finalName = title + "_" + formatString + ".mp4";
                 dl.setFinalFileName(finalName);
                 dl.setProperty("finalfilename", finalName);
                 dl.setLinkID(finalName);
                 dl._setFilePackage(fp);
-                dl.setContentUrl(url_source);
-
-                foundVideoLinks.put(bitrate, dl);
+                dl.setContentUrl(parameter);
+                if (filesize > 0) {
+                    dl.setDownloadSize(filesize);
+                    dl.setAvailable(true);
+                }
+                foundVideoLinks.put(qualityKey, dl);
             }
             title = encodeUnicode(title);
-
             /* Add user selected video qualities */
             final Iterator<Entry<String, String[]>> it = formats.entrySet().iterator();
             while (it.hasNext()) {
                 final Entry<String, String[]> videntry = it.next();
                 final String internalname = videntry.getKey();
                 final DownloadLink dl = foundVideoLinks.get(internalname);
-                if (dl != null && cfg.getBooleanProperty(internalname, false)) {
+                if (dl != null && cfg.getBooleanProperty(internalname, true)) {
                     decryptedLinks.add(dl);
                 }
             }
-
-            /** Decrypt mp3 TODO: fix this! */
-            final String dlMP3 = br.getRegex("<dt><a href=\"(http://download\\.ted\\.com/talks/[^<>\"]*?)\">Download to desktop \\(MP3\\)<").getMatch(0);
-            if (dlMP3 != null && cfg.getBooleanProperty(GRAB_MP3, false)) {
+            // TODO: check after HLS support
+            decryptedLinks.addAll(foundVideoLinks.values());
+            if (url_mp3 != null && cfg.getBooleanProperty(GRAB_MP3, false)) {
                 final DownloadLink dl = createDownloadlink("decrypted://decryptedtedcom.com/" + System.currentTimeMillis() + new Random().nextInt(100000));
                 final String finalName = title + "_mp3.mp3";
                 dl.setFinalFileName(finalName);
                 dl.setProperty("finalfilename", finalName);
-                if (cfg.getBooleanProperty(CHECKFAST_MP3, false)) {
+                if (filesize_mp3 > 0) {
+                    dl.setDownloadSize(filesize_mp3);
+                    dl.setAvailable(true);
+                } else if (cfg.getBooleanProperty(CHECKFAST_MP3, false)) {
                     dl.setAvailable(true);
                 }
-                dl.setProperty("directlink", dlMP3);
+                dl.setProperty("directlink", url_mp3);
                 dl.setProperty("type", "mp3");
-                dl._setFilePackage(fp);
-                dl.setContentUrl(url_source);
+                fp.add(dl);
+                dl.setContentUrl(parameter);
                 decryptedLinks.add(dl);
             }
-
             /** Decrypt subtitles */
-            if (subtitleText != null && tedID != null) {
+            if (subtitleText != null && tedID != null || entries.containsKey("languages")) {
                 final String[][] allSubtitleValues = { { "sq", "Albanian" }, { "ar", "Arabic" }, { "hy", "Armenian" }, { "az", "Azerbaijani" }, { "bn", "Bengali" }, { "bg", "Bulgarian" }, { "zh-cn", "Chinese, Simplified" }, { "zh-tw", "Chinese, Traditional" }, { "hr", "Croatian" }, { "cs", "Czech" }, { "da", "Danish" }, { "nl", "Dutch" }, { "en", "English" }, { "et", "Estonian" }, { "fi", "Finnish" }, { "fr", "French" }, { "ka", "Georgian" }, { "de", "German" }, { "el", "Greek" }, { "he", "Hebrew" }, { "hu", "Hungarian" }, { "id", "Indonesian" }, { "it", "Italian" }, { "ja", "Japanese" }, { "ko", "Korean" }, { "ku", "Kurdish" }, { "lt", "Lithuanian" }, { "mk", "Macedonian" }, { "ms", "Malay" }, { "nb", "Norwegian Bokmal" }, { "fa", "Persian" }, { "pl", "Polish" }, { "pt", "Portuguese" }, { "pt-br", "Portuguese, Brazilian" }, { "ro", "Romanian" }, { "ru", "Russian" },
                         { "sr", "Serbian" }, { "sk", "Slovak" }, { "sl", "Slovenian" }, { "es", "Spanish" }, { "sv", "Swedish" }, { "th", "Thai" }, { "tr", "Turkish" }, { "uk", "Ukrainian" }, { "vi", "Vietnamese" } };
                 final ArrayList<String[]> selectedSubtitles = new ArrayList<String[]>();
-                final String[] availableSubtitles = new Regex(subtitleText, "value=\"([a-z\\-]{2,5})\">").getColumn(0);
                 final LinkedHashMap<String, String> foundSubtitles = new LinkedHashMap();
-                for (final String currentSubtitle : availableSubtitles) {
-                    foundSubtitles.put(currentSubtitle, "http://www.ted.com/talks/subtitles/id/" + tedID + "/lang/" + currentSubtitle + "/format/srt");
+                if (subtitleText != null) {
+                    final String[] availableSubtitles = new Regex(subtitleText, "value=\"([a-z\\-]{2,5})\">").getColumn(0);
+                    for (final String currentSubtitle : availableSubtitles) {
+                        foundSubtitles.put(currentSubtitle, Request.getLocation("/talks/subtitles/id/" + tedID + "/lang/" + currentSubtitle + "/format/srt", br.getRequest()));
+                    }
+                } else {
+                    // back ported for JSON
+                    final ArrayList<Object> subtitles = (ArrayList) entries.get("languages");
+                    if (subtitles != null) {
+                        for (final Object result : subtitles) {
+                            final LinkedHashMap<String, String> yay = (LinkedHashMap<String, String>) result;
+                            // assume its the lower case one from the code below.
+                            final String langCode = yay.get("languageCode");
+                            foundSubtitles.put(langCode, Request.getLocation("/talks/subtitles/id/" + tedID + "/lang/" + langCode + "/format/srt", br.getRequest()));
+                        }
+                    }
                 }
                 if (cfg.getBooleanProperty(GRAB_ALL_AVAILABLE_SUBTITLES, false)) {
                     for (final String[] subtitleValue : allSubtitleValues) {
@@ -397,7 +475,6 @@ public class TedCom extends PluginForDecrypt {
                     if (cfg.getBooleanProperty(GRAB_SUBTITLE_VIETNAMESE, false)) {
                         selectedSubtitles.add(new String[] { "vi", "Vietnamese" });
                     }
-
                 }
                 // Find available qualities and add them to the decrypted links
                 for (final String[] selectedSubtitle : selectedSubtitles) {
@@ -410,15 +487,12 @@ public class TedCom extends PluginForDecrypt {
                         dl.setProperty("finalfilename", finalName);
                         dl.setProperty("directlink", foundSubtitleDirectLink);
                         dl.setProperty("type", "subtitle");
-                        if (cfg.getBooleanProperty(CHECKFAST_SUBTITLES, false)) {
-                            dl.setAvailable(true);
-                        }
-                        dl._setFilePackage(fp);
-                        dl.setContentUrl(url_source);
+                        dl.setAvailable(true);
+                        fp.add(dl);
+                        dl.setContentUrl(parameter);
                         decryptedLinks.add(dl);
                     }
                 }
-
             }
         }
     }
@@ -427,5 +501,4 @@ public class TedCom extends PluginForDecrypt {
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

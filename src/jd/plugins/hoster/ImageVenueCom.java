@@ -13,10 +13,11 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
+
+import org.appwork.utils.StringUtils;
 
 import jd.PluginWrapper;
 import jd.http.Browser;
@@ -29,9 +30,8 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "imagevenue.com" }, urls = { "http://(www\\.)?img[0-9]+\\.imagevenue\\.com/img\\.php\\?(loc=[^&]+&)?image=.{4,300}" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "imagevenue.com" }, urls = { "https?://(?:www\\.)?img[0-9]+\\.imagevenue\\.com/img\\.php\\?(loc=[^&]+\\&)?image=.{4,300}" })
 public class ImageVenueCom extends PluginForHost {
-
     public ImageVenueCom(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -46,6 +46,8 @@ public class ImageVenueCom extends PluginForHost {
         return -1;
     }
 
+    private String dllink = null;
+
     @SuppressWarnings("deprecation")
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
@@ -53,15 +55,16 @@ public class ImageVenueCom extends PluginForHost {
         // Offline links should also have nice filenames
         link.setName(new Regex(link.getDownloadURL(), "imagevenue\\.com/img\\.php\\?(.+)").getMatch(0));
         this.br.setAllowedResponseCodes(500);
+        br.setFollowRedirects(true);
         br.getPage(link.getDownloadURL());
         /* Error handling */
-        if (br.containsHTML("This image does not exist on this server|<title>404 Not Found</title>|>The requested URL /img\\.php was not found on this server\\.<") || this.br.getHttpConnection().getResponseCode() == 500) {
+        if (br.containsHTML("This image does not exist on this server|<title>404 Not Found</title>|>The requested URL /img\\.php was not found on this server\\.<") || this.br.getHttpConnection().getResponseCode() == 404 || this.br.getHttpConnection().getResponseCode() == 500) {
             logger.warning("File offline");
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         String filename = null;
-        String finallink = br.getRegex("id=\"thepic\".*?SRC=\"(.*?)\"").getMatch(0);
-        if (finallink == null) {
+        dllink = br.getRegex("id=(?:\"|\\')thepic(?:\"|\\')[^>]*?.*?SRC=(?:\"|\\')(.*?)(?:\"|\\')").getMatch(0);
+        if (dllink == null) {
             if (br.containsHTML("tempval\\.focus\\(\\)")) {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
@@ -69,44 +72,39 @@ public class ImageVenueCom extends PluginForHost {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         String server = new Regex(link.getDownloadURL(), "(img[0-9]+\\.imagevenue\\.com/)").getMatch(0);
-        finallink = "http://" + server + finallink;
-        String ending = new Regex(finallink, "imagevenue\\.com.*?\\.(.{3,4}$)").getMatch(0);
-        String filename0 = new Regex(finallink, "imagevenue\\.com/.*?/.*?/\\d+.*?_(.*?)($|\\..{2,4}$)").getMatch(0);
+        dllink = "http://" + server + dllink;
+        String ending = new Regex(dllink, "imagevenue\\.com.*?\\.(.{3,4}$)").getMatch(0);
+        String filename0 = new Regex(dllink, "imagevenue\\.com/.*?/.*?/\\d+.*?_(.*?)($|\\..{2,4}$)").getMatch(0);
         if (ending != null && filename0 != null) {
             filename = filename0 + "." + ending;
         }
-        if (filename == null) {
-            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        if (!StringUtils.isEmpty(filename)) {
+            link.setName(filename.trim());
         }
         URLConnectionAdapter con = null;
         try {
-            con = openConnection(this.br, finallink);
+            con = openConnection(this.br, dllink);
             if (!con.isOK()) {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
             long size = con.getLongContentLength();
             link.setDownloadSize(Long.valueOf(size));
-            link.setName(filename.trim());
-            return AvailableStatus.TRUE;
         } finally {
             try {
                 con.disconnect();
             } catch (final Throwable e) {
             }
         }
+        return AvailableStatus.TRUE;
     }
 
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception, PluginException {
         requestFileInformation(downloadLink);
-        br.getPage(downloadLink.getDownloadURL());
-        String finallink = br.getRegex("id=\"thepic\".*?SRC=\"(.*?)\"").getMatch(0);
-        if (finallink == null) {
+        if (StringUtils.isEmpty(dllink)) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        String server = new Regex(downloadLink.getDownloadURL(), "(img[0-9]+\\.imagevenue\\.com/)").getMatch(0);
-        finallink = "http://" + server + finallink;
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, finallink, true, 0);
+        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, true, 0);
         dl.startDownload();
     }
 
@@ -131,5 +129,4 @@ public class ImageVenueCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

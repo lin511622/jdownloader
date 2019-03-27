@@ -1,17 +1,39 @@
 package org.jdownloader.extensions.eventscripter.sandboxobjects;
 
+import java.io.File;
+import java.util.Map;
+
 import jd.controlling.linkcrawler.CrawledLink;
 import jd.controlling.linkcrawler.PackageInfo;
 
+import org.appwork.utils.StringUtils;
+import org.appwork.utils.os.CrossSystem;
 import org.jdownloader.controlling.Priority;
 import org.jdownloader.extensions.eventscripter.ScriptAPI;
 
 public class PackagizerLinkSandbox {
-
     private final CrawledLink link;
 
     public PackagizerLinkSandbox(CrawledLink link) {
         this.link = link;
+    }
+
+    @Override
+    public int hashCode() {
+        if (link != null) {
+            return link.hashCode();
+        } else {
+            return super.hashCode();
+        }
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (obj instanceof PackagizerLinkSandbox) {
+            return ((PackagizerLinkSandbox) obj).link == link;
+        } else {
+            return super.equals(obj);
+        }
     }
 
     public PackagizerLinkSandbox() {
@@ -93,6 +115,9 @@ public class PackagizerLinkSandbox {
             if (packageInfo == null) {
                 packageInfo = new PackageInfo();
             }
+            if (StringUtils.isNotEmpty(destinationFolder)) {
+                destinationFolder = CrossSystem.fixPathSeparators(destinationFolder + File.separator);
+            }
             packageInfo.setDestinationFolder(destinationFolder);
             link.setDesiredPackageInfo(packageInfo);
         }
@@ -135,6 +160,26 @@ public class PackagizerLinkSandbox {
             }
             packageInfo.setName(name);
             link.setDesiredPackageInfo(packageInfo);
+        }
+    }
+
+    public Object getProperty(String key) {
+        if (link != null) {
+            return new CrawledLinkSandbox(link).getProperty(key);
+        }
+        return null;
+    }
+
+    public Map<String, Object> getProperties() {
+        if (link != null) {
+            return new CrawledLinkSandbox(link).getProperties();
+        }
+        return null;
+    }
+
+    public void setProperty(String key, Object value) {
+        if (link != null) {
+            new CrawledLinkSandbox(link).setProperty(key, value);
         }
     }
 

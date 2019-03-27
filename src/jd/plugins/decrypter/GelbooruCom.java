@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
@@ -29,9 +28,8 @@ import jd.plugins.FilePackage;
 import jd.plugins.PluginForDecrypt;
 import jd.plugins.components.SiteType.SiteTemplate;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "gelbooru.com" }, urls = { "https?://(?:www\\.)?gelbooru\\.com/index\\.php\\?page=post\\&s=list\\&tags=[A-Za-z0-9]+" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "gelbooru.com" }, urls = { "https?://(?:www\\.)?gelbooru\\.com/index\\.php\\?page=post\\&s=list\\&tags=[A-Za-z0-9_\\-%\\+]+" })
 public class GelbooruCom extends PluginForDecrypt {
-
     public GelbooruCom(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -39,15 +37,15 @@ public class GelbooruCom extends PluginForDecrypt {
     public ArrayList<DownloadLink> decryptIt(CryptedLink param, ProgressController progress) throws Exception {
         ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         final String parameter = param.toString();
+        br.setFollowRedirects(true);
         br.getPage(parameter);
         if (br.getHttpConnection().getResponseCode() == 404) {
             decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
         }
-        final String fpName = new Regex(parameter, "tags=([A-Za-z0-9]+)").getMatch(0);
+        final String fpName = new Regex(parameter, "tags=([A-Za-z0-9_\\-%\\+]+)").getMatch(0);
         final FilePackage fp = FilePackage.getInstance();
         fp.setName(Encoding.htmlDecode(fpName.trim()));
-
         final String url_part = parameter;
         int page_counter = 1;
         int offset = 0;
@@ -72,7 +70,7 @@ public class GelbooruCom extends PluginForDecrypt {
             }
             entries_per_page_current = linkids.length;
             for (final String linkid : linkids) {
-                final String link = "http://" + this.getHost() + "/index.php?page=post&s=view&id=" + linkid;
+                final String link = "https://" + this.getHost() + "/index.php?page=post&s=view&id=" + linkid;
                 final DownloadLink dl = createDownloadlink(link);
                 dl.setLinkID(linkid);
                 dl.setAvailable(true);
@@ -84,7 +82,6 @@ public class GelbooruCom extends PluginForDecrypt {
             }
             page_counter++;
         } while (entries_per_page_current >= max_entries_per_page);
-
         return decryptedLinks;
     }
 
@@ -92,5 +89,4 @@ public class GelbooruCom extends PluginForDecrypt {
     public SiteTemplate siteTemplateType() {
         return SiteTemplate.Danbooru;
     }
-
 }

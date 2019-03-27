@@ -13,16 +13,20 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.io.IOException;
 import java.text.ParseException;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 import jd.PluginWrapper;
 import jd.config.SubConfiguration;
 import jd.controlling.ProgressController;
+import jd.http.Browser;
 import jd.http.Browser.BrowserException;
 import jd.nutils.encoding.Encoding;
 import jd.nutils.encoding.HTMLEntities;
@@ -32,30 +36,34 @@ import jd.plugins.DecrypterException;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
+import jd.plugins.LinkStatus;
+import jd.plugins.PluginException;
 import jd.plugins.PluginForDecrypt;
 import jd.plugins.hoster.ImgUrCom;
 
-/*Only accept single-imag URLs with an LID-length or either 5 OR 7 - everything else are invalid links or thumbnails*/
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "imgur.com" }, urls = { "https?://(?:www\\.|m\\.)?imgur\\.com/(?:gallery|a)/[A-Za-z0-9]{5,7}|https?://i\\.imgur\\.com/(?:download/)?(?:[A-Za-z0-9]{7}|[A-Za-z0-9]{5})|https?://(?:www\\.|m\\.)?imgur\\.com/(?:download/)?(?:[A-Za-z0-9]{7}|[A-Za-z0-9]{5})|https?://(?:www\\.)?imgur\\.com/r/[^/]+/(?:[A-Za-z0-9]{7}|[A-Za-z0-9]{5})" }) 
-public class ImgurCom extends PluginForDecrypt {
+import org.appwork.storage.JSonStorage;
+import org.appwork.storage.TypeRef;
+import org.appwork.utils.StringUtils;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
 
+/*Only accept single-imag URLs with an LID-length or either 5 OR 7 - everything else are invalid links or thumbnails*/
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "imgur.com" }, urls = { "https?://(?:www\\.|m\\.)?imgur\\.com/(?:gallery|a)/[A-Za-z0-9]{5,7}|https?://i\\.imgur\\.com/(?:download/)?(?:[A-Za-z0-9]{7}|[A-Za-z0-9]{5})|https?://(?:www\\.|m\\.)?imgur\\.com/(?:download/)?(?:[A-Za-z0-9]{7}|[A-Za-z0-9]{5})|https?://(?:www\\.)?imgur\\.com/r/[^/]+/[A-Za-z0-9]{5,7}|https?://(?:www\\.)?imgur\\.com/r/[^/]+/$" })
+public class ImgurCom extends PluginForDecrypt {
     public ImgurCom(PluginWrapper wrapper) {
         super(wrapper);
     }
 
-    private final String            type_single_image_r           = "https?://(?:www\\.|m\\.)?imgur\\.com/r/[^/]+/(?:[A-Za-z0-9]{7}|[A-Za-z0-9]{5})";
+    private final String            type_image_list_link          = "https?://(?:www\\.|m\\.)?imgur\\.com/r/[^/]+/[A-Za-z0-9]{5,7}";
+    private final String            type_image_list               = "https?://(?:www\\.|m\\.)?imgur\\.com/r/[^/]+/$";
     private final String            type_album                    = "https?://(?:www\\.|m\\.)?imgur\\.com/a/[A-Za-z0-9]{5,7}";
     private final String            type_gallery                  = "https?://(?:www\\.|m\\.)?imgur\\.com/gallery/[A-Za-z0-9]{5,7}";
-
     /* User settings */
     private static final String     SETTING_USE_API               = "SETTING_USE_API";
     private static final String     SETTING_GRAB_SOURCE_URL_VIDEO = "SETTING_GRAB_SOURCE_URL_VIDEO";
     private static final String     API_FAILED                    = "API_FAILED";
-
     /* Constants */
     private static long             VIEW_FILESIZELIMIT            = 0;
     private static Object           CTRLLOCK                      = new Object();
-
     private ArrayList<DownloadLink> decryptedLinks                = new ArrayList<DownloadLink>();
     private String                  parameter                     = null;
     private String                  lid                           = null;
@@ -74,17 +82,57 @@ public class ImgurCom extends PluginForDecrypt {
             VIEW_FILESIZELIMIT = jd.plugins.hoster.ImgUrCom.view_filesizelimit;
             String galleryTitle = null;
             String fpName = null;
-            if (parameter.matches(type_album) || parameter.matches(type_gallery)) {
+            if (parameter.matches(type_image_list)) {
+                br.getPage(parameter);
+                br.followRedirect();
+                final String id = new Regex(parameter, "/r/([^/]+)/").getMatch(0);
+                int page = 1;
+                while (!isAbort()) {
+                    final String[] type_image_list_links = br.getRegex("\"image-list-link\"\\s*href\\s*=\\s*\"(/r/[^/]+/[A-Za-z0-9]{5,7})\"").getColumn(0);
+                    if (type_image_list_links != null && type_image_list_links.length > 0) {
+                        for (String type_image_list_link : type_image_list_links) {
+                            final DownloadLink dl = createDownloadlink(br.getURL(type_image_list_link).toString());
+                            dl.setContainerUrl(parameter);
+                            decryptedLinks.add(dl);
+                        }
+                        br.getPage("/r/" + id + "/new/page/" + page++ + "/hit?scrolled");
+                    } else {
+                        break;
+                    }
+                }
+                return decryptedLinks;
+            } else if (parameter.matches(type_image_list_link)) {
+                jd.plugins.hoster.ImgUrCom.prepBRAPI(this.br);
+                br.getHeaders().put("Authorization", jd.plugins.hoster.ImgUrCom.getAuthorization());
+                br.getPage("https://api.imgur.com/3/album/" + lid);
+                br.followRedirect();
+                if (br.getHttpConnection().isOK()) {
+                    final HashMap<String, Object> json = (HashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
+                    final String link = (String) JavaScriptEngineFactory.walkJson(json, "data/link");
+                    if (StringUtils.isNotEmpty(link)) {
+                        final DownloadLink dl = createDownloadlink(link);
+                        decryptedLinks.add(dl);
+                        return decryptedLinks;
+                    }
+                } else if (br.getHttpConnection().getResponseCode() == 404) {
+                    final DownloadLink dl = createDownloadlink(getHostpluginurl(lid));
+                    dl.setProperty("imgUID", lid);
+                    decryptedLinks.add(dl);
+                } else {
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                }
+            } else if (parameter.matches(type_album) || parameter.matches(type_gallery)) {
                 try {
                     if (!cfg.getBooleanProperty(SETTING_USE_API, false)) {
                         logger.info("User prefers not to use the API");
                         throw new DecrypterException(API_FAILED);
                     }
+                    jd.plugins.hoster.ImgUrCom.prepBRAPI(this.br);
                     br.getHeaders().put("Authorization", jd.plugins.hoster.ImgUrCom.getAuthorization());
                     try {
                         /* Gallery (single image) */
                         if (parameter.matches(type_gallery)) {
-                            br.getPage("https://api.imgur.com/3/gallery/:" + lid);
+                            br.getPage("https://api.imgur.com/3/gallery/" + lid);
                             if (br.getHttpConnection().getResponseCode() == 404) {
                                 /*
                                  * Either it is a gallery with a single photo or it is offline. Seems like there is no way to know this
@@ -130,23 +178,23 @@ public class ImgurCom extends PluginForDecrypt {
                     if (br.getHttpConnection().getResponseCode() == 403 || br.getHttpConnection().getResponseCode() == 404) {
                         return createOfflineLink(parameter);
                     }
-                    br.getRequest().setHtmlCode(br.toString().replace("\\", ""));
-                    galleryTitle = getJson(br.toString(), "title");
-                    if ("null".equals(galleryTitle)) {
-                        galleryTitle = null;
-                    }
-                    api_decrypt();
+                    final Map<String, Object> data = JSonStorage.restoreFromString(br.toString(), TypeRef.HASHMAP);
+                    galleryTitle = (String) JavaScriptEngineFactory.walkJson(data, "data/title");
+                    api_decrypt(data);
                 } catch (final DecrypterException e) {
                     /* Make sure we only continue if the API failed or was disabled by the user. */
                     if (!e.getMessage().equals(API_FAILED)) {
                         throw e;
                     }
-                    br.setLoadLimit(br.getLoadLimit() * 2);
+                    prepBRWebsite(this.br);
                     br.getPage(parameter);
                     if (br.getHttpConnection().getResponseCode() == 404 || br.containsHTML("class=\"textbox empty\"|<h1>Zoinks! You've taken a wrong turn\\.</h1>|it's probably been deleted or may not have existed at all\\.</p>")) {
                         return createOfflineLink(parameter);
                     }
                     author = br.getRegex("property=\"author\" content=\"([^<>\"]*?)\"").getMatch(0);
+                    if (author != null && StringUtils.equalsIgnoreCase(author, "Imgur")) {
+                        author = null;
+                    }
                     galleryTitle = br.getRegex("<title>([^<>\"]*?) \\-(?: Album on)? Imgur</title>").getMatch(0);
                     if (galleryTitle == null) {
                         galleryTitle = br.getRegex("<meta property=\"og:title\" content=\"([^<>\"]+)\"").getMatch(0);
@@ -166,7 +214,6 @@ public class ImgurCom extends PluginForDecrypt {
                     // }
                     site_decrypt();
                 }
-
                 if (galleryTitle != null) {
                     galleryTitle = Encoding.htmlDecode(galleryTitle).trim();
                 }
@@ -176,6 +223,7 @@ public class ImgurCom extends PluginForDecrypt {
                 fp.setName(fpName.trim());
                 fp.addLinks(decryptedLinks);
             } else {
+                // single images
                 final DownloadLink dl = createDownloadlink(getHostpluginurl(lid));
                 dl.setProperty("imgUID", lid);
                 decryptedLinks.add(dl);
@@ -188,8 +236,9 @@ public class ImgurCom extends PluginForDecrypt {
         return "http://imgurdecrypted.com/download/" + lid;
     }
 
-    private void api_decrypt() throws DecrypterException, ParseException {
-        if (br.containsHTML("\"status\":404")) {
+    private void api_decrypt(Map<String, Object> data) throws DecrypterException, ParseException {
+        long status = JavaScriptEngineFactory.toLong(data.get("status"), 200);
+        if (status == 404) {
             /* Well in case it's a gallery link it might be a single picture */
             if (parameter.matches(type_gallery)) {
                 final DownloadLink dl = createDownloadlink(getHostpluginurl(lid));
@@ -200,34 +249,35 @@ public class ImgurCom extends PluginForDecrypt {
             decryptedLinks.addAll(createOfflineLink(parameter));
             return;
         }
-        final int imgcount = Integer.parseInt(getJson(br.toString(), "images_count"));
+        final long imgcount = JavaScriptEngineFactory.toLong(JavaScriptEngineFactory.walkJson(data, "data/images_count"), 0);
+        Object images = JavaScriptEngineFactory.walkJson(data, "data/images");
         /* Either no images there or sometimes the number of wrong. */
-        if (imgcount == 0 || br.containsHTML("images\":\\[\\]")) {
-            decryptedLinks.addAll(createOfflineLink(parameter));
+        if (imgcount == 0 || images == null || ((List) images).size() == 0) {
+            logger.info("Empty album: " + parameter);
             return;
         }
-
-        author = getJson(br.toString(), "account_url");
+        author = (String) JavaScriptEngineFactory.walkJson(data, "data/account_url");
+        if (author != null && StringUtils.equalsIgnoreCase(author, "Imgur")) {
+            author = null;
+        }
         /*
          * using links (i.imgur.com/imgUID(s)?.extension) seems to be problematic, it can contain 's' (imgUID + s + .extension), but not
          * always! imgUid.endswith("s") is also a valid uid, so you can't strip them!
          */
-        final String jsonarray = br.getRegex("\"images\":\\[(\\{.*?\\})\\]").getMatch(0);
-        String[] items = jsonarray.split("\\},\\{");
-        /* We assume that the API is always working fine */
-        if (items == null || items.length == 0) {
-            logger.info("Empty album: " + parameter);
-            return;
-        }
-        for (final String item : items) {
-            String directlink = getJson(item, "link");
-            String title = getJson(item, "title");
-            final String filesize_str = getJson(item, "size");
-            final String imgUID = getJson(item, "id");
+        final List<Map<String, Object>> items = (List<Map<String, Object>>) images;
+        final int padLength = getPadLength(imgcount);
+        int itemNumber = 0;
+        for (final Map<String, Object> item : items) {
+            itemNumber++;
+            String directlink = (String) item.get("link");
+            String title = (String) item.get("title");
+            final String itemnumber_formatted = String.format(Locale.US, "%0" + padLength + "d", itemNumber);
+            final long size = JavaScriptEngineFactory.toLong(item.get("size"), -1);
+            final String imgUID = (String) item.get("id");
             /* TODO: */
             videoSource = null;
-            final String filetype = new Regex(item, "\"type\":\"image/([^<>\"]*?)\"").getMatch(0);
-            if (imgUID == null || filesize_str == null || directlink == null || filetype == null) {
+            final String filetype = (String) item.get("type");
+            if (imgUID == null || size == -1 || directlink == null || filetype == null) {
                 logger.warning("Decrypter broken for link: " + parameter);
                 throw new DecrypterException("Decrypter broken for link: " + parameter);
             }
@@ -240,7 +290,6 @@ public class ImgurCom extends PluginForDecrypt {
                 title = HTMLEntities.unhtmlDoubleQuotes(title);
                 title = encodeUnicode(title);
             }
-            final long filesize = Long.parseLong(filesize_str);
             final DownloadLink dl = createDownloadlink("http://imgurdecrypted.com/download/" + imgUID);
             dl.setAvailable(true);
             dl.setProperty("imgUID", imgUID);
@@ -249,16 +298,19 @@ public class ImgurCom extends PluginForDecrypt {
              * Note that for pictures/especially GIFs over 20 MB, the "link" value will only contain a link which leads to a preview or low
              * quality version of the picture. This is why we need a little workaround for this case (works from 19.5++ MB).
              */
-            if (filesize >= VIEW_FILESIZELIMIT) {
+            if (size >= VIEW_FILESIZELIMIT) {
                 directlink = jd.plugins.hoster.ImgUrCom.getBigFileDownloadlink(dl);
             }
             dl.setProperty("directlink", directlink);
-            dl.setProperty("decryptedfilesize", filesize);
-            dl.setProperty("directtitle", title);
+            dl.setProperty("decryptedfilesize", size);
+            if (title != null) {
+                dl.setProperty("directtitle", title);
+            }
             dl.setProperty("directusername", author);
+            dl.setProperty("orderid", itemnumber_formatted);
             final String filename = jd.plugins.hoster.ImgUrCom.getFormattedFilename(dl);
             dl.setFinalFileName(filename);
-            dl.setDownloadSize(filesize);
+            dl.setDownloadSize(size);
             /* No need to hide directlinks */
             dl.setContentUrl(jd.plugins.hoster.ImgUrCom.getURLContent(imgUID));
             if (videoSource != null && grabVideoSource) {
@@ -280,27 +332,32 @@ public class ImgurCom extends PluginForDecrypt {
         }
         /* Maybe it's just a single image in a gallery */
         if (jsonarray == null) {
-            jsonarray = br.getRegex("image[\t\n\r ]+:[\t\n\r ]+(\\{.*?\\})").getMatch(0);
+            jsonarray = br.getRegex("image\\s*?:\\s*?(\\{.*?\\})").getMatch(0);
         }
         if (jsonarray == null) {
             throw new DecrypterException("Decrypter broken!");
         }
+        // final String json_num_images = PluginJSonUtils.getJson(jsonarray, "num_images");
         String[] items = jsonarray.split("\\},\\{");
         /* We assume that the API is always working fine */
         if (items == null || items.length == 0) {
             logger.info("Empty album: " + parameter);
             return;
         }
+        final int padLength = getPadLength(items.length);
+        int itemNumber = 0;
         for (final String item : items) {
+            itemNumber++;
             String directlink;
             String title = getJson(item, "title");
+            final String itemnumber_formatted = String.format(Locale.US, "%0" + padLength + "d", itemNumber);
             final String filesize_str = getJson(item, "size");
             final String imgUID = getJson(item, "hash");
             videoSource = getJson(item, "video_source");
             String ext = getJson(item, "ext");
             if (imgUID == null || filesize_str == null || ext == null) {
-                logger.warning("Decrypter broken for link: " + parameter);
-                throw new DecrypterException("Decrypter broken for link: " + parameter);
+                logger.info("Seems like user/album has no images at all?!");
+                continue;
             }
             final long filesize = Long.parseLong(filesize_str);
             /* Correct sometimes broken ext TODO: Wait for a response of their support - this might be a serverside issue. */
@@ -335,6 +392,7 @@ public class ImgurCom extends PluginForDecrypt {
             dl.setProperty("decryptedfilesize", filesize);
             dl.setProperty("directtitle", title);
             dl.setProperty("directusername", author);
+            dl.setProperty("orderid", itemnumber_formatted);
             final String filename = jd.plugins.hoster.ImgUrCom.getFormattedFilename(dl);
             dl.setFinalFileName(filename);
             /* No need to hide directlinks */
@@ -344,6 +402,32 @@ public class ImgurCom extends PluginForDecrypt {
             }
             decryptedLinks.add(dl);
         }
+    }
+
+    private final int getPadLength(final long size) {
+        if (size < 10) {
+            return 1;
+        } else if (size < 100) {
+            return 2;
+        } else if (size < 1000) {
+            return 3;
+        } else if (size < 10000) {
+            return 4;
+        } else if (size < 100000) {
+            return 5;
+        } else if (size < 1000000) {
+            return 6;
+        } else if (size < 10000000) {
+            return 7;
+        } else {
+            return 8;
+        }
+    }
+
+    private Browser prepBRWebsite(final Browser br) {
+        br.setLoadLimit(br.getLoadLimit() * 2);
+        jd.plugins.hoster.ImgUrCom.prepBRWebsite(br);
+        return br;
     }
 
     private String getJson(final String source, final String parameter) {
@@ -381,5 +465,4 @@ public class ImgurCom extends PluginForDecrypt {
         decryptedLinks.add(offline);
         return decryptedLinks;
     }
-
 }

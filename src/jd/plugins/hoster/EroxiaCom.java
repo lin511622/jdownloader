@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -31,16 +30,14 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.SiteType.SiteTemplate;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "eroxia.com" }, urls = { "http://(www\\.)?eroxiadecrypted\\.com/([A-Za-z0-9_\\-]+/\\d+/.*?|video/[a-z0-9\\-]+\\d+)\\.html" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "eroxia.com" }, urls = { "https?://(www\\.)?eroxiadecrypted\\.com/([A-Za-z0-9_\\-]+/\\d+/.*?|video/[a-z0-9\\-]+\\d+)\\.html" })
 public class EroxiaCom extends PluginForHost {
-
     public EroxiaCom(PluginWrapper wrapper) {
         super(wrapper);
     }
 
     /* Using playerConfig script */
     /* Tags: playerConfig.php */
-
     private String dllink = null;
 
     @Override
@@ -58,12 +55,12 @@ public class EroxiaCom extends PluginForHost {
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         br.getPage(downloadLink.getDownloadURL());
-        if (br.getURL().equals("http://www.eroxia.com/")) {
+        if (br.getURL().equals("http://www.eroxia.com/") || br.containsHTML("Tube</title>|error\">(Page you are|We're sorry)")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-        String filename = br.getRegex("<h1 class=\"detail\\-title\">([^<>\"]*?)</h1>").getMatch(0);
+        String filename = br.getRegex("<h1(?: class=\"detail\\-title\")?>([^<>\"]*?)</h1>").getMatch(0);
         if (filename == null) {
-            filename = br.getRegex("<title>([^<>\"]*?)\\- Eroxia\\.com</title>").getMatch(0);
+            filename = br.getRegex("<title>([^<>\"]*?)\\s*-\\s*Eroxia(?:\\.com)?</title>").getMatch(0);
         }
         if (filename == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -72,22 +69,25 @@ public class EroxiaCom extends PluginForHost {
         dllink = br.getRegex("\\&file=(http[^<>\"]*?)\\&").getMatch(0);
         if (dllink == null) {
             dllink = br.getRegex("url: \\'(http://[^<>\"]*?)\\'").getMatch(0);
-        }
-        if (dllink == null) {
-            // No direct link there -> 2nd way
-            dllink = br.getRegex("(http://(www\\.)?eroxia\\.com/playerConfig\\.php\\?[^<>\"/\\&]*?)\"").getMatch(0);
             if (dllink == null) {
-                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-            }
-            br.getPage(Encoding.htmlDecode(dllink));
-            dllink = br.getRegex("flvMask:(http://[^<>\"]*?);").getMatch(0);
-            if (dllink == null) {
-                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                dllink = br.getRegex("<source[^>]*\\s+src=(\"|'|)(.*?)\\1").getMatch(1);
+                if (dllink == null) {
+                    // No direct link there -> 2nd way
+                    dllink = br.getRegex("(http://(www\\.)?eroxia\\.com/playerConfig\\.php\\?[^<>\"/\\&]*?)\"").getMatch(0);
+                    if (dllink == null) {
+                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                    }
+                    br.getPage(Encoding.htmlDecode(dllink));
+                    dllink = br.getRegex("flvMask:(http://[^<>\"]*?);").getMatch(0);
+                    if (dllink == null) {
+                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                    }
+                }
             }
         }
         dllink = Encoding.htmlDecode(dllink);
         filename = filename.trim();
-        final String ext = getFileNameExtensionFromString(dllink, ".flv");
+        final String ext = getFileNameExtensionFromString(dllink, ".mp4");
         downloadLink.setFinalFileName(Encoding.htmlDecode(filename) + ext);
         Browser br2 = br.cloneBrowser();
         // In case the link redirects to the finallink

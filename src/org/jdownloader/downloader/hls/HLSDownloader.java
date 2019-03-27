@@ -1,19 +1,26 @@
 package org.jdownloader.downloader.hls;
 
 import java.awt.Color;
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-import jd.config.SubConfiguration;
+import javax.crypto.Cipher;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+
 import jd.controlling.downloadcontroller.DiskSpaceReservation;
 import jd.controlling.downloadcontroller.ExceptionRunnable;
 import jd.controlling.downloadcontroller.FileIsLockedException;
@@ -21,6 +28,7 @@ import jd.controlling.downloadcontroller.ManagedThrottledConnectionHandler;
 import jd.http.Browser;
 import jd.http.Request;
 import jd.http.URLConnectionAdapter;
+import jd.nutils.Formatter;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.LinkStatus;
@@ -38,20 +46,29 @@ import org.appwork.net.protocol.http.HTTPConstants.ResponseCode;
 import org.appwork.storage.config.JsonConfig;
 import org.appwork.utils.Application;
 import org.appwork.utils.Files;
+import org.appwork.utils.IO;
 import org.appwork.utils.Regex;
 import org.appwork.utils.StringUtils;
+import org.appwork.utils.formatter.HexFormatter;
 import org.appwork.utils.formatter.SizeFormatter;
 import org.appwork.utils.logging2.LogInterface;
 import org.appwork.utils.logging2.LogSource;
 import org.appwork.utils.net.HTTPHeader;
+import org.appwork.utils.net.NullInputStream;
+import org.appwork.utils.net.SkippingLimitedOutputStream;
+import org.appwork.utils.net.URLHelper;
 import org.appwork.utils.net.httpserver.HttpServer;
 import org.appwork.utils.net.httpserver.handler.HttpRequestHandler;
 import org.appwork.utils.net.httpserver.requests.GetRequest;
+import org.appwork.utils.net.httpserver.requests.HttpRequest;
 import org.appwork.utils.net.httpserver.requests.PostRequest;
 import org.appwork.utils.net.httpserver.responses.HttpResponse;
 import org.appwork.utils.net.throttledconnection.MeteredThrottledInputStream;
+import org.appwork.utils.net.throttledconnection.ThrottledConnection;
+import org.appwork.utils.os.CrossSystem;
 import org.appwork.utils.speedmeter.AverageSpeedMeter;
 import org.jdownloader.controlling.UniqueAlltimeID;
+import org.jdownloader.controlling.ffmpeg.AbstractFFmpegBinary;
 import org.jdownloader.controlling.ffmpeg.FFMpegException;
 import org.jdownloader.controlling.ffmpeg.FFMpegProgress;
 import org.jdownloader.controlling.ffmpeg.FFmpeg;
@@ -61,6 +78,9 @@ import org.jdownloader.controlling.ffmpeg.FFprobe;
 import org.jdownloader.controlling.ffmpeg.json.Stream;
 import org.jdownloader.controlling.ffmpeg.json.StreamInfo;
 import org.jdownloader.downloader.hls.M3U8Playlist.M3U8Segment;
+import org.jdownloader.gui.translate._GUI;
+import org.jdownloader.gui.views.downloads.columns.ETAColumn;
+import org.jdownloader.logging.LogController;
 import org.jdownloader.plugins.DownloadPluginProgress;
 import org.jdownloader.plugins.SkipReason;
 import org.jdownloader.plugins.SkipReasonException;
@@ -68,40 +88,69 @@ import org.jdownloader.translate._JDT;
 
 //http://tools.ietf.org/html/draft-pantos-http-live-streaming-13
 public class HLSDownloader extends DownloadInterface {
+    private class PartFile {
+        private final File          file;
+        private final AtomicBoolean flag = new AtomicBoolean(false);
 
-    private volatile long                           bytesWritten   = 0l;
-    private final DownloadLinkDownloadable          downloadable;
-    private final DownloadLink                      link;
-    private long                                    startTimeStamp;
-    private final LogInterface                      logger;
-    private URLConnectionAdapter                    currentConnection;
-    private final ManagedThrottledConnectionHandler connectionHandler;
-    private File                                    outputCompleteFile;
-    private File                                    outputFinalCompleteFile;
-    private File                                    outputPartFile;
+        private PartFile(File file) {
+            this.file = file;
+        }
+    }
 
-    private PluginException                         caughtPluginException;
-    private final String                            m3uUrl;
-    private HttpServer                              server;
+    private final AtomicLong                     bytesWritten         = new AtomicLong(0);
+    private DownloadLinkDownloadable             downloadable;
+    private DownloadLink                         link;
+    private long                                 startTimeStamp       = -1;
+    private LogInterface                         logger;
+    private URLConnectionAdapter                 currentConnection;
+    private ManagedThrottledConnectionHandler    connectionHandler;
+    private File                                 outputCompleteFile;
+    private PluginException                      caughtPluginException;
+    private String                               m3uUrl;
+    private String                               persistentParameters;
+    private HttpServer                           server;
+    private Browser                              sourceBrowser;
+    private long                                 processID;
+    private List<M3U8Playlist>                   m3u8Playlists;
+    private final List<PartFile>                 outputPartFiles      = new ArrayList<PartFile>();
+    private final AtomicInteger                  currentPlayListIndex = new AtomicInteger(0);
+    private final HashMap<String, SecretKeySpec> aes128Keys           = new HashMap<String, SecretKeySpec>();
+    private final boolean                        isJared              = Application.isJared(HLSDownloader.class);
 
-    private final Browser                           obr;
+    public int getCurrentPlayListIndex() {
+        return currentPlayListIndex.get();
+    }
 
-    protected volatile long                         duration       = -1l;
-    protected volatile int                          bitrate        = -1;
-    private long                                    processID;
-    protected MeteredThrottledInputStream           meteredThrottledInputStream;
-    protected final AtomicReference<byte[]>         instanceBuffer = new AtomicReference<byte[]>();
-    private final boolean                           isTwitch;
-    private final boolean                           isTwitchOptimized;
+    public M3U8Playlist getCurrentPlayList() {
+        return getPlayLists().get(getCurrentPlayListIndex());
+    }
 
-    public HLSDownloader(final DownloadLink link, Browser br2, String m3uUrl) {
-        this.m3uUrl = Request.getLocation(m3uUrl, br2.getRequest());
-        this.obr = br2.cloneBrowser();
+    public List<M3U8Playlist> getPlayLists() {
+        return m3u8Playlists;
+    }
+
+    private final void init(final DownloadLink link, Browser br, String m3uUrl, final String persistantParameters) throws Exception {
+        setPersistentParameters(persistantParameters);
+        this.m3uUrl = Request.getLocation(m3uUrl, br.getRequest());
+        this.sourceBrowser = br.cloneBrowser();
         this.link = link;
         logger = initLogger(link);
-        isTwitch = "twitch.tv".equals(link.getHost());
-        isTwitchOptimized = isTwitch && Boolean.TRUE.equals(SubConfiguration.getConfig(link.getHost()).getBooleanProperty("expspeed", false));
-        connectionHandler = new ManagedThrottledConnectionHandler();
+        connectionHandler = new ManagedThrottledConnectionHandler() {
+            @Override
+            public void addThrottledConnection(ThrottledConnection con) {
+                final long transfered = con.transfered();
+                if (transfered > 0) {
+                    traffic.addAndGet(-transfered);
+                    if (connections.addIfAbsent(con)) {
+                        con.setHandler(this);
+                    } else {
+                        traffic.addAndGet(transfered);
+                    }
+                } else {
+                    super.addThrottledConnection(con);
+                }
+            }
+        };
         downloadable = new DownloadLinkDownloadable(link) {
             @Override
             public boolean isResumable() {
@@ -114,14 +163,91 @@ public class HLSDownloader extends DownloadInterface {
                 super.setResumeable(value);
             }
         };
+        m3u8Playlists = getM3U8Playlists();
+        if (m3u8Playlists.size() == 0) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        }
+    }
+
+    public HLSDownloader(final DownloadLink link, Browser br, String m3uUrl, final String persistentParameters) throws Exception {
+        init(link, br, m3uUrl, persistentParameters);
+    }
+
+    public HLSDownloader(final DownloadLink link, final Browser br, final String m3uUrl) throws Exception {
+        init(link, br, m3uUrl, null);
+    }
+
+    protected void setPersistentParameters(final String persistentParameters) {
+        if (StringUtils.isEmpty(persistentParameters)) {
+            this.persistentParameters = null;
+        } else {
+            final String parameter = persistentParameters.trim();
+            if (parameter.startsWith("?") || parameter.startsWith("&")) {
+                this.persistentParameters = parameter.substring(1);
+            } else {
+                this.persistentParameters = parameter;
+            }
+        }
+    }
+
+    protected String buildDownloadUrl(final String url) {
+        final String persistentParameters = this.persistentParameters;
+        if (persistentParameters == null) {
+            return url;
+        } else {
+            try {
+                return URLHelper.parseLocation(new URL(url), "&" + persistentParameters);
+            } catch (MalformedURLException e) {
+                if (url.contains("?")) {
+                    return url + "&" + persistentParameters;
+                } else {
+                    return url + "?" + persistentParameters;
+                }
+            }
+        }
+    }
+
+    public long getEstimatedSize() {
+        return M3U8Playlist.getEstimatedSize(getPlayLists());
+    }
+
+    public boolean isEncrypted() {
+        if (isJared) {
+            if (m3u8Playlists != null) {
+                for (final M3U8Playlist playlist : m3u8Playlists) {
+                    if (playlist.isEncrypted()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    protected boolean isSupported(M3U8Playlist m3u8) {
+        if (isJared) {
+            if (m3u8 != null && m3u8.isEncrypted()) {
+                return false;
+            } else {
+                return !isEncrypted();
+            }
+        }
+        return true;
     }
 
     public LogInterface initLogger(final DownloadLink link) {
-        PluginForHost plg = link.getLivePlugin();
-        if (plg == null) {
-            plg = link.getDefaultPlugin();
+        final PluginForHost plg = link.getLivePlugin();
+        LogInterface log = null;
+        if (plg != null) {
+            log = plg.getLogger();
         }
-        return plg == null ? null : plg.getLogger();
+        if (log == null && sourceBrowser != null) {
+            log = sourceBrowser.getLogger();
+        }
+        if (log == null) {
+            log = LogController.TRASH;
+        }
+        return log;
     }
 
     protected void terminate() {
@@ -134,14 +260,52 @@ public class HLSDownloader extends DownloadInterface {
         }
     }
 
-    public StreamInfo getProbe() throws IOException {
-        initPipe();
+    public StreamInfo getProbe() throws Exception {
+        return getProbe(0);
+    }
+
+    public StreamInfo getProbe(int index) throws Exception {
         try {
-            final FFprobe ffmpeg = new FFprobe();
-            this.processID = new UniqueAlltimeID().getID();
-            return ffmpeg.getStreamInfo("http://127.0.0.1:" + server.getPort() + "/m3u8?id=" + processID);
+            if (index < getM3U8Playlists().size()) {
+                currentPlayListIndex.set(index);
+            } else {
+                throw new IllegalArgumentException("Index " + index + " > m3u8 playlist size " + getM3U8Playlists().size());
+            }
+            final FFprobe ffprobe = new FFprobe() {
+                @Override
+                public LogInterface getLogger() {
+                    return HLSDownloader.this.logger;
+                }
+            };
+            if (!ffprobe.isAvailable()) {
+                logger.info("FFProbe is not available");
+                return null;
+            } else if (!ffprobe.isCompatible()) {
+                logger.info("FFProbe is incompatible");
+                return null;
+            } else {
+                this.processID = new UniqueAlltimeID().getID();
+                initPipe(ffprobe);
+                return ffprobe.getStreamInfo("http://127.0.0.1:" + server.getPort() + "/m3u8?id=" + processID);
+            }
         } finally {
-            server.stop();
+            final HttpServer server = this.server;
+            this.server = null;
+            if (server != null) {
+                server.stop();
+                waitForProcessingRequests();
+            }
+        }
+    }
+
+    protected void waitForProcessingRequests() throws InterruptedException {
+        while (true) {
+            synchronized (requestsInProcess) {
+                if (requestsInProcess.get() == 0) {
+                    break;
+                }
+                requestsInProcess.wait(50);
+            }
         }
     }
 
@@ -156,7 +320,7 @@ public class HLSDownloader extends DownloadInterface {
         return null;
     }
 
-    protected String getFFmpegFormat(FFmpeg ffmpeg) throws PluginException, IOException, InterruptedException, FFMpegException {
+    protected String getFFmpegFormat(final FFmpeg ffmpeg) throws Exception {
         String name = link.getForcedFileName();
         if (StringUtils.isEmpty(name)) {
             name = link.getFinalFileName();
@@ -201,7 +365,7 @@ public class HLSDownloader extends DownloadInterface {
                             }
                         }
                     } catch (FFMpegException e) {
-                        final String res = e.getError();
+                        final String res = e.getStdErr();
                         format = new Regex(res, "Output \\#0\\, ([^\\,]+)").getMatch(0);
                         if (format == null) {
                             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, null, -1, e);
@@ -215,46 +379,224 @@ public class HLSDownloader extends DownloadInterface {
         return format;
     }
 
-    public void run() throws IOException, PluginException {
-        link.setDownloadSize(-1);
-        final FFMpegProgress set = new FFMpegProgress();
+    private void runConcat() throws IOException, SkipReasonException, PluginException {
         try {
             final FFmpeg ffmpeg = new FFmpeg() {
-                protected void parseLine(boolean stdStream, StringBuilder ret, String line) {
-                    System.out.println(line);
+                @Override
+                public LogInterface getLogger() {
+                    return HLSDownloader.this.logger;
+                }
+
+                @Override
+                protected void parseLine(boolean isStdout, String line) {
+                }
+            };
+            processID = new UniqueAlltimeID().getID();
+            initPipe(ffmpeg);
+            final AtomicReference<File> outputFile = new AtomicReference<File>();
+            final FFMpegProgress progress = new FFMpegProgress() {
+                final long total;
+                {
+                    long total = 0;
+                    for (final PartFile partFile : outputPartFiles) {
+                        total += partFile.file.length();
+                    }
+                    this.total = total;
+                }
+
+                @Override
+                public void setTotal(long total) {
+                }
+
+                public void updateValues(long current, long total) {
+                };
+
+                @Override
+                public long getCurrent() {
+                    final File file = outputFile.get();
+                    if (file != null) {
+                        return file.length();
+                    } else {
+                        return 0;
+                    }
+                };
+
+                @Override
+                public long getTotal() {
+                    return total;
+                }
+
+                @Override
+                public String getMessage(Object requestor) {
+                    if (requestor instanceof ETAColumn) {
+                        final long eta = getETA();
+                        if (eta > 0) {
+                            return Formatter.formatSeconds(eta);
+                        }
+                        return null;
+                    }
+                    return getDetaultMessage();
+                }
+
+                @Override
+                public long getETA() {
+                    final long runtime = System.currentTimeMillis() - startedTimestamp;
+                    if (runtime > 0) {
+                        final double speed = getCurrent() / (double) runtime;
+                        if (speed > 0) {
+                            return (long) ((getTotal() - getCurrent()) / speed);
+                        } else {
+                            return -1;
+                        }
+                    }
+                    return -1;
+                }
+
+                @Override
+                protected String getDetaultMessage() {
+                    return _GUI.T.FFMpegProgress_getMessage_concat();
+                }
+            };
+            progress.setProgressSource(this);
+            boolean deleteOutput = true;
+            final String concatFormat;
+            if (CrossSystem.isWindows() && m3u8Playlists.size() > 1) {
+                concatFormat = getFFmpegFormat(ffmpeg);
+            } else {
+                concatFormat = null;
+            }
+            try {
+                downloadable.addPluginProgress(progress);
+                try {
+                    outputFile.set(outputCompleteFile);
+                    ffmpeg.runCommand(null, buildConcatCommandLine(concatFormat, ffmpeg, outputCompleteFile.getAbsolutePath()));
+                    deleteOutput = false;
+                } catch (FFMpegException e) {
+                    // some systems have problems with special chars to find the in or out file.
+                    if (e.getStdErr() != null && e.getStdErr().contains("No such file or directory")) {
+                        final File tmpOut = Application.getTempResource("ffmpeg_out" + UniqueAlltimeID.create());
+                        outputFile.set(tmpOut);
+                        ffmpeg.runCommand(null, buildConcatCommandLine(concatFormat, ffmpeg, tmpOut.getAbsolutePath()));
+                        outputCompleteFile.delete();
+                        if (tmpOut.renameTo(outputCompleteFile)) {
+                            deleteOutput = false;
+                        }
+                    } else {
+                        throw e;
+                    }
+                }
+            } finally {
+                downloadable.removePluginProgress(progress);
+                if (deleteOutput) {
+                    outputCompleteFile.delete();
+                } else {
+                    for (final PartFile partFile : outputPartFiles) {
+                        partFile.file.delete();
+                    }
+                }
+            }
+        } catch (final FFMpegException e) {
+            if (FFMpegException.ERROR.DISK_FULL.equals(e.getError())) {
+                throw new SkipReasonException(SkipReason.DISK_FULL, e);
+            } else {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, e.getMessage(), -1, e);
+            }
+        } catch (Exception e) {
+            if (logger != null) {
+                logger.log(e);
+            }
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, e.getMessage(), -1, e);
+        } finally {
+            // link.removePluginProgress(set);
+            final HttpServer server = this.server;
+            this.server = null;
+            if (server != null) {
+                server.stop();
+            }
+        }
+    }
+
+    private void runDownload() throws Exception {
+        link.setDownloadSize(-1);
+        try {
+            final AtomicLong lastBitrate = new AtomicLong(-1);
+            final AtomicLong lastBytesWritten = new AtomicLong(0);
+            final AtomicLong lastTime = new AtomicLong(0);
+            final AtomicLong completeTime = new AtomicLong(0);
+            final long estimatedDuration = M3U8Playlist.getEstimatedDuration(m3u8Playlists) / 1000;
+            final FFmpeg ffmpeg = new FFmpeg() {
+                @Override
+                protected int exitProcess(Process process, String stdout, String stderr) throws IllegalThreadStateException {
+                    try {
+                        return process.exitValue();
+                    } catch (IllegalThreadStateException e) {
+                        if (stderr != null && stderr.matches("(?s).*video:\\d+\\w*\\s*audio:\\d+\\w*\\s*subtitle:\\d+\\w*.+")) {
+                            return 0;
+                        } else {
+                            throw e;
+                        }
+                    }
+                }
+
+                @Override
+                public LogInterface getLogger() {
+                    return HLSDownloader.this.logger;
+                }
+
+                @Override
+                protected long getLastUpdateTimestampTimeout() {
+                    return 2 * super.getLastUpdateTimestampTimeout();
+                }
+
+                @Override
+                protected void parseLine(boolean isStdout, String line) {
                     try {
                         final String trimmedLine = line.trim();
                         if (trimmedLine.startsWith("Duration:")) {
-                            if (!line.contains("Duration: N/A")) {
-                                String duration = new Regex(line, "Duration\\: (.*?).?\\d*?\\, start").getMatch(0);
-                                HLSDownloader.this.duration = formatStringToMilliseconds(duration);
-                            }
+                            // if (!line.contains("Duration: N/A")) {
+                            // final String durationString = new Regex(line, "Duration\\: (.*?).?\\d*?\\, start").getMatch(0);
+                            // if (durationString != null) {
+                            // final long duration = formatStringToMilliseconds(durationString);
+                            // }
+                            // }
                         } else if (trimmedLine.startsWith("Stream #")) {
-                            final String bitrate = new Regex(line, "(\\d+) kb\\/s").getMatch(0);
-                            if (bitrate != null) {
-                                if (HLSDownloader.this.bitrate == -1) {
-                                    HLSDownloader.this.bitrate = 0;
+                            final String bitrateString = new Regex(line, "(\\d+) kb\\/s").getMatch(0);
+                            if (bitrateString != null) {
+                                if (lastBitrate.get() == -1) {
+                                    lastBitrate.set(Integer.parseInt(bitrateString));
+                                } else {
+                                    lastBitrate.addAndGet(Integer.parseInt(bitrateString));
                                 }
-                                HLSDownloader.this.bitrate += Integer.parseInt(bitrate);
+                                final long bitrate = lastBitrate.get();
+                                if (estimatedDuration > 0 && bitrate > 0) {
+                                    final long estimatedSize = ((estimatedDuration) * bitrate * 1024) / 8;
+                                    downloadable.setDownloadTotalBytes(Math.max(M3U8Playlist.getEstimatedSize(m3u8Playlists), estimatedSize));
+                                }
                             }
                         } else if (trimmedLine.startsWith("Output #0")) {
-                            if (duration > 0 && bitrate > 0) {
-                                link.setDownloadSize(((duration / 1000) * bitrate * 1024) / 8);
+                            final long bitrate = lastBitrate.get();
+                            if (estimatedDuration > 0 && bitrate > 0) {
+                                final long estimatedSize = ((estimatedDuration) * bitrate * 1024) / 8;
+                                downloadable.setDownloadTotalBytes(Math.max(M3U8Playlist.getEstimatedSize(m3u8Playlists), estimatedSize));
                             }
                         } else if (trimmedLine.startsWith("frame=") || trimmedLine.startsWith("size=")) {
-                            final String size = new Regex(line, "size=\\s*(\\S+)\\s+").getMatch(0);
-                            long newSize = SizeFormatter.getSize(size);
-                            bytesWritten = newSize;
-                            downloadable.setDownloadBytesLoaded(bytesWritten);
-                            final String time = new Regex(line, "time=\\s*(\\S+)\\s+").getMatch(0);
-                            // final String bitrate = new Regex(line, "bitrate=\\s*([\\d\\.]+)").getMatch(0);
-                            long timeInSeconds = (formatStringToMilliseconds(time) / 1000);
-                            if (timeInSeconds > 0 && duration > 0) {
-                                long rate = bytesWritten / timeInSeconds;
-                                link.setDownloadSize(((duration / 1000) * rate));
+                            final String sizeString = new Regex(line, "size=\\s*(\\S+)\\s+").getMatch(0);
+                            final long size = SizeFormatter.getSize(sizeString);
+                            final long currentBytesWritten = lastBytesWritten.get() + size;
+                            bytesWritten.set(currentBytesWritten);
+                            downloadable.setDownloadBytesLoaded(currentBytesWritten);
+                            final String timeString = new Regex(line, "time=\\s*(\\S+)\\s+").getMatch(0);
+                            long time = (formatStringToMilliseconds(timeString) / 1000);
+                            lastTime.set(time);
+                            time += completeTime.get();
+                            final long estimatedSize;
+                            if (time > 0 && estimatedDuration > 0) {
+                                final long rate = currentBytesWritten / time;
+                                estimatedSize = (estimatedDuration) * rate;
                             } else {
-                                link.setDownloadSize(bytesWritten);
+                                estimatedSize = currentBytesWritten;
                             }
+                            downloadable.setDownloadTotalBytes(Math.max(M3U8Playlist.getEstimatedSize(m3u8Playlists), estimatedSize));
                         }
                     } catch (Throwable e) {
                         if (logger != null) {
@@ -263,174 +605,65 @@ public class HLSDownloader extends DownloadInterface {
                     }
                 };
             };
-            final String format = getFFmpegFormat(ffmpeg);
-            final String out = outputPartFile.getAbsolutePath();
-            try {
-                initPipe();
-                processID = new UniqueAlltimeID().getID();
-                runFF(set, format, ffmpeg, out);
-            } catch (FFMpegException e) {
-                // some systems have problems with special chars to find the in or out file.
-                if (e.getError() != null && e.getError().contains("No such file or directory")) {
-                    final File tmpOut = Application.getTempResource("ffmpeg_out" + UniqueAlltimeID.create());
-                    runFF(set, format, ffmpeg, tmpOut.getAbsolutePath());
-                    outputPartFile.delete();
-                    tmpOut.renameTo(outputPartFile);
-                } else {
-                    throw e;
-                }
+            currentPlayListIndex.set(0);
+            final String downloadFormat;
+            if (CrossSystem.isWindows() && m3u8Playlists.size() > 1) {
+                downloadFormat = "mpegts";
+            } else {
+                downloadFormat = getFFmpegFormat(ffmpeg);
             }
-        } catch (InterruptedException e) {
-            if (logger != null) {
-                logger.log(e);
+            processID = new UniqueAlltimeID().getID();
+            initPipe(ffmpeg);
+            for (int index = 0; index < m3u8Playlists.size(); index++) {
+                final PartFile partFile = outputPartFiles.get(index);
+                final File destination = partFile.file;
+                try {
+                    completeTime.addAndGet(lastTime.get());
+                    lastBitrate.set(-1);
+                    lastBytesWritten.set(bytesWritten.get());
+                    currentPlayListIndex.set(index);
+                    partFile.flag.set(true);// TODO: validate download first before flag is set
+                    ffmpeg.runCommand(null, buildDownloadCommandLine(downloadFormat, ffmpeg, destination.getAbsolutePath()));
+                } catch (FFMpegException e) {
+                    // some systems have problems with special chars to find the in or out file.
+                    if (e.getStdErr() != null && e.getStdErr().contains("No such file or directory")) {
+                        final File tmpOut = Application.getTempResource("ffmpeg_out" + UniqueAlltimeID.create());
+                        ffmpeg.runCommand(null, buildDownloadCommandLine(downloadFormat, ffmpeg, tmpOut.getAbsolutePath()));
+                        destination.delete();
+                        tmpOut.renameTo(destination);
+                    } else {
+                        throw e;
+                    }
+                }
             }
         } catch (final FFMpegException e) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, e.getMessage(), -1, e);
-        } catch (Throwable e) {
+            if (FFMpegException.ERROR.DISK_FULL.equals(e.getError())) {
+                throw new SkipReasonException(SkipReason.DISK_FULL, e);
+            } else {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, e.getMessage(), -1, e);
+            }
+        } catch (Exception e) {
             if (logger != null) {
                 logger.log(e);
             }
+            throw e;
         } finally {
-            if (meteredThrottledInputStream != null) {
-                connectionHandler.removeThrottledConnection(meteredThrottledInputStream);
-            }
-            // link.removePluginProgress(set);
-            server.stop();
-        }
-    }
-
-    protected boolean isValidSegment(final String segment) {
-        if (StringUtils.isNotEmpty(segment)) {
-            if (isTwitch && StringUtils.endsWithCaseInsensitive(segment, "end_offset=-1")) {
-                return false;
-            }
-            return true;
-        }
-        return false;
-    }
-
-    private final String toExtInfDuration(final long duration) {
-        String value = Long.toString(duration);
-        switch (value.length()) {
-        case 0:
-            value = "0.000";
-            break;
-        case 1:
-            value = "0.00" + value;
-            break;
-        case 2:
-            value = "0.0" + value;
-            break;
-        case 3:
-            value = "0." + value;
-            break;
-        default:
-            value = value.replaceFirst("(\\d{3})$", ".$1").replaceFirst("^\\.", "0.");
-            break;
-        }
-        return value;
-    }
-
-    protected String optimizeM3U8Playlist(String m3u8Playlist) {
-        if (m3u8Playlist != null) {
-            if (isTwitchOptimized) {
-                final StringBuilder sb = new StringBuilder();
-                long lastSegmentDuration = 0;
-                String lastSegment = null;
-                long lastSegmentStart = -1;
-                long lastSegmentEnd = -1;
-                long lastMergedSegmentDuration = 0;
-                final long maxSegmentSize = 10000000l;// server-side limit
-                for (final String line : Regex.getLines(m3u8Playlist)) {
-                    if (line.matches("^https?://.+") || !line.trim().startsWith("#")) {
-                        final String segment = new Regex(line, "^(.*?)(\\?|$)").getMatch(0);
-                        final String segmentStart = new Regex(line, "\\?.*?start_offset=(-?\\d+)").getMatch(0);
-                        final String segmentEnd = new Regex(line, "\\?.*?end_offset=(-?\\d+)").getMatch(0);
-                        if ("-1".equals(segmentEnd)) {
-                            continue;
-                        }
-                        if (lastSegment != null && !lastSegment.equals(segment) || segmentStart == null || segmentEnd == null || lastSegmentEnd != Long.parseLong(segmentStart) - 1 || Long.parseLong(segmentEnd) - lastSegmentStart > maxSegmentSize) {
-                            if (lastSegment != null) {
-                                if (sb.length() > 0) {
-                                    sb.append("\n");
-                                }
-                                sb.append("#EXTINF:");
-                                sb.append(toExtInfDuration(lastMergedSegmentDuration));
-                                lastMergedSegmentDuration = 0;
-                                sb.append(",\n");
-                                sb.append(lastSegment + "?start_offset=" + lastSegmentStart + "&end_offset=" + lastSegmentEnd);
-                                lastSegment = null;
-                            }
-                        }
-                        if (segment != null && segmentStart != null && segmentEnd != null) {
-                            if (lastSegment == null) {
-                                lastSegment = segment;
-                                lastSegmentStart = Long.parseLong(segmentStart);
-                                lastSegmentEnd = Long.parseLong(segmentEnd);
-                                lastMergedSegmentDuration = lastSegmentDuration;
-                            } else {
-                                lastSegmentEnd = Long.parseLong(segmentEnd);
-                                lastMergedSegmentDuration += lastSegmentDuration;
-                            }
-                        } else {
-                            if (sb.length() > 0) {
-                                sb.append("\n");
-                            }
-                            sb.append("#EXTINF:");
-                            sb.append(toExtInfDuration(lastSegmentDuration));
-                            lastSegmentDuration = 0;
-                            sb.append(",\n");
-                            sb.append(line);
-                        }
-                    } else {
-                        if (line.startsWith("#EXT-X-ENDLIST")) {
-                            if (lastSegment != null) {
-                                if (sb.length() > 0) {
-                                    sb.append("\n");
-                                }
-                                sb.append("#EXTINF:");
-                                sb.append(toExtInfDuration(lastMergedSegmentDuration));
-                                lastMergedSegmentDuration = 0;
-                                sb.append(",\n");
-                                sb.append(lastSegment + "?start_offset=" + lastSegmentStart + "&end_offset=" + lastSegmentEnd);
-                                lastSegment = null;
-                            }
-                            if (sb.length() > 0) {
-                                sb.append("\n");
-                            }
-                            sb.append(line);
-                        } else if (line.startsWith("#EXTINF:")) {
-                            final String duration = new Regex(line, "#EXTINF:(\\d+(\\.\\d+)?)").getMatch(0);
-                            if (duration != null) {
-                                if (duration.contains(".")) {
-                                    lastSegmentDuration = Long.parseLong(duration.replace(".", ""));
-                                } else {
-                                    lastSegmentDuration = Long.parseLong(duration) * 1000;
-                                }
-                            }
-                        } else {
-                            if (sb.length() > 0) {
-                                sb.append("\n");
-                            }
-                            sb.append(line);
-                        }
+            currentPlayListIndex.set(0);
+            try {
+                if (connectionHandler != null) {
+                    for (ThrottledConnection con : connectionHandler.getConnections()) {
+                        connectionHandler.removeThrottledConnection(con);
                     }
                 }
-                if (lastSegment != null) {
-                    if (sb.length() > 0) {
-                        sb.append("\n");
-                    }
-                    sb.append("#EXTINF:");
-                    sb.append(toExtInfDuration(lastMergedSegmentDuration));
-                    lastMergedSegmentDuration = 0;
-                    sb.append(",\n");
-                    sb.append(lastSegment + "?start_offset=" + lastSegmentStart + "&end_offset=" + lastSegmentEnd);
-                    lastSegment = null;
+            } finally {
+                // link.removePluginProgress(set);
+                final HttpServer server = this.server;
+                this.server = null;
+                if (server != null) {
+                    server.stop();
                 }
-                return sb.toString();
             }
         }
-        return m3u8Playlist;
     }
 
     protected boolean isMapMetaDataEnabled() {
@@ -441,7 +674,54 @@ public class HLSDownloader extends DownloadInterface {
         return ffmpeg.requiresAdtstoAsc(format);
     }
 
-    protected ArrayList<String> buildCommandLine(String format, FFmpeg ffmpeg, String out) {
+    protected ArrayList<String> buildConcatCommandLine(final String format, FFmpeg ffmpeg, String out) {
+        final ArrayList<String> l = new ArrayList<String>();
+        l.add(ffmpeg.getFullPath());
+        if (CrossSystem.isWindows()) {
+            // workaround to support long path lengths
+            // https://trac.ffmpeg.org/wiki/Concatenate
+            l.add("-i");
+            final StringBuilder sb = new StringBuilder();
+            sb.append("concat:");
+            boolean seperator = false;
+            for (final PartFile outputPartFile : outputPartFiles) {
+                if (seperator) {
+                    sb.append("|");
+                } else {
+                    seperator = true;
+                }
+                sb.append("\\\\?\\" + outputPartFile.file.getAbsolutePath());
+            }
+            l.add(sb.toString());
+        } else {
+            l.add("-f");
+            l.add("concat");
+            l.add("-i");
+            l.add("http://127.0.0.1:" + server.getPort() + "/concat?id=" + processID);
+        }
+        if (isMapMetaDataEnabled()) {
+            final FFmpegMetaData ffMpegMetaData = getFFmpegMetaData();
+            if (ffMpegMetaData != null && !ffMpegMetaData.isEmpty()) {
+                l.add("-i");
+                l.add("http://127.0.0.1:" + server.getPort() + "/meta?id=" + processID);
+                l.add("-map_metadata");
+                l.add("1");
+            }
+        }
+        l.add("-c");
+        l.add("copy");
+        applyBitStreamFilter(l, format, ffmpeg);
+        if (CrossSystem.isWindows() && out.length() > 259) {
+            // https://msdn.microsoft.com/en-us/library/aa365247.aspx
+            l.add("\\\\?\\" + out);
+        } else {
+            l.add(out);
+        }
+        l.add("-y");
+        return l;
+    }
+
+    protected ArrayList<String> buildDownloadCommandLine(String format, FFmpeg ffmpeg, String out) {
         final ArrayList<String> l = new ArrayList<String>();
         l.add(ffmpeg.getFullPath());
         l.add("-analyzeduration");// required for low bandwidth streams!
@@ -457,352 +737,515 @@ public class HLSDownloader extends DownloadInterface {
                 l.add("1");
             }
         }
-        if (requiresAdtstoAsc(format, ffmpeg)) {
-            l.add("-bsf:a");
-            l.add("aac_adtstoasc");
-        }
-        l.add("-c");
+        applyBitStreamFilter(l, format, ffmpeg);
+        l.add("-c:v");
+        l.add("copy");
+        l.add("-c:a");
         l.add("copy");
         l.add("-f");
         l.add(format);
-        l.add(out);
+        if (CrossSystem.isWindows() && out.length() > 259) {
+            // https://msdn.microsoft.com/en-us/library/aa365247.aspx
+            l.add("\\\\?\\" + out);
+        } else {
+            l.add(out);
+        }
         l.add("-y");
-        l.add("-progress");
-        l.add("http://127.0.0.1:" + server.getPort() + "/progress?id=" + processID);
+        // l.add("-progress");
+        // l.add("http://127.0.0.1:" + server.getPort() + "/progress?id=" + processID);
         return l;
     }
 
-    protected void runFF(FFMpegProgress set, String format, FFmpeg ffmpeg, String out) throws IOException, InterruptedException, FFMpegException {
-        ffmpeg.runCommand(set, buildCommandLine(format, ffmpeg, out));
+    protected void applyBitStreamFilter(List<String> cmdLine, String format, FFmpeg ffmpeg) {
+        if (format != null && "mpegts".equals(format)) {
+            cmdLine.add("-bsf:v");
+            cmdLine.add("h264_mp4toannexb");
+        }
+        if (format != null && requiresAdtstoAsc(format, ffmpeg)) {
+            cmdLine.add("-bsf:a");
+            cmdLine.add("aac_adtstoasc");
+        }
     }
 
     protected FFmpegMetaData getFFmpegMetaData() {
         return null;
     }
 
-    private volatile M3U8Playlist m3u8Playlists = new M3U8Playlist();
-
-    public M3U8Playlist getM3U8Playlist() {
-        return m3u8Playlists;
+    protected Browser getRequestBrowser() {
+        final Browser ret = sourceBrowser.cloneBrowser();
+        ret.setConnectTimeout(30 * 1000);
+        ret.setReadTimeout(30 * 1000);
+        return ret;
     }
 
-    private void initPipe() throws IOException {
+    protected List<M3U8Playlist> getM3U8Playlists() throws Exception {
+        final Browser br = getRequestBrowser();
+        // work around for longggggg m3u pages
+        final int was = br.getLoadLimit();
+        // lets set the connection limit to our required request
+        br.setLoadLimit(Integer.MAX_VALUE);
+        try {
+            return M3U8Playlist.loadM3U8(buildDownloadUrl(m3uUrl), br);
+        } finally {
+            br.setLoadLimit(was);
+        }
+    }
+
+    private final AtomicInteger requestsInProcess = new AtomicInteger(0);
+
+    private void initPipe(final AbstractFFmpegBinary ffmpeg) throws IOException {
+        final LinkedList<MeteredThrottledInputStream> cachedMeteredThrottledInputStream = new LinkedList<MeteredThrottledInputStream>();
         server = new HttpServer(0);
         server.setLocalhostOnly(true);
         final HttpServer finalServer = server;
         server.start();
-        instanceBuffer.set(new byte[512 * 1024]);
         finalServer.registerRequestHandler(new HttpRequestHandler() {
+            final byte[] readBuf = new byte[512];
 
             @Override
             public boolean onPostRequest(PostRequest request, HttpResponse response) {
+                requestsInProcess.incrementAndGet();
                 try {
                     if (logger != null) {
                         logger.info(request.toString());
                     }
-                    if (processID != Long.parseLong(request.getParameterbyKey("id"))) {
+                    if (!validateID(request)) {
                         return false;
                     }
                     if ("/progress".equals(request.getRequestedPath())) {
-                        BufferedReader f = new BufferedReader(new InputStreamReader(request.getInputStream(), "UTF-8"));
-                        final StringBuilder ret = new StringBuilder();
-                        final String sep = System.getProperty("line.separator");
-                        String line;
-                        while ((line = f.readLine()) != null) {
-                            if (ret.length() > 0) {
-                                ret.append(sep);
-                            } else if (line.startsWith("\uFEFF")) {
-                                /*
-                                 * Workaround for this bug: http://bugs.sun.com/view_bug.do?bug_id=4508058
-                                 * http://bugs.sun.com/view_bug.do?bug_id=6378911
-                                 */
-
-                                line = line.substring(1);
-                            }
-
-                            ret.append(line);
+                        while (request.getInputStream().read(readBuf) != -1) {
                         }
                         response.setResponseCode(ResponseCode.SUCCESS_OK);
                         return true;
-
                     }
-
                 } catch (Exception e) {
                     if (logger != null) {
                         logger.log(e);
+                    }
+                } finally {
+                    synchronized (requestsInProcess) {
+                        requestsInProcess.decrementAndGet();
+                        requestsInProcess.notifyAll();
                     }
                 }
                 return false;
             }
 
+            private final boolean validateID(HttpRequest request) throws IOException {
+                final String id = request.getParameterbyKey("id");
+                if (id == null) {
+                    return false;
+                } else if (processID != Long.parseLong(request.getParameterbyKey("id"))) {
+                    return false;
+                } else {
+                    return true;
+                }
+            }
+
             @Override
             public boolean onGetRequest(GetRequest request, HttpResponse response) {
                 boolean requestOkay = false;
+                final LogSource requestLogger = new LogSource(request.getRequestedURL());
+                requestsInProcess.incrementAndGet();
                 try {
-                    if (logger != null) {
-                        logger.info("START " + request.getRequestedURL());
-                    }
-                    if (logger != null) {
-                        logger.info(request.toString());
-                    }
-                    final String id = request.getParameterbyKey("id");
-                    if (id == null) {
+                    requestLogger.info("START " + request.getRequestedURL());
+                    requestLogger.info(request.toString());
+                    if (!validateID(request)) {
+                        requestLogger.info("invalid ID");
                         return false;
-                    }
-                    if (processID != Long.parseLong(request.getParameterbyKey("id"))) {
-                        return false;
-                    }
-                    if ("/meta".equals(request.getRequestedPath())) {
-                        final FFmpegMetaData ffMpegMetaData = getFFmpegMetaData();
-                        final byte[] bytes;
-                        if (ffMpegMetaData != null) {
-                            final String content = ffMpegMetaData.getFFmpegMetaData();
-                            bytes = content.getBytes("UTF-8");
-                        } else {
-                            bytes = new byte[0];
+                    } else if ("/concat".equals(request.getRequestedPath())) {
+                        final StringBuilder sb = new StringBuilder();
+                        for (final PartFile partFile : outputPartFiles) {
+                            if (sb.length() > 0) {
+                                sb.append("\r\n");
+                            }
+                            sb.append("file '");
+                            if (CrossSystem.isWindows()) {
+                                // https://trac.ffmpeg.org/ticket/2702
+                                // NOTE: this does not work for long path lengths! see different way in buildConcatCommandLine
+                                sb.append("file:" + partFile.file.getAbsolutePath().replaceAll("\\\\", "/"));
+                            } else {
+                                sb.append("file://" + partFile.file.getAbsolutePath());
+                            }
+                            sb.append("'");
                         }
-                        if (bytes.length > 0) {
-                            response.setResponseCode(HTTPConstants.ResponseCode.get(200));
-                        } else {
-                            response.setResponseCode(HTTPConstants.ResponseCode.get(404));
-                        }
-                        response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_TYPE, "text/plain; charset=utf-8"));
+                        final byte[] bytes = sb.toString().getBytes("UTF-8");
+                        response.setResponseCode(ResponseCode.get(200));
+                        response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_TYPE, "text/plain"));
                         response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_LENGTH, String.valueOf(bytes.length)));
                         final OutputStream out = response.getOutputStream(true);
-                        if (bytes.length > 0) {
-                            out.write(bytes);
-                            out.flush();
-                        }
-                        requestOkay = true;
-                        return true;
-                    } else if ("/m3u8".equals(request.getRequestedPath())) {
-                        final Browser br = obr.cloneBrowser();
-                        // work around for longggggg m3u pages
-                        final int was = obr.getLoadLimit();
-                        // lets set the connection limit to our required request
-                        br.setLoadLimit(Integer.MAX_VALUE);
-                        final String playlist;
-                        try {
-                            playlist = optimizeM3U8Playlist(br.getPage(m3uUrl));
-                        } finally {
-                            // set it back!
-                            br.setLoadLimit(was);
-                        }
-                        response.setResponseCode(HTTPConstants.ResponseCode.get(br.getRequest().getHttpConnection().getResponseCode()));
-                        final StringBuilder sb = new StringBuilder();
-                        boolean containsEndList = false;
-                        final M3U8Playlist m3u8Playlists = new M3U8Playlist();
-                        long lastSegmentDuration = -1;
-                        for (final String line : Regex.getLines(playlist)) {
-                            if (StringUtils.isEmpty(line)) {
-                                continue;
-                            }
-                            if (StringUtils.startsWithCaseInsensitive(line, "concat") || StringUtils.contains(line, "file:")) {
-                                // http://habrahabr.ru/company/mailru/blog/274855/
-                                logger.severe("possibly malicious: " + line);
-                            } else if (line.matches("^https?://.+") || !line.trim().startsWith("#")) {
-                                final String segmentURL = br.getURL(line).toString();
-                                if (!m3u8Playlists.containsSegmentURL(segmentURL)) {
-                                    if (isValidSegment(line)) {
-                                        final int index = m3u8Playlists.addSegment(segmentURL, lastSegmentDuration);
-                                        if (sb.length() > 0) {
-                                            sb.append("\n");
-                                        }
-                                        sb.append("http://127.0.0.1:" + finalServer.getPort() + "/download?id=" + processID + "&ts_index=" + index);
-                                    } else if (logger != null) {
-                                        logger.info("Segment '" + line + "' is invalid!");
-                                    }
-                                }
-                                lastSegmentDuration = -1;
-                            } else {
-                                if (line.startsWith("#EXTINF:")) {
-                                    final String duration = new Regex(line, "#EXTINF:(\\d+(\\.\\d+)?)").getMatch(0);
-                                    if (duration != null) {
-                                        if (duration.contains(".")) {
-                                            lastSegmentDuration = Long.parseLong(duration.replace(".", ""));
-                                        } else {
-                                            lastSegmentDuration = Long.parseLong(duration) * 1000;
-                                        }
-                                    }
-                                } else if ("#EXT-X-ENDLIST".equals(line)) {
-                                    containsEndList = true;
-                                } else if (StringUtils.containsIgnoreCase(line, "EXT-X-KEY")) {
-                                    link.setProperty("ENCRYPTED", true);
-                                }
-                                if (sb.length() > 0) {
-                                    sb.append("\n");
-                                }
-                                sb.append(line);
-                            }
-                        }
-                        if (!containsEndList) {
-                            if (sb.length() > 0) {
-                                sb.append("\n");
-                            }
-                            sb.append("#EXT-X-ENDLIST");
-                            sb.append("\n\n");
-                        }
-                        HLSDownloader.this.m3u8Playlists = m3u8Playlists;
-                        response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_TYPE, br.getRequest().getHttpConnection().getContentType()));
-                        byte[] bytes = sb.toString().getBytes("UTF-8");
-                        response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_LENGTH, String.valueOf(bytes.length)));
-                        OutputStream out = response.getOutputStream(true);
                         out.write(bytes);
                         out.flush();
                         requestOkay = true;
                         return true;
+                    } else if ("/meta".equals(request.getRequestedPath())) {
+                        ffmpeg.updateLastUpdateTimestamp();
+                        final FFmpegMetaData ffMpegMetaData = getFFmpegMetaData();
+                        if (ffMpegMetaData != null && !ffMpegMetaData.isEmpty()) {
+                            final String content = ffMpegMetaData.getFFmpegMetaData();
+                            final byte[] bytes = content.getBytes("UTF-8");
+                            response.setResponseCode(HTTPConstants.ResponseCode.get(200));
+                            response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_TYPE, "text/plain; charset=utf-8"));
+                            response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_LENGTH, String.valueOf(bytes.length)));
+                            final OutputStream out = response.getOutputStream(true);
+                            if (bytes.length > 0) {
+                                out.write(bytes);
+                                out.flush();
+                            }
+                        } else {
+                            response.setResponseCode(HTTPConstants.ResponseCode.get(404));
+                        }
+                        requestOkay = true;
+                        return true;
+                    } else if ("/m3u8".equals(request.getRequestedPath())) {
+                        ffmpeg.updateLastUpdateTimestamp();
+                        final M3U8Playlist m3u8 = getCurrentPlayList();
+                        if (isSupported(m3u8)) {
+                            final StringBuilder sb = new StringBuilder();
+                            sb.append("#EXTM3U\r\n");
+                            sb.append("#EXT-X-VERSION:3\r\n");
+                            sb.append("#EXT-X-MEDIA-SEQUENCE:0\r\n");
+                            if (m3u8.getTargetDuration() > 0) {
+                                sb.append("#EXT-X-TARGETDURATION:");
+                                sb.append(m3u8.getTargetDuration());
+                                sb.append("\r\n");
+                            }
+                            for (int index = 0; index < m3u8.size(); index++) {
+                                final M3U8Segment segment = m3u8.getSegment(index);
+                                sb.append("#EXTINF:" + M3U8Segment.toExtInfDuration(segment.getDuration()));
+                                sb.append("\r\nhttp://127.0.0.1:" + finalServer.getPort() + "/download?id=" + processID + "&ts_index=" + index + "\r\n");
+                            }
+                            sb.append("#EXT-X-ENDLIST\r\n");
+                            response.setResponseCode(ResponseCode.get(200));
+                            response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_TYPE, "application/x-mpegURL"));
+                            final byte[] bytes = sb.toString().getBytes("UTF-8");
+                            response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_LENGTH, String.valueOf(bytes.length)));
+                            final OutputStream out = response.getOutputStream(true);
+                            out.write(bytes);
+                            out.flush();
+                        } else {
+                            response.setResponseCode(ResponseCode.get(404));
+                        }
+                        requestOkay = true;
+                        return true;
                     } else if ("/download".equals(request.getRequestedPath())) {
-                        final String indexString = request.getParameterbyKey("ts_index");
-                        if (indexString == null) {
+                        final String url = request.getParameterbyKey("url");
+                        final String segmentIndex = request.getParameterbyKey("ts_index");
+                        if (segmentIndex == null && url == null) {
                             return false;
                         }
-                        M3U8Segment segment = null;
-                        try {
-                            final int index = Integer.parseInt(indexString);
-                            segment = m3u8Playlists.getSegment(index);
-                            if (segment == null) {
-                                throw new IndexOutOfBoundsException("Unknown segment:" + index);
-                            } else {
-                                if (logger != null) {
-                                    logger.info("Forward segment:" + index + "/" + m3u8Playlists.size());
+                        final String downloadURL;
+                        final M3U8Segment segment;
+                        final M3U8Playlist playList;
+                        if (url != null) {
+                            // disabled in HLSDownloader! do not allow access to other urls than hls segments
+                            segment = null;
+                            downloadURL = url;
+                            playList = null;
+                            return false;
+                        } else {
+                            playList = getCurrentPlayList();
+                            try {
+                                final int index = Integer.parseInt(segmentIndex);
+                                segment = playList.getSegment(index);
+                                if (segment == null) {
+                                    throw new IndexOutOfBoundsException("Unknown segment:" + index);
+                                } else {
+                                    requestLogger.info("Forward segment:" + (index + 1) + "/" + playList.size());
+                                    downloadURL = segment.getUrl();
                                 }
+                            } catch (final NumberFormatException e) {
+                                requestLogger.log(e);
+                                return false;
+                            } catch (final IndexOutOfBoundsException e) {
+                                requestLogger.log(e);
+                                return false;
                             }
-                        } catch (final NumberFormatException e) {
-                            if (logger != null) {
-                                logger.log(e);
-                            }
-                            return false;
-                        } catch (final IndexOutOfBoundsException e) {
-                            if (logger != null) {
-                                logger.log(e);
-                            }
-                            return false;
                         }
-                        OutputStream outputStream = null;
                         final FileBytesMap fileBytesMap = new FileBytesMap();
-                        final Browser br = obr.cloneBrowser();
-                        retryLoop: for (int retry = 0; retry < 10; retry++) {
-                            try {
-                                br.disconnect();
-                            } catch (final Throwable e) {
-                            }
-                            final jd.http.requests.GetRequest getRequest = new jd.http.requests.GetRequest(segment.getUrl());
-                            if (fileBytesMap.getFinalSize() > 0) {
-                                if (logger != null) {
-                                    logger.info("Resume(" + retry + "): " + fileBytesMap.toString());
-                                }
-                                final List<Long[]> unMarkedAreas = fileBytesMap.getUnMarkedAreas();
-                                getRequest.getHeaders().put(HTTPConstants.HEADER_REQUEST_RANGE, "bytes=" + unMarkedAreas.get(0)[0] + "-" + unMarkedAreas.get(0)[1]);
-                            }
-                            URLConnectionAdapter connection = null;
-                            try {
-                                connection = br.openRequestConnection(getRequest);
-                                if (connection.getResponseCode() != 200 && connection.getResponseCode() != 206) {
-                                    throw new IOException("ResponseCode must be 200 or 206!");
-                                }
-                            } catch (IOException e) {
-                                if (logger != null) {
-                                    logger.log(e);
-                                }
-                                if (connection == null || connection.getResponseCode() == 504) {
-                                    Thread.sleep(250 + (retry * 50));
-                                    continue retryLoop;
-                                } else {
-                                    if (isTwitchOptimized && connection != null && connection.getResponseCode() == 400) {
-                                        SubConfiguration.getConfig(link.getHost()).setProperty("expspeed", false);
+                        final Browser br = getRequestBrowser();
+                        br.setLogger(requestLogger);
+                        OutputStream requestOutputStream = null;
+                        MeteredThrottledInputStream meteredThrottledInputStream = null;
+                        final long timeoutBuffer = 10 * 1000l;
+                        try {
+                            retryLoop: for (int retry = 0; retry < 10; retry++) {
+                                try {
+                                    final jd.http.requests.GetRequest getRequest = new jd.http.requests.GetRequest(buildDownloadUrl(downloadURL));
+                                    final long byteRange[] = segment.getByteRange();
+                                    if (fileBytesMap.getFinalSize() > 0) {
+                                        requestLogger.info("Resume(" + retry + "): " + fileBytesMap.toString());
+                                        final List<Long[]> unMarkedAreas = fileBytesMap.getUnMarkedAreas();
+                                        final long startByteRange = byteRange != null ? byteRange[1] : 0;
+                                        getRequest.getHeaders().put(HTTPConstants.HEADER_REQUEST_RANGE, "bytes=" + startByteRange + unMarkedAreas.get(0)[0] + "-" + startByteRange + unMarkedAreas.get(0)[1]);
+                                    } else if (byteRange != null) {
+                                        getRequest.getHeaders().put(HTTPConstants.HEADER_REQUEST_RANGE, "bytes=" + byteRange[1] + "-" + (byteRange[1] + byteRange[0] - 1));
                                     }
-                                    return false;
-                                }
-                            }
-                            byte[] readWriteBuffer = HLSDownloader.this.instanceBuffer.getAndSet(null);
-                            final boolean instanceBuffer;
-                            if (readWriteBuffer != null) {
-                                instanceBuffer = true;
-                            } else {
-                                instanceBuffer = false;
-                                readWriteBuffer = new byte[32 * 1024];
-                            }
-                            final long length = connection.getCompleteContentLength();
-                            try {
-                                if (outputStream == null) {
-                                    response.setResponseCode(HTTPConstants.ResponseCode.get(br.getRequest().getHttpConnection().getResponseCode()));
-                                    if (length > 0) {
-                                        fileBytesMap.setFinalSize(length);
-                                        response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_LENGTH, Long.toString(length)));
-                                    }
-                                    response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_TYPE, connection.getContentType()));
-                                    outputStream = response.getOutputStream(true);
-                                }
-                                if (meteredThrottledInputStream == null) {
-                                    meteredThrottledInputStream = new MeteredThrottledInputStream(connection.getInputStream(), new AverageSpeedMeter(10));
-                                    if (connectionHandler != null) {
-                                        connectionHandler.addThrottledConnection(meteredThrottledInputStream);
-                                    }
-                                } else {
-                                    meteredThrottledInputStream.setInputStream(connection.getInputStream());
-                                }
-                                long position = fileBytesMap.getMarkedBytes();
-                                while (true) {
-                                    int len = -1;
+                                    URLConnectionAdapter connection = null;
                                     try {
-                                        len = meteredThrottledInputStream.read(readWriteBuffer);
+                                        ffmpeg.updateLastUpdateTimestamp(getRequest.getConnectTimeout() + getRequest.getReadTimeout() + timeoutBuffer);
+                                        connection = br.openRequestConnection(getRequest);
+                                        if (connection.getResponseCode() != 200 && connection.getResponseCode() != 206) {
+                                            throw new IOException("ResponseCode(" + connection.getResponseCode() + ") must be 200 or 206!");
+                                        }
                                     } catch (IOException e) {
-                                        if (fileBytesMap.getFinalSize() > 0) {
-                                            Thread.sleep(250 + (retry * 50));
+                                        requestLogger.log(e);
+                                        if (onSegmentConnectException(connection, e, fileBytesMap, retry, requestLogger)) {
                                             continue retryLoop;
                                         } else {
-                                            throw e;
+                                            return false;
+                                        }
+                                    } finally {
+                                        ffmpeg.updateLastUpdateTimestamp();
+                                    }
+                                    final byte[] readWriteBuffer = new byte[32 * 1024];
+                                    final long length;
+                                    if (fileBytesMap.getFinalSize() > 0) {
+                                        length = fileBytesMap.getFinalSize();
+                                    } else if (byteRange != null) {
+                                        length = connection.getContentLength();
+                                    } else {
+                                        length = connection.getCompleteContentLength();
+                                    }
+                                    try {
+                                        if (requestOutputStream == null) {
+                                            // final String acceptRanges =
+                                            // connection.getHeaderField(HTTPConstants.HEADER_RESPONSE_ACCEPT_RANGES);
+                                            response.setResponseCode(ResponseCode.SUCCESS_OK);
+                                            if (length > 0) {
+                                                fileBytesMap.setFinalSize(length);
+                                                response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_LENGTH, Long.toString(length)));
+                                            }
+                                            response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_TYPE, connection.getContentType()));
+                                            // if (StringUtils.equalsIgnoreCase(acceptRanges, "bytes")) {
+                                            // response.getResponseHeaders().add(new HTTPHeader(HTTPConstants.HEADER_RESPONSE_ACCEPT_RANGES,
+                                            // acceptRanges));
+                                            // }
+                                            requestOutputStream = response.getOutputStream(true);
+                                        }
+                                        final InputStream inputStream;
+                                        if (segment != null && segment.isEncrypted()) {
+                                            // FIXME: resume(range request) not supported yet
+                                            final String keyURI = segment.getxKeyURI();
+                                            if (M3U8Segment.X_KEY_METHOD.AES_128.equals(segment.getxKeyMethod()) && keyURI != null) {
+                                                SecretKeySpec key = aes128Keys.get(keyURI);
+                                                if (key == null) {
+                                                    final Browser br2 = getRequestBrowser();
+                                                    br2.setLogger(requestLogger);
+                                                    br2.setFollowRedirects(true);
+                                                    final URLConnectionAdapter con = br2.openGetConnection(buildDownloadUrl(keyURI));
+                                                    try {
+                                                        if (con.getResponseCode() == 200) {
+                                                            final byte[] buf = IO.readStream(20, con.getInputStream());
+                                                            if (buf.length == 16) {
+                                                                key = new SecretKeySpec(buf, "AES");
+                                                                aes128Keys.put(keyURI, key);
+                                                            }
+                                                        }
+                                                    } finally {
+                                                        con.disconnect();
+                                                    }
+                                                    if (key == null) {
+                                                        throw new IOException("Failed to fetch #EXT-X-KEY:URI=" + keyURI);
+                                                    }
+                                                }
+                                                /*
+                                                 * https://tools.ietf.org/html/draft-pantos-http-live-streaming-20#section-5.2
+                                                 */
+                                                final IvParameterSpec ivSpec;
+                                                if (segment.getxKeyIV() != null) {
+                                                    ivSpec = new IvParameterSpec(HexFormatter.hexToByteArray(segment.getxKeyIV()));
+                                                } else {
+                                                    final int sequenceNumber = playList.getMediaSequenceOffset() + playList.indexOf(segment);
+                                                    final byte[] iv = new byte[16];
+                                                    iv[15] = (byte) (sequenceNumber >>> 0 & 0xFF);
+                                                    iv[14] = (byte) (sequenceNumber >>> 8 & 0xFF);
+                                                    iv[13] = (byte) (sequenceNumber >>> 16 & 0xFF);
+                                                    ivSpec = new IvParameterSpec(iv);
+                                                }
+                                                try {
+                                                    final Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+                                                    cipher.init(Cipher.DECRYPT_MODE, key, ivSpec);
+                                                    inputStream = new javax.crypto.CipherInputStream(connection.getInputStream(), cipher);
+                                                } catch (Exception e) {
+                                                    throw new IOException(e);
+                                                }
+                                            } else {
+                                                throw new IOException("Unsupported Method #EXT-X-KEY:METHOD=" + segment.getxKeyMethod());
+                                            }
+                                        } else {
+                                            inputStream = connection.getInputStream();
+                                        }
+                                        if (meteredThrottledInputStream == null) {
+                                            for (int waitLoop = 1; waitLoop < 10; waitLoop++) {
+                                                synchronized (cachedMeteredThrottledInputStream) {
+                                                    meteredThrottledInputStream = cachedMeteredThrottledInputStream.poll();
+                                                }
+                                                if (meteredThrottledInputStream != null) {
+                                                    break;
+                                                } else {
+                                                    Thread.sleep(50);
+                                                }
+                                            }
+                                            if (meteredThrottledInputStream == null) {
+                                                meteredThrottledInputStream = new MeteredThrottledInputStream(inputStream, new AverageSpeedMeter(10));
+                                            } else {
+                                                meteredThrottledInputStream.setInputStream(inputStream);
+                                            }
+                                            if (connectionHandler != null) {
+                                                connectionHandler.addThrottledConnection(meteredThrottledInputStream);
+                                            }
+                                        } else {
+                                            meteredThrottledInputStream.setInputStream(inputStream);
+                                        }
+                                        long position = fileBytesMap.getMarkedBytes();
+                                        final OutputStream outputStream;
+                                        if (position > 0) {
+                                            if (connection.getResponseCode() == 206) {
+                                                outputStream = requestOutputStream;
+                                            } else {
+                                                outputStream = new SkippingLimitedOutputStream(requestOutputStream, position);
+                                            }
+                                        } else {
+                                            outputStream = requestOutputStream;
+                                        }
+                                        while (true) {
+                                            final int len;
+                                            try {
+                                                len = meteredThrottledInputStream.read(readWriteBuffer);
+                                                if (segment != null) {
+                                                    segment.setLoaded(true);
+                                                }
+                                            } catch (IOException e) {
+                                                requestLogger.log(e);
+                                                if (onSegmentReadException(connection, e, fileBytesMap, retry, requestLogger)) {
+                                                    continue retryLoop;
+                                                } else {
+                                                    throw e;
+                                                }
+                                            }
+                                            if (len > 0) {
+                                                ffmpeg.updateLastUpdateTimestamp(getRequest.getReadTimeout() + timeoutBuffer);
+                                                try {
+                                                    outputStream.write(readWriteBuffer, 0, len);
+                                                } catch (IOException e) {
+                                                    requestLogger.log(e);
+                                                    throw e;
+                                                }
+                                                try {
+                                                    fileBytesMap.mark(position, len);
+                                                } catch (IllegalArgumentException e) {
+                                                    requestLogger.log(e);
+                                                    if (fileBytesMap.getFinalSize() != -1) {
+                                                        requestLogger.info("apply 'Ignore Content-Length' workaround!");
+                                                        fileBytesMap.setFinalSize(-1);
+                                                        fileBytesMap.mark(position, len);
+                                                    } else {
+                                                        throw e;
+                                                    }
+                                                }
+                                                position += len;
+                                            } else if (len == -1) {
+                                                break;
+                                            }
+                                        }
+                                        outputStream.flush();
+                                        outputStream.close();
+                                        if (fileBytesMap.getSize() > 0) {
+                                            requestOkay = fileBytesMap.getUnMarkedBytes() == 0;
+                                        } else {
+                                            requestOkay = true;
+                                        }
+                                        return true;
+                                    } finally {
+                                        try {
+                                            if (segment != null) {
+                                                requestLogger.info("Segment:" + segment.getUrl() + "|Loaded:" + segment.isLoaded());
+                                                if (connection.getResponseCode() == 200 || connection.getResponseCode() == 206) {
+                                                    segment.setSize(Math.max(length, fileBytesMap.getSize()));
+                                                }
+                                            }
+                                            requestLogger.info(fileBytesMap.toString());
+                                        } finally {
+                                            connection.disconnect();
                                         }
                                     }
-                                    if (len > 0) {
-                                        outputStream.write(readWriteBuffer, 0, len);
-                                        segment.setLoaded(true);
-                                        fileBytesMap.mark(position, len);
-                                        position += len;
-                                    } else if (len == -1) {
-                                        break;
+                                } finally {
+                                    br.disconnect();
+                                }
+                            }
+                        } finally {
+                            if (connectionHandler != null) {
+                                if (meteredThrottledInputStream != null) {
+                                    if (connectionHandler.size() > 1) {
+                                        connectionHandler.removeThrottledConnection(meteredThrottledInputStream);
+                                    }
+                                    synchronized (cachedMeteredThrottledInputStream) {
+                                        cachedMeteredThrottledInputStream.add(meteredThrottledInputStream);
+                                        meteredThrottledInputStream.setInputStream(new NullInputStream());
                                     }
                                 }
-                                outputStream.flush();
-                                outputStream.close();
-                                if (fileBytesMap.getSize() > 0) {
-                                    requestOkay = fileBytesMap.getUnMarkedBytes() == 0;
-                                } else {
-                                    requestOkay = true;
-                                }
-                                return true;
-                            } finally {
-                                if (segment != null && (connection.getResponseCode() == 200 || connection.getResponseCode() == 206)) {
-                                    segment.setSize(Math.max(connection.getCompleteContentLength(), fileBytesMap.getSize()));
-                                }
-                                if (instanceBuffer) {
-                                    HLSDownloader.this.instanceBuffer.compareAndSet(null, readWriteBuffer);
-                                }
-                                connection.disconnect();
                             }
                         }
+                    } else {
+                        requestLogger.info("unhandled request:" + request.getRequestedURL());
                     }
-                } catch (InterruptedException e) {
-                    if (logger != null) {
-                        logger.log(e);
-                    }
-                } catch (IOException e) {
-                    if (logger != null) {
-                        logger.log(e);
-                    }
+                } catch (Throwable e) {
+                    requestLogger.log(e);
                 } finally {
+                    requestLogger.info("END:" + requestOkay + ">" + request.getRequestedURL());
                     if (logger != null) {
-                        logger.info("END:" + requestOkay + ">" + request.getRequestedURL());
+                        logger.info(requestLogger.toString());
+                    }
+                    synchronized (requestsInProcess) {
+                        requestsInProcess.decrementAndGet();
+                        requestsInProcess.notifyAll();
                     }
                 }
                 return true;
             }
         });
+    }
 
+    protected boolean onSegmentReadException(final URLConnectionAdapter connection, final IOException e, final FileBytesMap fileBytesMap, final int retry, final LogSource logger) throws Exception {
+        try {
+            Thread.sleep(250 + (retry * 250));
+            return true;
+        } catch (InterruptedException ie) {
+            if (logger != null) {
+                logger.log(ie);
+            }
+            return false;
+        }
+    }
+
+    protected boolean onSegmentConnectException(final URLConnectionAdapter connection, final IOException e, final FileBytesMap fileBytesMap, final int retry, final LogSource logger) throws Exception {
+        try {
+            if (connection != null) {
+                switch (connection.getResponseCode()) {
+                case 999:
+                case 504:
+                case 503:
+                case 502:
+                    Thread.sleep(250 + (retry * 1000));
+                    return true;
+                default:
+                    return false;
+                }
+            } else {
+                Thread.sleep(250 + (retry * 1000));
+                return true;
+            }
+        } catch (InterruptedException ie) {
+            if (logger != null) {
+                logger.log(ie);
+            }
+            return false;
+        }
     }
 
     public long getBytesLoaded() {
-        return bytesWritten;
+        return bytesWritten.get();
     }
 
     @Override
@@ -822,22 +1265,26 @@ public class HLSDownloader extends DownloadInterface {
 
     @Override
     public boolean startDownload() throws Exception {
+        if (isEncrypted()) {
+            throw new PluginException(LinkStatus.ERROR_FATAL, "Encrypted HLS is not supported");
+        }
+        final List<File> requiredFiles = new ArrayList<File>();
         try {
             downloadable.setDownloadInterface(this);
             DownloadPluginProgress downloadPluginProgress = null;
             downloadable.setConnectionHandler(this.getManagedConnetionHandler());
             final DiskSpaceReservation reservation = downloadable.createDiskSpaceReservation();
+            // TODO: update to handle 2x disk space usage (download + concat)
             try {
                 if (!downloadable.checkIfWeCanWrite(new ExceptionRunnable() {
-
                     @Override
                     public void run() throws Exception {
                         downloadable.checkAndReserve(reservation);
-                        createOutputChannel();
+                        requiredFiles.addAll(createOutputChannel());
                         try {
-                            downloadable.lockFiles(outputCompleteFile, outputFinalCompleteFile, outputPartFile);
+                            downloadable.lockFiles(requiredFiles.toArray(new File[0]));
                         } catch (FileIsLockedException e) {
-                            downloadable.unlockFiles(outputCompleteFile, outputFinalCompleteFile, outputPartFile);
+                            downloadable.unlockFiles(requiredFiles.toArray(new File[0]));
                             throw new PluginException(LinkStatus.ERROR_ALREADYEXISTS);
                         }
                     }
@@ -848,7 +1295,17 @@ public class HLSDownloader extends DownloadInterface {
                 downloadPluginProgress = new DownloadPluginProgress(downloadable, this, Color.GREEN.darker());
                 downloadable.addPluginProgress(downloadPluginProgress);
                 downloadable.setAvailable(AvailableStatus.TRUE);
-                run();
+                // TODO: add resume to continue with unfished playlist
+                runDownload();
+                if (outputPartFiles.size() > 1) {
+                    for (PartFile partFile : outputPartFiles) {
+                        if (!partFile.flag.get()) {
+                            logger.severe("PartFile:" + partFile.file + " not loaded");
+                            throw new PluginException(LinkStatus.ERROR_DOWNLOAD_INCOMPLETE, "PartFile:" + partFile.file + " not loaded");
+                        }
+                    }
+                    runConcat();
+                }
             } finally {
                 try {
                     downloadable.free(reservation);
@@ -856,7 +1313,10 @@ public class HLSDownloader extends DownloadInterface {
                     LogSource.exception(logger, e);
                 }
                 try {
-                    downloadable.addDownloadTime(System.currentTimeMillis() - getStartTimeStamp());
+                    final long startTimeStamp = getStartTimeStamp();
+                    if (startTimeStamp > 0) {
+                        downloadable.addDownloadTime(System.currentTimeMillis() - getStartTimeStamp());
+                    }
                 } catch (final Throwable e) {
                 }
                 downloadable.removePluginProgress(downloadPluginProgress);
@@ -864,10 +1324,9 @@ public class HLSDownloader extends DownloadInterface {
             onDownloadReady();
             return handleErrors();
         } finally {
-            downloadable.unlockFiles(outputCompleteFile, outputFinalCompleteFile, outputPartFile);
+            downloadable.unlockFiles(requiredFiles.toArray(new File[0]));
             cleanupDownladInterface();
         }
-
     }
 
     protected void error(PluginException pluginException) {
@@ -889,9 +1348,11 @@ public class HLSDownloader extends DownloadInterface {
         if (!handleErrors() && !isAcceptDownloadStopAsValidEnd()) {
             return;
         }
-        final boolean renameOkay = downloadable.rename(outputPartFile, outputCompleteFile);
-        if (!renameOkay) {
-            error(new PluginException(LinkStatus.ERROR_DOWNLOAD_FAILED, _JDT.T.system_download_errors_couldnotrename(), LinkStatus.VALUE_LOCAL_IO_ERROR));
+        if (outputPartFiles.size() == 1) {
+            final boolean renameOkay = downloadable.rename(outputPartFiles.get(0).file, outputCompleteFile);
+            if (!renameOkay) {
+                error(new PluginException(LinkStatus.ERROR_DOWNLOAD_FAILED, _JDT.T.system_download_errors_couldnotrename(), LinkStatus.VALUE_LOCAL_IO_ERROR));
+            }
         }
     }
 
@@ -912,38 +1373,59 @@ public class HLSDownloader extends DownloadInterface {
     private boolean handleErrors() throws PluginException {
         if (externalDownloadStop()) {
             return false;
-        }
-        if (!isAcceptDownloadStopAsValidEnd()) {
-            for (int index = 0; index < m3u8Playlists.size(); index++) {
-                if (!m3u8Playlists.isSegmentLoaded(index)) {
-                    throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE);
+        } else if (caughtPluginException != null) {
+            throw caughtPluginException;
+        } else if (!isAcceptDownloadStopAsValidEnd()) {
+            for (final M3U8Playlist m3u8Playlist : m3u8Playlists) {
+                for (int index = 0; index < m3u8Playlist.size(); index++) {
+                    if (!m3u8Playlist.isSegmentLoaded(index)) {
+                        logger.severe("Segment:" + index + ":" + m3u8Playlist.getSegment(index).getUrl() + " not loaded");
+                        throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Segment:" + index + " not loaded");
+                    }
                 }
             }
         }
-        if (caughtPluginException == null) {
+        for (final PartFile partFile : outputPartFiles) {
+            if (!partFile.flag.get()) {
+                logger.severe("PartFile:" + partFile.file + " not loaded");
+                throw new PluginException(LinkStatus.ERROR_DOWNLOAD_INCOMPLETE, "PartFile:" + partFile.file + " not loaded");
+            }
+        }
+        if (outputPartFiles.size() == 1 && outputPartFiles.get(0).file.exists()) {
+            downloadable.setLinkStatus(LinkStatus.FINISHED);
+            final long fileSize = outputPartFiles.get(0).file.length();
+            downloadable.setDownloadBytesLoaded(fileSize);
+            downloadable.setVerifiedFileSize(fileSize);
+            return true;
+        } else if (outputCompleteFile.exists()) {
             downloadable.setLinkStatus(LinkStatus.FINISHED);
             final long fileSize = outputCompleteFile.length();
             downloadable.setDownloadBytesLoaded(fileSize);
             downloadable.setVerifiedFileSize(fileSize);
             return true;
         } else {
-            throw caughtPluginException;
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
     }
 
-    private void createOutputChannel() throws SkipReasonException {
+    private List<File> createOutputChannel() throws SkipReasonException {
         try {
+            final List<File> requiredFiles = new ArrayList<File>();
             final String fileOutput = downloadable.getFileOutput();
-            if (logger != null) {
-                logger.info("createOutputChannel for " + fileOutput);
-            }
-            final String finalFileOutput = downloadable.getFinalFileOutput();
             outputCompleteFile = new File(fileOutput);
-            outputFinalCompleteFile = outputCompleteFile;
-            if (!fileOutput.equals(finalFileOutput)) {
-                outputFinalCompleteFile = new File(finalFileOutput);
+            requiredFiles.add(outputCompleteFile);
+            outputPartFiles.clear();
+            if (m3u8Playlists.size() > 1) {
+                for (int index = 0; index < m3u8Playlists.size(); index++) {
+                    outputPartFiles.add(new PartFile(new File(downloadable.getFileOutputPart() + index + ".part")));
+                }
+            } else {
+                outputPartFiles.add(new PartFile(new File(downloadable.getFileOutputPart())));
             }
-            outputPartFile = new File(downloadable.getFileOutputPart());
+            for (final PartFile partFile : outputPartFiles) {
+                requiredFiles.add(partFile.file);
+            }
+            return requiredFiles;
         } catch (Exception e) {
             LogSource.exception(logger, e);
             throw new SkipReasonException(SkipReason.INVALID_DESTINATION, e);
@@ -1008,5 +1490,4 @@ public class HLSDownloader extends DownloadInterface {
     public boolean isAcceptDownloadStopAsValidEnd() {
         return acceptDownloadStopAsValidEnd;
     }
-
 }

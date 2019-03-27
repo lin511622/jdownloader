@@ -13,13 +13,11 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
 
 import jd.PluginWrapper;
-import jd.http.Browser;
 import jd.http.URLConnectionAdapter;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
@@ -30,9 +28,8 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "flyflv.com" }, urls = { "http://(?:www\\.)?flyflv\\.com/movies/\\d+/[A-Za-z0-9\\-_]+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "flyflv.com" }, urls = { "https?://(?:www\\.)?flyflv\\.com/movies/\\d+(?:/[A-Za-z0-9\\-_]+)?|https?://(?:www\\.)?flyflv\\.com/movies/player/\\d+" })
 public class FlyflvCom extends PluginForHost {
-
     public FlyflvCom(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -41,12 +38,10 @@ public class FlyflvCom extends PluginForHost {
     // Tags:
     // protocol: no https
     // other:
-
     /* Connection stuff */
     private static final boolean free_resume       = true;
     private static final int     free_maxchunks    = 0;
     private static final int     free_maxdownloads = -1;
-
     private String               dllink            = null;
     private boolean              server_issues     = false;
 
@@ -55,25 +50,48 @@ public class FlyflvCom extends PluginForHost {
         return "http://www.flyflv.com/site/page/terms";
     }
 
-    @SuppressWarnings("deprecation")
+    @Override
+    public void correctDownloadLink(final DownloadLink link) {
+        final String linkpart = new Regex(link.getPluginPatternMatcher(), "/(\\d+(/.+)?)$").getMatch(0);
+        link.setPluginPatternMatcher("https://www.flyflv.com/movies/" + linkpart);
+    }
+
+    @Override
+    public String getLinkID(final DownloadLink link) {
+        final String linkid = new Regex(link.getPluginPatternMatcher(), "/movies/(?:player/)?(\\d+)").getMatch(0);
+        if (linkid != null) {
+            return linkid;
+        } else {
+            return super.getLinkID(link);
+        }
+    }
+
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
         dllink = null;
         server_issues = false;
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
-        br.getPage(link.getDownloadURL());
+        br.getPage(link.getPluginPatternMatcher());
         if (br.getHttpConnection().getResponseCode() == 404) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-        final String url_filename = new Regex(link.getDownloadURL(), "movies/\\d+/(.+)").getMatch(0).replace("-", " ");
-        String filename = br.getRegex("<h1 itemprop=\"name\">([^<>\"]+)</h1>").getMatch(0);
+        final String linkid = getLinkID(link);
+        String url_filename = new Regex(link.getPluginPatternMatcher(), "movies/\\d+/(.+)").getMatch(0);
+        if (url_filename == null) {
+            url_filename = linkid;
+        }
+        /* Check if crawler set filename as this website does not provide good filenames! */
+        String filename = link.getFinalFileName();
+        if (filename == null) {
+            filename = br.getRegex("<h1 itemprop=\"name\">([^<>\"]+)</h1>").getMatch(0);
+        }
         if (filename == null) {
             filename = url_filename;
         }
         dllink = br.getRegex("\\'(?:file|video)\\'[\t\n\r ]*?:[\t\n\r ]*?\\'(http[^<>\"]*?)\\'").getMatch(0);
         if (dllink == null) {
-            dllink = br.getRegex("<source src=\"(https?://[^<>\"]*?)\" type=(?:\"|\\')video/(?:mp4|flv)(?:\"|\\')").getMatch(0);
+            dllink = br.getRegex("<source src=(?:'|\")([^<>'\"]*?)(?:'|\")").getMatch(0);
         }
         if (dllink == null) {
             dllink = br.getRegex("property=\"og:video\" content=\"(http[^<>\"]*?)\"").getMatch(0);
@@ -82,6 +100,7 @@ public class FlyflvCom extends PluginForHost {
             dllink = br.getRegex("var fileUrl[\t\n\r ]*?=[\t\n\r ]*?\"(http[^<>\"\\']+)\"").getMatch(0);
         }
         if (filename == null || dllink == null) {
+            logger.info("filename: " + filename + ", dllink: " + dllink);
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         dllink = Encoding.htmlDecode(dllink);
@@ -93,26 +112,26 @@ public class FlyflvCom extends PluginForHost {
             filename += ext;
         }
         link.setFinalFileName(filename);
-        final Browser br2 = br.cloneBrowser();
-        // In case the link redirects to the finallink
-        br2.setFollowRedirects(true);
+        br.setFollowRedirects(true);
         URLConnectionAdapter con = null;
         try {
-            /* Do NOT use Head-Request here!! */
-            con = br2.openGetConnection(dllink);
+            /* Do NOT use Head-Request for this website!! */
+            con = br.openGetConnection(dllink);
             if (!con.getContentType().contains("html")) {
-                link.setDownloadSize(con.getLongContentLength());
+                if (con.getLongContentLength() > 1000) {
+                    link.setDownloadSize(con.getLongContentLength());
+                }
                 link.setProperty("directlink", dllink);
             } else {
                 server_issues = true;
             }
-            return AvailableStatus.TRUE;
         } finally {
             try {
                 con.disconnect();
             } catch (final Throwable e) {
             }
         }
+        return AvailableStatus.TRUE;
     }
 
     @Override

@@ -1,6 +1,7 @@
 package org.jdownloader.extensions.eventscripter;
 
 import java.awt.Dimension;
+import java.awt.Font;
 import java.awt.event.ActionEvent;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -11,6 +12,8 @@ import javax.swing.JEditorPane;
 import javax.swing.JScrollPane;
 import javax.swing.JToolBar;
 
+import jd.gui.swing.jdgui.views.settings.components.Checkbox;
+import jsyntaxpane.syntaxkits.JavaSyntaxKit;
 import net.sourceforge.htmlunit.corejs.javascript.Context;
 import net.sourceforge.htmlunit.corejs.javascript.Script;
 import net.sourceforge.htmlunit.corejs.javascript.ScriptableObject;
@@ -32,13 +35,11 @@ import org.jdownloader.gui.translate._GUI;
 import org.jdownloader.scripting.JSHtmlUnitPermissionRestricter;
 
 public class JavaScriptEditorDialog extends AbstractDialog<Object> {
-
     private static final String                   CLEANUP = "[^\\w\\d\\(\\)\\+\\-\\[\\]\\;\\,/\\\\]";
     private ScriptEntry                           entry;
     private JEditorPane                           editor;
     private org.appwork.scheduler.DelayedRunnable delayer;
     private JToolBar                              toolbar;
-
     private Global                                scope;
     private MigPanel                              p;
     private JScrollPane                           apiScrollbar;
@@ -51,7 +52,6 @@ public class JavaScriptEditorDialog extends AbstractDialog<Object> {
         super(Dialog.STYLE_HIDE_ICON, T.T.script_editor_title(entry.getName()), null, _GUI.T.lit_save(), null);
         this.entry = entry;
         this.extension = extension;
-
         setLocator(new RememberAbsoluteDialogLocator(getClass().getSimpleName()));
         setDimensor(new RememberLastDialogDimension(getClass().getSimpleName()));
     }
@@ -82,8 +82,20 @@ public class JavaScriptEditorDialog extends AbstractDialog<Object> {
         p.add(toolbar);
         settingsMap = entry.getEventTriggerSettings();
         settingsPanel = entry.getEventTrigger().createSettingsPanel(settingsMap);
-
+        if (settingsPanel == null) {
+            final Checkbox checkBox = new Checkbox(entry.getEventTrigger().isSynchronous(settingsMap));
+            settingsPanel = new TriggerSetupPanel(0) {
+                @Override
+                public void save() {
+                    entry.getEventTrigger().setSynchronous(settingsMap, checkBox.isSelected());
+                }
+            };
+            settingsPanel.addDescriptionPlain(T.T.synchronous_desc());
+            settingsPanel.addPair(T.T.synchronous(), null, checkBox);
+        }
         final JEditorPane defaults = new JEditorPane();
+        final JavaSyntaxKit javaSyntaxKit = new JavaSyntaxKit();
+        defaults.setEditorKit(javaSyntaxKit);
         // defaults.setFocusable(false);
         p.add(apiScrollbar = new JScrollPane(defaults) {
             @Override
@@ -94,14 +106,13 @@ public class JavaScriptEditorDialog extends AbstractDialog<Object> {
                 return super.getPreferredSize();
             }
         });
-
         defaults.setEditable(false);
-        defaults.setContentType("text/javascript");
+        final Font font = defaults.getFont();
+        defaults.setContentType("text/javascript; charset=UTF-8");
+        defaults.setFont(font);// setContentType changes Font
         defaults.setText(ScriptEnvironment.getAPIDescription(entry.getEventTrigger().getAPIClasses()) + "\r\n" + entry.getEventTrigger().getAPIDescription());
-
         editor = new JEditorPane();
-        // editor.setContentType("text/html");
-
+        editor.setEditorKit(javaSyntaxKit);
         p.add(scrollpane = new JScrollPane(editor) {
             @Override
             public Dimension getPreferredSize() {
@@ -113,15 +124,13 @@ public class JavaScriptEditorDialog extends AbstractDialog<Object> {
             }
         });
         delayer = new org.appwork.scheduler.DelayedRunnable(1000, 5000) {
-
             @Override
             public void delayedrun() {
                 updateHighlighter();
             }
-
         };
-        editor.setContentType("text/javascript");
-
+        editor.setContentType("text/javascript; charset=UTF-8");
+        editor.setFont(font);// setContentType changes Font
         String txt = entry.getScript();
         if (StringUtils.isEmpty(txt)) {
             txt = T.T.emptyScript();
@@ -129,7 +138,6 @@ public class JavaScriptEditorDialog extends AbstractDialog<Object> {
         editor.setText(txt);
         delayer.resetAndStart();
         // toolbar
-
         toolbar.add(new ExtButton(new AppAction() {
             {
                 // setIconKey(IconKey.ICON_TEXT);
@@ -141,46 +149,35 @@ public class JavaScriptEditorDialog extends AbstractDialog<Object> {
             public void actionPerformed(ActionEvent e) {
                 CFG_EVENT_CALLER.CFG.setAPIPanelVisible(!CFG_EVENT_CALLER.CFG.isAPIPanelVisible());
                 relayout();
-
             }
         }));
-
         toolbar.add(new ExtButton(new AppAction() {
             {
-
                 setName(T.T.editor_autoformat());
             }
 
             @Override
             public void actionPerformed(ActionEvent e) {
-
                 updateHighlighter();
-
             }
         }));
-
         toolbar.add(new ExtButton(new AppAction() {
             {
-
                 setName(T.T.editor_testcompile());
             }
 
             @Override
             public void actionPerformed(ActionEvent e) {
-
                 extension.runTestCompile(entry.getEventTrigger(), editor.getText());
             }
         }));
-
         toolbar.add(new ExtButton(new AppAction() {
             {
                 setName(T.T.editor_testrun());
-
             }
 
             @Override
             public void actionPerformed(ActionEvent e) {
-
                 extension.runTest(entry.getEventTrigger(), entry.getName(), editor.getText());
             }
         }));
@@ -195,17 +192,13 @@ public class JavaScriptEditorDialog extends AbstractDialog<Object> {
         } else {
             p.setLayout("ins 0,wrap 1", "[grow,fill]", "[][][grow,fill]");
         }
-
         p.add(toolbar);
-
         if (settingsPanel != null) {
             p.add(settingsPanel);
         } else {
             p.add(Box.createGlue());
         }
-
         if (CFG_EVENT_CALLER.CFG.isAPIPanelVisible()) {
-
             p.add(apiScrollbar, "height 200:n:n");
         }
         p.add(scrollpane, "height 200:n:n");
@@ -216,7 +209,6 @@ public class JavaScriptEditorDialog extends AbstractDialog<Object> {
     protected void updateHighlighter() {
         final AtomicInteger caretPosition = new AtomicInteger();
         String text = new EDTHelper<String>() {
-
             @Override
             public String edtRun() {
                 caretPosition.set(editor.getCaretPosition());
@@ -224,16 +216,13 @@ public class JavaScriptEditorDialog extends AbstractDialog<Object> {
             }
         }.getReturnValue();
         String before = text.substring(0, caretPosition.get()).replaceAll(CLEANUP, "");
-
         final String formatedText = format(text);
         if (!formatedText.equals(text)) {
-
             for (int i = 0; i < formatedText.length(); i++) {
                 String sb = formatedText.substring(0, i).replaceAll(CLEANUP, "");
                 if (sb.length() == before.length()) {
                     final int caret = i;
                     new EDTRunner() {
-
                         @Override
                         protected void runInEDT() {
                             editor.setText(formatedText);
@@ -241,45 +230,31 @@ public class JavaScriptEditorDialog extends AbstractDialog<Object> {
                         }
                     }.waitForEDT();
                     return;
-
                 }
             }
-
             new EDTRunner() {
-
                 @Override
                 protected void runInEDT() {
                     editor.setText(formatedText);
-
                 }
             }.waitForEDT();
-
         }
-
     }
 
     private synchronized String format(String script) {
         try {
-
             Context cx = Context.enter();
             cx.setOptimizationLevel(-1);
-
             cx.setLanguageVersion(Context.VERSION_1_5);
             if (scope == null) {
                 scope = new Global();
                 scope.init(cx);
-
                 String lib;
-
                 lib = IO.readURLToString(ScriptEntry.class.getResource("js_beautifier.js"));
-
                 Script compiledLibrary = JSHtmlUnitPermissionRestricter.compileTrustedString(cx, scope, lib, "", 1, null);
                 JSHtmlUnitPermissionRestricter.evaluateTrustedString(cx, scope, "global=this;", "", 1, null);
-
                 compiledLibrary.exec(cx, scope);
-
             }
-
             //
             // Class[] classes = new Class[] { Boolean.class, Integer.class, Long.class, String.class, Double.class, Float.class,
             // net.sourceforge.htmlunit.corejs.javascript.EcmaError.class, ProcessRunner.class, DownloadLinkAPIStorableV2.class };
@@ -289,13 +264,11 @@ public class JavaScriptEditorDialog extends AbstractDialog<Object> {
             // }
             // preloadClasses += "var call=" + ProcessRunner.class.getName() + ".call;var alert=" + ProcessRunner.class.getName() +
             // ".alert;delete load;";
-
             ScriptableObject.putProperty(scope, "text", script);
             String formated = (String) JSHtmlUnitPermissionRestricter.evaluateTrustedString(cx, scope, "js_beautify(text, {   });", "", 1, null);
             return formated;
             // ProcessBuilderFactory.runCommand(commandline);
         } catch (Throwable e) {
-
             e.printStackTrace();
         } finally {
             Context.exit();
@@ -309,14 +282,11 @@ public class JavaScriptEditorDialog extends AbstractDialog<Object> {
     }
 
     public void pack() {
-
         this.getDialog().pack();
-
     }
 
     public String getScript() {
         return new EDTHelper<String>() {
-
             @Override
             public String edtRun() {
                 return editor.getText();

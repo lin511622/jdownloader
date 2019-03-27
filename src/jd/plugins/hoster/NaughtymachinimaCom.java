@@ -16,8 +16,6 @@
 
 package jd.plugins.hoster;
 
-import java.io.IOException;
-
 import jd.PluginWrapper;
 import jd.http.Browser;
 import jd.http.URLConnectionAdapter;
@@ -58,10 +56,15 @@ public class NaughtymachinimaCom extends PluginForHost {
         return "http://www.naughtymachinima.com/static/terms";
     }
 
+    @Override
+    public void correctDownloadLink(DownloadLink link) throws Exception {
+        link.setPluginPatternMatcher(link.getPluginPatternMatcher().replace("https://", "http://"));
+    }
+
     @SuppressWarnings("deprecation")
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink link) throws IOException, PluginException {
-        dllink = null;
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
+        correctDownloadLink(link);
         server_issues = false;
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
@@ -72,7 +75,7 @@ public class NaughtymachinimaCom extends PluginForHost {
         /* 2016-09-01: This check is not needed yet! */
         // privatecontent = this.br.containsHTML(">This is a private video");
         privatecontent = false;
-        final String fid = new Regex(link.getDownloadURL(), "/video/(\\d+)$").getMatch(0);
+        final String fid = new Regex(link.getDownloadURL(), "/video/(\\d+)/").getMatch(0);
         final String url_name = new Regex(link.getDownloadURL(), "([a-z0-9\\-_]+)$").getMatch(0);
         String filename = br.getRegex("property=\"og:title\" content=\"([^<>\"]+)\"").getMatch(0);
         if (filename == null) {
@@ -83,7 +86,7 @@ public class NaughtymachinimaCom extends PluginForHost {
         }
 
         /* E.g. SD: http://www.naughtymachinima.com/media/videos/iphone/<fid>.mp4 */
-        dllink = "http://www." + this.getHost() + "/media/videos/hd/" + fid + ".mp4";
+        dllink = "/media/videos/hd/" + fid + ".mp4";
 
         if (filename == null || dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -132,7 +135,7 @@ public class NaughtymachinimaCom extends PluginForHost {
         } else if (dllink == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, free_resume, free_maxchunks);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, free_resume, free_maxchunks);
         if (dl.getConnection().getContentType().contains("html")) {
             if (dl.getConnection().getResponseCode() == 403) {
                 throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 60 * 60 * 1000l);

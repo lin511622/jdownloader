@@ -19,6 +19,8 @@ package jd.plugins.decrypter;
 import java.util.ArrayList;
 import java.util.Random;
 
+import org.appwork.utils.formatter.SizeFormatter;
+
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
 import jd.nutils.encoding.Encoding;
@@ -29,12 +31,8 @@ import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
 import jd.plugins.PluginForDecrypt;
-import jd.plugins.PluginForHost;
-import jd.utils.JDUtilities;
 
-import org.appwork.utils.formatter.SizeFormatter;
-
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "u.115.com" }, urls = { "http://(www\\.)?(u\\.)?115\\.com/folder/[a-z0-9]{1,11}" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "u.115.com" }, urls = { "http://(www\\.)?(u\\.)?115\\.com/folder/[a-z0-9]{1,11}" })
 public class U115ComFolder extends PluginForDecrypt {
 
     // DEV NOTES
@@ -57,11 +55,8 @@ public class U115ComFolder extends PluginForDecrypt {
         br.setFollowRedirects(true);
         br.setCookiesExclusive(true);
         br.getPage(parameter);
-        if (br.containsHTML("(>文件夹提取码不存在<|>文件拥有者未分享该文件夹。<)")) {
-            final DownloadLink offline = createDownloadlink("directhttp://" + parameter);
-            offline.setAvailable(false);
-            offline.setProperty("offline", true);
-            decryptedLinks.add(offline);
+        if (br.containsHTML(">文件夹提取码不存在<|>文件拥有者未分享该文件夹。<") || br._getURL().getPath().equals("/lb/")) {
+            decryptedLinks.add(createOfflinelink(parameter));
             return decryptedLinks;
         }
         if (br.containsHTML(PASSCODETEXT)) {
@@ -124,7 +119,7 @@ public class U115ComFolder extends PluginForDecrypt {
                     return null;
                 }
                 DownloadLink dl = createDownloadlink(new Regex(param, "(https?)://").getMatch(0) + "://115.com/file/" + formatThis[0][3]);
-                dl.setName(unescape(formatThis[0][0].trim()));
+                dl.setName(Encoding.unicodeDecode(formatThis[0][0].trim()));
                 dl.setDownloadSize(SizeFormatter.getSize(formatThis[0][1]));
                 if (formatThis[0][2].equals("1")) {
                     dl.setAvailable(true);
@@ -144,17 +139,6 @@ public class U115ComFolder extends PluginForDecrypt {
             fp.addLinks(decryptedLinks);
         }
         return decryptedLinks;
-    }
-
-    private static synchronized String unescape(final String s) {
-        /* we have to make sure the youtube plugin is loaded */
-
-        final PluginForHost plugin = JDUtilities.getPluginForHost("youtube.com");
-        if (plugin == null) {
-            throw new IllegalStateException("youtube plugin not found!");
-        }
-
-        return jd.nutils.encoding.Encoding.unescapeYoutube(s);
     }
 
     /* NO OVERRIDE!! */

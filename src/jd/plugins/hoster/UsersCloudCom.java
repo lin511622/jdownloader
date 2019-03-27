@@ -13,11 +13,9 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.File;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Locale;
@@ -50,7 +48,7 @@ import jd.plugins.Plugin;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.SiteType.SiteTemplate;
-import jd.utils.JDUtilities;
+import jd.plugins.components.UserAgents;
 import jd.utils.locale.JDL;
 
 import org.appwork.utils.formatter.SizeFormatter;
@@ -58,27 +56,26 @@ import org.appwork.utils.formatter.TimeFormatter;
 import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
 import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "userscloud.com" }, urls = { "https?://(www\\.)?userscloud\\.com/(embed\\-)?[a-z0-9]{12}" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "userscloud.com" }, urls = { "https?://(www\\.)?userscloud\\.com/(embed\\-)?[a-z0-9]{12}" })
 public class UsersCloudCom extends PluginForHost {
-
     private String                         correctedBR                  = "";
     private String                         passCode                     = null;
     private static final String            PASSWORDTEXT                 = "<br><b>Passwor(d|t):</b> <input";
     /* primary website url, take note of redirects */
-    private static final String            COOKIE_HOST                  = "http://userscloud.com";
+    private static final String            COOKIE_HOST                  = "https://userscloud.com";
     private static final String            NICE_HOST                    = COOKIE_HOST.replaceAll("(https://|http://)", "");
     private static final String            NICE_HOSTproperty            = COOKIE_HOST.replaceAll("(https://|http://|\\.|\\-)", "");
     /* domain names used within download links */
-    private static final String            DOMAINS                      = "(userscloud\\.com)";
+    private static final String            DOMAINS                      = "(userscloud\\.com|usercdn\\.com)";
     private static final String            MAINTENANCE                  = ">This server is in maintenance mode|>Server OFFLINE, Please upload the files again";
     private static final String            MAINTENANCEUSERTEXT          = JDL.L("hoster.xfilesharingprobasic.errors.undermaintenance", "This server is under maintenance");
     private static final String            ALLWAIT_SHORT                = JDL.L("hoster.xfilesharingprobasic.errors.waitingfordownloads", "Waiting till new downloads can be started");
     private static final String            PREMIUMONLY1                 = JDL.L("hoster.xfilesharingprobasic.errors.premiumonly1", "Max downloadable filesize for free users:");
     private static final String            PREMIUMONLY2                 = JDL.L("hoster.xfilesharingprobasic.errors.premiumonly2", "Only downloadable via premium or registered");
-    private static final boolean           VIDEOHOSTER                  = true;
-    private static final boolean           VIDEOHOSTER_2                = true;
-    private static final boolean           SUPPORTSHTTPS                = false;
-    private static final boolean           SUPPORTSHTTPS_FORCED         = false;
+    private static final boolean           VIDEOHOSTER                  = false;
+    private static final boolean           VIDEOHOSTER_2                = false;
+    private static final boolean           SUPPORTSHTTPS                = true;
+    private static final boolean           SUPPORTSHTTPS_FORCED         = true;
     private static final boolean           SUPPORTS_ALT_AVAILABLECHECK  = true;
     private final boolean                  ENABLE_RANDOM_UA             = false;
     private static AtomicReference<String> agent                        = new AtomicReference<String>(null);
@@ -91,14 +88,14 @@ public class UsersCloudCom extends PluginForHost {
     private static final int               ACCOUNT_FREE_MAXDOWNLOADS    = 1;
     private static final boolean           ACCOUNT_PREMIUM_RESUME       = true;
     private static final int               ACCOUNT_PREMIUM_MAXCHUNKS    = 1;
-    private static final int               ACCOUNT_PREMIUM_MAXDOWNLOADS = 1;
+    private static final int               ACCOUNT_PREMIUM_MAXDOWNLOADS = -1;
     /* note: CAN NOT be negative or zero! (ie. -1 or 0) Otherwise math sections fail. .:. use [1-20] */
     private static AtomicInteger           totalMaxSimultanFreeDownload = new AtomicInteger(FREE_MAXDOWNLOADS);
     /* don't touch the following! */
     private static AtomicInteger           maxFree                      = new AtomicInteger(1);
-    private static AtomicInteger           maxPrem                      = new AtomicInteger(1);
     private static Object                  LOCK                         = new Object();
     private String                         fuid                         = null;
+    private String                         dllink                       = null;
 
     /* DEV NOTES */
     // XfileSharingProBasic Version 2.6.6.6
@@ -109,7 +106,6 @@ public class UsersCloudCom extends PluginForHost {
     // captchatype: null
     // other: 2016-02-19: Updated connection limits - tested with MP3 links!
     // TODO: Add case maintenance + alternative filesize check
-
     @SuppressWarnings("deprecation")
     @Override
     public void correctDownloadLink(final DownloadLink link) {
@@ -146,10 +142,11 @@ public class UsersCloudCom extends PluginForHost {
         URLConnectionAdapter con = null;
         try {
             con = br.openHeadConnection(link.getDownloadURL());
-            if (!con.getContentType().contains("html")) {
+            if (!con.getContentType().contains("html") && con.isOK()) {
                 link.setDownloadSize(con.getLongContentLength());
                 link.setFinalFileName(getFileNameFromHeader(con));
                 link.setProperty("freelink", link.getDownloadURL());
+                dllink = br.getURL();
                 return AvailableStatus.TRUE;
             }
         } finally {
@@ -158,18 +155,23 @@ public class UsersCloudCom extends PluginForHost {
             }
         }
         getPage(link.getDownloadURL());
-        if (new Regex(correctedBR, "(No such file|>File Not Found<|>The file was removed by|Reason for deletion:\n|File Not Found|>The file expired|>This could be due to the following reasons)").matches()) {
+        if (new Regex(correctedBR, "(No such file|>File Not Found<|>The file was removed by|Reason for deletion:\n|File Not Found|>The file expired|>This could be due to the following reasons|<Title>Userscloud)").matches()) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        } else if (this.br.containsHTML("File Server Problem")) {
+            /* 2016-11-11 e.g.: "<Center>File Server Problem, Please Re-Upload the file.." */
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         if (new Regex(correctedBR, MAINTENANCE).matches()) {
             fileInfo[0] = this.getFnameViaAbuseLink(altbr, link);
             if (fileInfo[0] != null) {
-                link.setName(Encoding.htmlDecode(fileInfo[0]).trim());
+                link.setName(Encoding.htmlOnlyDecode(fileInfo[0]).trim());
                 return AvailableStatus.TRUE;
             }
             link.getLinkStatus().setStatusText(MAINTENANCEUSERTEXT);
             return AvailableStatus.UNCHECKABLE;
         }
+        /* 2017-11-21: Special, especially 403 might happen here */
+        checkResponseCodeErrors(br.getHttpConnection());
         if (br.getURL().contains("/?op=login&redirect=")) {
             logger.info("PREMIUMONLY handling: Trying alternative linkcheck");
             link.getLinkStatus().setStatusText(PREMIUMONLY2);
@@ -194,7 +196,7 @@ public class UsersCloudCom extends PluginForHost {
                     /* We know the link is online, set all information we got */
                     link.setAvailable(true);
                     if (fileInfo[0] != null) {
-                        link.setName(Encoding.htmlDecode(fileInfo[0].trim()));
+                        link.setName(Encoding.htmlOnlyDecode(fileInfo[0].trim()));
                     } else {
                         link.setName(fuid);
                     }
@@ -223,7 +225,7 @@ public class UsersCloudCom extends PluginForHost {
             link.setMD5Hash(fileInfo[2].trim());
         }
         fileInfo[0] = fileInfo[0].replaceAll("(</b>|<b>|\\.html)", "");
-        link.setName(fileInfo[0].trim());
+        link.setName(Encoding.htmlOnlyDecode(fileInfo[0]).trim());
         if (fileInfo[1] == null && SUPPORTS_ALT_AVAILABLECHECK) {
             /* Do alt availablecheck here but don't check availibility because we already know that the file must be online! */
             logger.info("Filesize not available, trying altAvailablecheck");
@@ -239,6 +241,23 @@ public class UsersCloudCom extends PluginForHost {
         return AvailableStatus.TRUE;
     }
 
+    @Override
+    public String filterPackageID(String packageIdentifier) {
+        return packageIdentifier.replaceAll("([^a-zA-Z0-9]+)", "");
+    }
+
+    private char[] FILENAMEREPLACES = new char[] { ' ', '_' };
+
+    @Override
+    public char[] getFilenameReplaceMap() {
+        return FILENAMEREPLACES;
+    }
+
+    @Override
+    public boolean isHosterManipulatesFilenames() {
+        return true;
+    }
+
     private String[] scanInfo(final String[] fileInfo) {
         /* standard traits from base page */
         if (fileInfo[0] == null) {
@@ -247,7 +266,8 @@ public class UsersCloudCom extends PluginForHost {
                 fileInfo[0] = new Regex(correctedBR, "fname\"( type=\"hidden\")? value=\"(.*?)\"").getMatch(1);
                 if (fileInfo[0] == null) {
                     // fileInfo[0] = new Regex(correctedBR, "<h2>Download File(.*?)</h2>").getMatch(0);
-                    fileInfo[0] = new Regex(correctedBR, "<h2[^<>]+>(.*?)</h2>").getMatch(0);
+                    // fileInfo[0] = new Regex(correctedBR, "<h2[^<>]*>(<b>)?(.*?)(</b>)?</h2>").getMatch(1);
+                    fileInfo[0] = new Regex(correctedBR, "<i class=\"[^\"]*fa-file[^\"]*\">\\s*</i>\\s*(.*?)\\s*<").getMatch(0);
                     /* traits from download1 page below */
                     if (fileInfo[0] == null || fileInfo[0].contains("...") /* they can truncate the previous result. */) {
                         fileInfo[0] = new Regex(correctedBR, "Filename:? ?(<[^>]+> ?)+?([^<>\"']+)").getMatch(1);
@@ -266,8 +286,9 @@ public class UsersCloudCom extends PluginForHost {
                 }
             }
         }
-        if (fileInfo[0] == null) {
-            fileInfo[0] = new Regex(correctedBR, "<Title>Download ([^<>]+)</Title>").getMatch(0);
+        if (fileInfo[1] == null) {
+            // fileInfo[1] = new Regex(correctedBR, "File\\s*size\\s*:\\s*([0-9\\.,]+\\s*(KB|MB|GB|B))").getMatch(0);
+            fileInfo[1] = br.getRegex("File size:<b>\\s* ([0-9\\.,]+ (KB|MB|GB|B))").getMatch(0); // Don't use correctedBR here!
         }
         if (fileInfo[1] == null) {
             fileInfo[1] = new Regex(correctedBR, "ribbon\">([^<>]+)<").getMatch(0);
@@ -290,23 +311,31 @@ public class UsersCloudCom extends PluginForHost {
         return fileInfo;
     }
 
-    private String getFnameViaAbuseLink(final Browser br, final DownloadLink dl) throws IOException, PluginException {
+    private String getFnameViaAbuseLink(final Browser br, final DownloadLink dl) throws Exception {
         br.getPage("http://" + NICE_HOST + "/?op=report_file&id=" + fuid);
         return br.getRegex("<b>Filename\\s*:?\\s*</b></td><td>([^<>\"]*?)</td>").getMatch(0);
     }
 
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception, PluginException {
-        requestFileInformation(downloadLink);
+        /* First, bring up saved final links */
+        dllink = checkDirectLink(downloadLink, "freelink");
+        if (dllink == null) {
+            requestFileInformation(downloadLink);
+        } else {
+            /* Do not forget about this ;) */
+            setFUID(downloadLink);
+        }
         doFree(downloadLink, FREE_RESUME, FREE_MAXCHUNKS, "freelink");
     }
 
-    @SuppressWarnings({ "unused", "deprecation" })
+    @SuppressWarnings({ "deprecation" })
     public void doFree(final DownloadLink downloadLink, final boolean resumable, final int maxchunks, final String directlinkproperty) throws Exception, PluginException {
+        if (checkShowFreeDialog(getHost())) {
+            showFreeDialog(getHost());
+        }
         br.setFollowRedirects(false);
         passCode = downloadLink.getStringProperty("pass");
-        /* First, bring up saved final links */
-        String dllink = checkDirectLink(downloadLink, directlinkproperty);
         /* Second, check for streaming/direct links on the first page */
         if (dllink == null) {
             dllink = getDllink();
@@ -352,26 +381,13 @@ public class UsersCloudCom extends PluginForHost {
             final Form download1 = getFormByKey("op", "download1");
             if (download1 != null) {
                 download1.remove("method_premium");
-                /*
-                 * stable is lame, issue finding input data fields correctly. eg. closes at ' quotation mark - remove when jd2 goes stable!
-                 */
-                if (downloadLink.getName().contains("'")) {
-                    String fname = new Regex(br, "<input type=\"hidden\" name=\"fname\" value=\"([^\"]+)\">").getMatch(0);
-                    if (fname != null) {
-                        download1.put("fname", Encoding.urlEncode(fname));
-                    } else {
-                        logger.warning("Could not find 'fname'");
-                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-                    }
-                }
-                /* end of backward compatibility */
                 sendForm(download1);
                 checkErrors(downloadLink, false);
                 dllink = getDllink();
             }
         }
         if (dllink == null) {
-            Form dlForm = br.getFormbyProperty("name", "F1");
+            Form dlForm = getFormByKey("op", "download2");
             if (dlForm == null) {
                 handlePluginBroken(downloadLink, "dlform_f1_null", 3);
             }
@@ -447,7 +463,6 @@ public class UsersCloudCom extends PluginForHost {
                     skipWaittime = true;
                 } else if (br.containsHTML("solvemedia\\.com/papi/")) {
                     logger.info("Detected captcha method \"solvemedia\" for this host");
-
                     final org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia sm = new org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia(br);
                     File cf = null;
                     try {
@@ -505,11 +520,9 @@ public class UsersCloudCom extends PluginForHost {
             }
         }
         logger.info("Final downloadlink = " + dllink + " starting the download...");
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, resumable, maxchunks);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, resumable, maxchunks);
         if (dl.getConnection().getContentType().contains("html")) {
-            if (dl.getConnection().getResponseCode() == 503) {
-                throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "Connection limit reached, please contact our support!", 5 * 60 * 1000l);
-            }
+            checkResponseCodeErrors(dl.getConnection());
             logger.warning("The final dllink seems not to be a file!");
             br.followConnection();
             correctBR();
@@ -578,9 +591,7 @@ public class UsersCloudCom extends PluginForHost {
         br.setCookie(COOKIE_HOST, "lang", "english");
         if (ENABLE_RANDOM_UA) {
             if (agent.get() == null) {
-                /* we first have to load the plugin, before we can reference it */
-                JDUtilities.getPluginForHost("mediafire.com");
-                agent.set(jd.plugins.hoster.MediafireCom.stringUserAgent());
+                agent.set(UserAgents.stringUserAgent());
             }
             br.getHeaders().put("User-Agent", agent.get());
         }
@@ -609,15 +620,12 @@ public class UsersCloudCom extends PluginForHost {
     public void correctBR() throws NumberFormatException, PluginException {
         correctedBR = br.toString();
         ArrayList<String> regexStuff = new ArrayList<String>();
-
         // remove custom rules first!!! As html can change because of generic cleanup rules.
         regexStuff.add("(<center>.*?</center>)");
-
         /* generic cleanup */
         regexStuff.add("<\\!(\\-\\-.*?\\-\\-)>");
         regexStuff.add("(display: ?none;\">.*?</div>)");
         regexStuff.add("(visibility:hidden>.*?<)");
-
         for (String aRegex : regexStuff) {
             String results[] = new Regex(correctedBR, aRegex).getColumn(0);
             if (results != null) {
@@ -649,26 +657,21 @@ public class UsersCloudCom extends PluginForHost {
 
     private String decodeDownloadLink(final String s) {
         String decoded = null;
-
         try {
             Regex params = new Regex(s, "\\'(.*?[^\\\\])\\',(\\d+),(\\d+),\\'(.*?)\\'");
-
             String p = params.getMatch(0).replaceAll("\\\\", "");
             int a = Integer.parseInt(params.getMatch(1));
             int c = Integer.parseInt(params.getMatch(2));
             String[] k = params.getMatch(3).split("\\|");
-
             while (c != 0) {
                 c--;
                 if (k[c].length() != 0) {
                     p = p.replaceAll("\\b" + Integer.toString(c, a) + "\\b", k[c]);
                 }
             }
-
             decoded = p;
         } catch (Exception e) {
         }
-
         String finallink = null;
         if (decoded != null) {
             /* Open regex is possible because in the unpacked JS there are usually only 1 links */
@@ -931,6 +934,7 @@ public class UsersCloudCom extends PluginForHost {
         if (new Regex(correctedBR, MAINTENANCE).matches()) {
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, MAINTENANCEUSERTEXT, 2 * 60 * 60 * 1000l);
         }
+        checkResponseCodeErrors(br.getHttpConnection());
     }
 
     public void checkServerErrors() throws NumberFormatException, PluginException {
@@ -942,6 +946,21 @@ public class UsersCloudCom extends PluginForHost {
         }
         if (new Regex(correctedBR, "(File Not Found|<h1>404 Not Found</h1>)").matches()) {
             throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error (404)", 30 * 60 * 1000l);
+        }
+    }
+
+    /** Handles all kinds of error-responsecodes! */
+    private void checkResponseCodeErrors(final URLConnectionAdapter con) throws PluginException {
+        if (con == null) {
+            return;
+        }
+        final long responsecode = con.getResponseCode();
+        if (responsecode == 403) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 5 * 60 * 1000l);
+        } else if (responsecode == 404) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 404#1", 5 * 60 * 1000l);
+        } else if (responsecode == 503) {
+            throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "Server error 503 connection limit reached, please contact our support!", 5 * 60 * 1000l);
         }
     }
 
@@ -975,8 +994,6 @@ public class UsersCloudCom extends PluginForHost {
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         final AccountInfo ai = new AccountInfo();
-        /* reset maxPrem workaround on every fetchaccount info */
-        maxPrem.set(1);
         try {
             login(account, true);
         } catch (final PluginException e) {
@@ -1011,28 +1028,14 @@ public class UsersCloudCom extends PluginForHost {
             expire_milliseconds = TimeFormatter.getMilliSeconds(expire, "dd MMMM yyyy", Locale.ENGLISH);
         }
         if ((expire_milliseconds - System.currentTimeMillis()) <= 0) {
-            maxPrem.set(ACCOUNT_FREE_MAXDOWNLOADS);
-            account.setProperty("nopremium", true);
-            try {
-                account.setType(AccountType.FREE);
-                account.setMaxSimultanDownloads(maxPrem.get());
-                account.setConcurrentUsePossible(false);
-            } catch (final Throwable e) {
-                /* not available in old Stable 0.9.581 */
-            }
-            ai.setStatus("Registered (free) account");
+            account.setType(AccountType.FREE);
+            account.setMaxSimultanDownloads(ACCOUNT_FREE_MAXDOWNLOADS);
+            account.setConcurrentUsePossible(false);
         } else {
             ai.setValidUntil(expire_milliseconds);
-            maxPrem.set(ACCOUNT_PREMIUM_MAXDOWNLOADS);
-            account.setProperty("nopremium", false);
-            try {
-                account.setType(AccountType.PREMIUM);
-                account.setMaxSimultanDownloads(maxPrem.get());
-                account.setConcurrentUsePossible(true);
-            } catch (final Throwable e) {
-                /* not available in old Stable 0.9.581 */
-            }
-            ai.setStatus("Premium account");
+            account.setType(AccountType.PREMIUM);
+            account.setMaxSimultanDownloads(ACCOUNT_PREMIUM_MAXDOWNLOADS);
+            account.setConcurrentUsePossible(true);
         }
         return ai;
     }
@@ -1108,42 +1111,27 @@ public class UsersCloudCom extends PluginForHost {
         }
     }
 
-    @SuppressWarnings("deprecation")
     @Override
     public void handlePremium(final DownloadLink downloadLink, final Account account) throws Exception {
         passCode = downloadLink.getStringProperty("pass");
-        requestFileInformation(downloadLink);
-        login(account, false);
-        if (account.getBooleanProperty("nopremium")) {
-            requestFileInformation(downloadLink);
-            doFree(downloadLink, ACCOUNT_FREE_RESUME, ACCOUNT_FREE_MAXCHUNKS, "freelink2");
+        final String propery;
+        if (account.getType() == AccountType.FREE) {
+            propery = "freelink2";
         } else {
-            /* Use the free method with premium parameters */
-            doFree(downloadLink, ACCOUNT_PREMIUM_RESUME, ACCOUNT_PREMIUM_MAXCHUNKS, "freelink2");
-            // The following code doesn't work any more
-            /*
-             * String dllink = checkDirectLink(downloadLink, "premlink"); if (dllink == null) { br.setFollowRedirects(false);
-             * getPage(downloadLink.getDownloadURL()); dllink = getDllink(); if (dllink == null) { Form dlform =
-             * br.getFormbyProperty("name", "F1"); if (dlform != null && new Regex(correctedBR, PASSWORDTEXT).matches()) { passCode =
-             * handlePassword(dlform, downloadLink); } checkErrors(downloadLink, true); if (dlform == null) { throw new
-             * PluginException(LinkStatus.ERROR_PLUGIN_DEFECT); } sendForm(dlform); checkErrors(downloadLink, true); dllink = getDllink(); }
-             * } if (dllink == null) { logger.warning("Final downloadlink (String is \"dllink\") regex didn't match!"); throw new
-             * PluginException(LinkStatus.ERROR_PLUGIN_DEFECT); } logger.info("Final downloadlink = " + dllink +
-             * " starting the download..."); dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, ACCOUNT_PREMIUM_RESUME,
-             * ACCOUNT_PREMIUM_MAXCHUNKS); if (dl.getConnection().getContentType().contains("html")) { if
-             * (dl.getConnection().getResponseCode() == 503) { throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE,
-             * "Connection limit reached, please contact our support!", 5 * 60 * 1000l); }
-             * logger.warning("The final dllink seems not to be a file!"); br.followConnection(); correctBR(); checkServerErrors();
-             * handlePluginBroken(downloadLink, "dllinknofile", 3); } fixFilename(downloadLink); downloadLink.setProperty("premlink",
-             * dllink); dl.startDownload();
-             */
+            propery = "premiumlink";
         }
-    }
-
-    @Override
-    public int getMaxSimultanPremiumDownloadNum() {
-        /* workaround for free/premium issue on stable 09581 */
-        return maxPrem.get();
+        dllink = checkDirectLink(downloadLink, propery);
+        if (dllink == null) {
+            login(account, false);
+            requestFileInformation(downloadLink);
+        } else {
+            setFUID(downloadLink);
+        }
+        if (account.getType() == AccountType.FREE) {
+            doFree(downloadLink, ACCOUNT_FREE_RESUME, ACCOUNT_FREE_MAXCHUNKS, propery);
+        } else {
+            doFree(downloadLink, ACCOUNT_PREMIUM_RESUME, ACCOUNT_PREMIUM_MAXCHUNKS, propery);
+        }
     }
 
     @Override
@@ -1152,11 +1140,14 @@ public class UsersCloudCom extends PluginForHost {
 
     @Override
     public void resetDownloadlink(DownloadLink link) {
+        if (link != null) {
+            link.removeProperty("freelink2");
+            link.removeProperty("premiumlink");
+        }
     }
 
     @Override
     public SiteTemplate siteTemplateType() {
         return SiteTemplate.SibSoft_XFileShare;
     }
-
 }

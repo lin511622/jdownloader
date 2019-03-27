@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
@@ -27,9 +26,8 @@ import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
 import jd.plugins.PluginForDecrypt;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "imagevenue.com" }, urls = { "http://(www\\.)?img\\d+\\.imagevenue\\.com/galshow\\.php\\?gal=gallery_.+" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "imagevenue.com" }, urls = { "http://(www\\.)?img\\d+\\.imagevenue\\.com/galshow\\.php\\?gal=gallery_.+" })
 public class ImageVenueComGallery extends PluginForDecrypt {
-
     public ImageVenueComGallery(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -38,15 +36,23 @@ public class ImageVenueComGallery extends PluginForDecrypt {
         ArrayList<DownloadLink> decryptedLinks = new ArrayList<DownloadLink>();
         String parameter = param.toString();
         final String format = new Regex(parameter, "(format=[A-Za-z0-9]+)").getMatch(0);
-        if (format != null) parameter = parameter.replace(format, "format=show");
+        if (format != null) {
+            parameter = parameter.replace(format, "format=show");
+        }
+        br.setFollowRedirects(true);
         br.getPage(parameter);
+        if (br.getHttpConnection().getResponseCode() == 404) {
+            decryptedLinks.add(this.createOfflinelink(parameter));
+            return decryptedLinks;
+        }
         final String[] links = br.getRegex("<a href=\"(http://img\\d+\\.imagevenue\\.com/img\\.php\\?image=[^<>\"]*?)\" target=\"_blank\"><img src=\"").getColumn(0);
         if (links == null || links.length == 0) {
             logger.warning("Decrypter broken for link: " + parameter);
             return null;
         }
-        for (String singleLink : links)
+        for (String singleLink : links) {
             decryptedLinks.add(createDownloadlink(singleLink));
+        }
         final FilePackage fp = FilePackage.getInstance();
         fp.setName(new Regex(parameter, "gal=gallery_(.+)").getMatch(0));
         fp.addLinks(decryptedLinks);
@@ -57,5 +63,4 @@ public class ImageVenueComGallery extends PluginForDecrypt {
     public boolean hasCaptcha(CryptedLink link, jd.plugins.Account acc) {
         return false;
     }
-
 }

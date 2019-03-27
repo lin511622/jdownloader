@@ -16,9 +16,11 @@
 
 package jd.plugins.hoster;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+
+import org.appwork.utils.formatter.TimeFormatter;
+import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
 
 import jd.PluginWrapper;
 import jd.http.Browser;
@@ -34,10 +36,7 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-import org.appwork.utils.formatter.TimeFormatter;
-import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "twojlimit.pl" }, urls = { "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsdgfd32423" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "twojlimit.pl" }, urls = { "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsdgfd32423" })
 public class TwojLimitPl extends PluginForHost {
 
     private static HashMap<Account, HashMap<String, Long>> hostUnavailableMap = new HashMap<Account, HashMap<String, Long>>();
@@ -55,7 +54,7 @@ public class TwojLimitPl extends PluginForHost {
         return new FEATURE[] { FEATURE.MULTIHOST };
     }
 
-    private void login(final Account account) throws PluginException, IOException {
+    private void login(final Account account) throws Exception {
         String username = Encoding.urlEncode(account.getUser());
         br.postPage("http://crypt.twojlimit.pl", "username=" + username + "&password=" + JDHash.getMD5(account.getPass()) + "&info=1&site=twojlimit");
         String adres = br.toString();
@@ -80,6 +79,10 @@ public class TwojLimitPl extends PluginForHost {
     }
 
     private void handleErrors(Browser br) throws PluginException {
+        // do not use numbers only, you will get false postivies from balance figure.
+        if (br.containsHTML("Access from your country is not allowed")) {
+            throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nAccess from your country is not allowed", PluginException.VALUE_ID_PREMIUM_DISABLE);
+        }
         if (br.containsHTML("0=Nieprawidlowa nazwa uzytkownika/haslo")) {
             if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                 throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen? Versuche folgendes:\r\n1. Falls dein Passwort Sonderzeichen enthält, ändere es (entferne diese) und versuche es erneut!\r\n2. Gib deine Zugangsdaten per Hand (ohne kopieren/einfügen) ein.", PluginException.VALUE_ID_PREMIUM_DISABLE);
@@ -226,7 +229,7 @@ public class TwojLimitPl extends PluginForHost {
         br.setFollowRedirects(true);
         // wait, workaround
         sleep(1 * 1000l, link);
-        dl = jd.plugins.BrowserAdapter.openDownload(br, link, genlink, true, 1);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, link, genlink, true, 1);
         /*
          * I realy wanted to use Content Disposition below, but it just don't work for resume at hotfile -> Doesn't matter anymore, hotfile
          * is offline

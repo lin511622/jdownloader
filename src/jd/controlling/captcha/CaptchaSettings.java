@@ -15,7 +15,6 @@ import org.appwork.storage.config.annotations.SpinnerValidator;
 import org.jdownloader.captcha.v2.CaptchaQualityEnsuranceRule;
 
 public interface CaptchaSettings extends ConfigInterface {
-
     public static enum MODE {
         // AUTO_ONLY,
         NORMAL,
@@ -60,12 +59,19 @@ public interface CaptchaSettings extends ConfigInterface {
     void setCaptchaTimeoutAction(CAPTCHA_TIMEOUT_ACTION b);
 
     @AboutConfig
-    @DefaultIntValue(60000)
-    @SpinnerValidator(min = 10000, max = 300000)
-    @DescriptionForConfigEntry("MS to wait until captcha dialog gets answered. Close dialog after this timeout unanswered")
-    int getCaptchaDialogDefaultCountdown();
+    @DefaultEnumValue("SKIP")
+    @org.appwork.storage.config.annotations.DescriptionForConfigEntry("If the Dialog Countdown is reached, the crawler will be skipped. Disable this option to retry instead")
+    CAPTCHA_TIMEOUT_ACTION getCrawlerCaptchaTimeoutAction();
 
-    void setCaptchaDialogDefaultCountdown(int seconds);
+    void setCrawlerCaptchaTimeoutAction(CAPTCHA_TIMEOUT_ACTION b);
+
+    @AboutConfig
+    @DefaultIntValue(300000)
+    @SpinnerValidator(min = 10000, max = 900000)
+    @DescriptionForConfigEntry("MS to wait until captcha dialog gets answered. Close dialog after this timeout unanswered")
+    int getCaptchaDialogDefaultCountdown2();
+
+    void setCaptchaDialogDefaultCountdown2(int seconds);
 
     @AboutConfig
     @DefaultIntValue(95)
@@ -82,7 +88,7 @@ public interface CaptchaSettings extends ConfigInterface {
     void setCaptchaMode(MODE mode);
 
     @AboutConfig
-    @DefaultIntValue(5 * 60 * 1000)
+    @DefaultIntValue(10 * 60 * 1000)
     @DescriptionForConfigEntry("Timeout after which a challenge (captcha) invalidates (e.g sessions run out...) this timeout should be set by the plugins")
     int getDefaultChallengeTimeout();
 

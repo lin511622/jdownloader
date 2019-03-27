@@ -13,10 +13,8 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.File;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Locale;
@@ -41,11 +39,10 @@ import jd.utils.locale.JDL;
 
 import org.appwork.utils.formatter.SizeFormatter;
 import org.appwork.utils.formatter.TimeFormatter;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "extmatrix.com" }, urls = { "https?://(www\\.)?extmatrix\\.com/(files|get)/[A-Za-z0-9]+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "extmatrix.com" }, urls = { "https?://(www\\.)?extmatrix\\.com/(files|get)/[A-Za-z0-9]+" })
 public class ExtMatrixCom extends PluginForHost {
-
     public ExtMatrixCom(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium(MAINPAGE + "/get-premium.php");
@@ -61,7 +58,6 @@ public class ExtMatrixCom extends PluginForHost {
     private static final String PREMIUMONLYUSERTEXT = JDL.L("plugins.hoster.extmatrixcom.errors.premiumonly", "Only downloadable via premium account");
 
     // private static final String APIKEY = "4LYl9hFH1Xapzycg4fuFtUSPVvWsr";
-
     @SuppressWarnings("deprecation")
     @Override
     public void correctDownloadLink(final DownloadLink link) {
@@ -77,7 +73,7 @@ public class ExtMatrixCom extends PluginForHost {
         if (br.containsHTML(">The file you have requested does not exist")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-        final Regex fileInfo = br.getRegex("style=\"text\\-align:(center|left|right);\">(Premium Only\\!)?([^\"<>]+) \\(([0-9\\.]+ [A-Za-z]+)(\\))?(,[^<>\"/]+)?</h1>");
+        final Regex fileInfo = br.getRegex("style=\"text-align:(center|left|right);\">(Premium Only\\!)?([^\"<>]+) \\(([0-9\\.]+ [A-Za-z]+)(\\))?(,[^<>\"/]+)?</h1>");
         String filename = fileInfo.getMatch(2);
         String filesize = fileInfo.getMatch(3);
         if (filename == null || filesize == null) {
@@ -124,17 +120,13 @@ public class ExtMatrixCom extends PluginForHost {
             con = br.openGetConnection(getLink);
             if (con.getContentType().contains("html")) {
                 br.followConnection();
-                final String action = br.getRegex("\"(http://s\\d+\\.extmatrix\\.com/get/[A-Za-z0-9]+/\\d+/[^<>\"]*?)\"").getMatch(0);
-                final String rcID = br.getRegex("Recaptcha\\.create\\(\"([^<>\"]*?)\"").getMatch(0);
-                if (rcID == null || action == null) {
-                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                final String action = br.getRegex("\"(https?://s\\d+\\.extmatrix\\.com/get/[A-Za-z0-9]+/\\d+/[^<>\"]*?)\"").getMatch(0);
+                final CaptchaHelperHostPluginRecaptchaV2 rc2 = new CaptchaHelperHostPluginRecaptchaV2(this, br);
+                final String recaptchaV2Response = rc2.getToken();
+                if (recaptchaV2Response == null) {
+                    throw new PluginException(LinkStatus.ERROR_CAPTCHA);
                 }
-                final Recaptcha rc = new Recaptcha(br, this);
-                rc.setId(rcID);
-                rc.load();
-                File cf = rc.downloadCaptcha(getLocalCaptchaFile());
-                String c = getCaptchaCode("recaptcha", cf, downloadLink);
-                dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, action, "recaptcha_challenge_field=" + rc.getChallenge() + "&recaptcha_response_field=" + c + "&task=download", true, 1);
+                dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, action, "&g-recaptcha-response=" + recaptchaV2Response + "&task=download", true, 1);
             } else {
                 dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, getLink, true, 1);
             }
@@ -151,11 +143,11 @@ public class ExtMatrixCom extends PluginForHost {
             if (br.containsHTML("Server is too busy for free users")) {
                 throw new PluginException(LinkStatus.ERROR_HOSTER_TEMPORARILY_UNAVAILABLE, "No free slots", 10 * 60 * 1000l);
             }
-            if (br.containsHTML("(api\\.recaptcha\\.net|google\\.com/recaptcha/api/)")) {
-                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
-            }
             if (br.containsHTML("(files per hour for free users\\.</div>|>Los usuarios de Cuenta Gratis pueden descargar|hours for free users\\.|var time =)")) {
                 throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, 60 * 60 * 1001l);
+            }
+            if (br.containsHTML("(api\\.recaptcha\\.net|google\\.com/recaptcha/api/|\"g-recaptcha\")")) {
+                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
             }
             final String unknownError = br.getRegex("class=\"error\">(.*?)\"").getMatch(0);
             if (unknownError != null) {
@@ -239,12 +231,7 @@ public class ExtMatrixCom extends PluginForHost {
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         final AccountInfo ai = new AccountInfo();
-        try {
-            login(account, true);
-        } catch (PluginException e) {
-            account.setValid(false);
-            return ai;
-        }
+        login(account, true);
         String hostedFiles = br.getRegex("<td>Files Hosted:</td>[\t\r\n ]+<td>(\\d+)</td>").getMatch(0);
         if (hostedFiles != null) {
             ai.setFilesNum(Integer.parseInt(hostedFiles));
@@ -286,12 +273,12 @@ public class ExtMatrixCom extends PluginForHost {
         } else {
             // Little help from their admin^^
             String getLink = br.getRedirectLocation();
-            if (getLink != null && getLink.matches("http://(www\\.)?extmatrix\\.com/get/.*?")) {
+            if (getLink != null && getLink.matches("https?://(www\\.)?extmatrix\\.com/get/.*?")) {
                 br.getPage(getLink);
                 getLink = br.getRedirectLocation();
             }
             if (getLink == null) {
-                getLink = br.getRegex("<a id=\\'jd_support\\' href=\"(http://[^<>\"]*?)\"").getMatch(0);
+                getLink = br.getRegex("<a id='jd_support' href=\"(https?://[^<>\"]*?)\"").getMatch(0);
             }
             if (getLink == null) {
                 getLink = getLink();
@@ -312,9 +299,9 @@ public class ExtMatrixCom extends PluginForHost {
     }
 
     private String getLink() {
-        String getLink = br.getRegex("disabled=\"disabled\" onclick=\"document\\.location=\\'(.*?)\\';\"").getMatch(0);
+        String getLink = br.getRegex("disabled=\"disabled\" onclick=\"document\\.location='(.*?)';\"").getMatch(0);
         if (getLink == null) {
-            getLink = br.getRegex("('|\")(" + "http://(www\\.)?([a-z0-9]+\\.)?" + MAINPAGE.replaceAll("(http://|www\\.)", "") + "/get/[A-Za-z0-9]+/\\d+/[^<>\"/]+)\\1").getMatch(1);
+            getLink = br.getRegex("('|\")(" + "https?://(www\\.)?([a-z0-9]+\\.)?" + MAINPAGE.replaceAll("(http://|www\\.)", "") + "/get/[A-Za-z0-9]+/\\d+/[^<>\"/]+)\\1").getMatch(1);
         }
         return getLink;
     }

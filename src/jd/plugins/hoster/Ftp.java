@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -22,8 +21,12 @@ import java.net.Socket;
 import java.net.URL;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.WeakHashMap;
+
+import javax.swing.JComponent;
+import javax.swing.JMenuItem;
 
 import jd.PluginWrapper;
 import jd.controlling.linkcrawler.CrawledLink;
@@ -49,14 +52,13 @@ import org.appwork.utils.StringUtils;
 import org.appwork.utils.net.httpconnection.HTTPProxy;
 import org.appwork.utils.net.httpconnection.HTTPProxyException;
 import org.jdownloader.DomainInfo;
+import org.jdownloader.gui.views.SelectionInfo.PluginView;
 import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
 
 // DEV NOTES:
 // - ftp filenames can contain & characters!
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "ftp" }, urls = { "ftpviajd://.*?\\.[a-zA-Z0-9]{1,}(:\\d+)?/[^\"\r\n ]+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "ftp" }, urls = { "ftpviajd://.*?\\.[\\p{L}\\p{Nd}a-zA-Z0-9]{1,}(:\\d+)?/[^\"\r\n ]+" })
 public class Ftp extends PluginForHost {
-
     public Ftp(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -86,21 +88,39 @@ public class Ftp extends PluginForHost {
         return false;
     }
 
+    public static Integer getConnectionLimit(IOException e) {
+        final String msg = e.getMessage();
+        if ((StringUtils.containsIgnoreCase(msg, "530 Stop connecting"))) {
+            final String maxConnections = new Regex(e.getMessage(), "You have\\s*(\\d+)\\s*connections now currently opened").getMatch(0);
+            if (maxConnections != null) {
+                return Math.max(1, Integer.parseInt(maxConnections) - 1);
+            } else {
+                return 1;
+            }
+        } else if (StringUtils.containsIgnoreCase(msg, "Sorry, the maximum number of clients") || StringUtils.startsWithCaseInsensitive(msg, "421")) {
+            final String maxConnections = new Regex(e.getMessage(), "Sorry, the maximum number of clients \\((\\d+)\\)").getMatch(0);
+            if (maxConnections != null) {
+                return Math.max(1, Integer.parseInt(maxConnections) - 1);
+            } else {
+                return 1;
+            }
+        } else {
+            return null;
+        }
+    }
+
     private void connect(SimpleFTP ftp, final DownloadLink downloadLink, URL url) throws Exception {
         try {
             ftp.connect(url);
         } catch (IOException e) {
-            final String msg = e.getMessage();
-            if (StringUtils.containsIgnoreCase(msg, "Sorry, the maximum number of clients") || StringUtils.startsWithCaseInsensitive(msg, "421")) {
-                final String maxConnections = new Regex(e.getMessage(), "Sorry, the maximum number of clients \\((\\d+)\\)").getMatch(0);
-                if (maxConnections != null) {
-                    downloadLink.setProperty("MAX_FTP_CONNECTIONS", Integer.parseInt(maxConnections));
-                } else {
-                    downloadLink.setProperty("MAX_FTP_CONNECTIONS", 1);
-                }
-                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Connection limit reached", 30 * 1000l);
+            logger.log(e);
+            final Integer limit = getConnectionLimit(e);
+            if (limit != null) {
+                downloadLink.setProperty("MAX_FTP_CONNECTIONS", limit);
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Connection limit reached", 30 * 1000l, e);
+            } else {
+                throw e;
             }
-            throw e;
         }
     }
 
@@ -109,18 +129,33 @@ public class Ftp extends PluginForHost {
         final HTTPProxy proxy = proxies.get(0);
         return new SimpleFTP(proxy, logger) {
             @Override
+            public int getConnectTimeout() {
+                return Browser.getGlobalConnectTimeout();
+            }
+
+            @Override
+            public int getReadTimeout(STATE state) {
+                switch (state) {
+                case CLOSING:
+                    return super.getReadTimeout(state);
+                default:
+                    return Browser.getGlobalReadTimeout();
+                }
+            }
+
+            @Override
             protected Socket createSocket() {
                 return SocketConnectionFactory.createSocket(getProxy());
             }
         };
     }
 
-    public void download(String ftpurl, final DownloadLink downloadLink, boolean throwException) throws Exception {
-        final URL url = new URL(ftpurl);
+    public void download(String downloadUrl, final DownloadLink downloadLink, boolean throwException) throws Exception {
+        final URL url = new URL(downloadUrl);
         final SimpleFTP ftp = createSimpleFTP(url);
         try {
             /* cut off all ?xyz at the end */
-            final String filePath = new Regex(ftpurl, "://[^/]+/(.+?)(\\?|$)").getMatch(0);
+            final String filePath = new Regex(downloadUrl, "://[^/]+/(.+?)(\\?|$)").getMatch(0);
             connect(ftp, downloadLink, url);
             final String downloadFilePath = checkFile(ftp, downloadLink, filePath);
             dl = new SimpleFTPDownloadInterface(ftp, downloadLink, downloadFilePath);
@@ -241,7 +276,6 @@ public class Ftp extends PluginForHost {
     }
 
     private final String                            MAX_FTP_CONNECTIONS    = "MAX_FTP_CONNECTIONS";
-
     private static WeakHashMap<DomainInfo, Integer> MAX_FTP_CONNECTION_MAP = new WeakHashMap<DomainInfo, Integer>();
 
     @Override
@@ -267,6 +301,16 @@ public class Ftp extends PluginForHost {
     @Override
     public int getMaxSimultanFreeDownloadNum() {
         return 20;
+    }
+
+    @Override
+    public void extendDownloadsTableContextMenu(JComponent parent, PluginView<DownloadLink> pv, Collection<PluginView<DownloadLink>> views) {
+        if (pv.size() == 1) {
+            final JMenuItem changeURLMenuItem = createChangeURLMenuItem(pv.get(0));
+            if (changeURLMenuItem != null) {
+                parent.add(changeURLMenuItem);
+            }
+        }
     }
 
     @Override

@@ -1,16 +1,19 @@
 package jd.plugins.hoster;
 
+import java.io.IOException;
 import java.util.HashMap;
-import java.util.Map;
+import java.util.Locale;
 
 import jd.PluginWrapper;
-import jd.config.Property;
 import jd.controlling.AccountController;
-import jd.http.Cookie;
-import jd.http.Cookies;
+import jd.http.Browser;
+import jd.http.Request;
+import jd.http.URLConnectionAdapter;
+import jd.http.requests.GetRequest;
 import jd.http.requests.HeadRequest;
-import jd.nutils.encoding.Encoding;
+import jd.http.requests.PutRequest;
 import jd.plugins.Account;
+import jd.plugins.Account.AccountType;
 import jd.plugins.AccountInfo;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
@@ -18,125 +21,18 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
-import jd.plugins.download.HashInfo;
-import jd.plugins.download.HashInfo.TYPE;
 
-import org.appwork.net.protocol.http.HTTPConstants;
 import org.appwork.storage.JSonStorage;
-import org.appwork.storage.Storable;
 import org.appwork.storage.TypeRef;
 import org.appwork.utils.Regex;
 import org.appwork.utils.StringUtils;
-import org.appwork.utils.net.httpconnection.HTTPConnectionUtils;
-import org.appwork.utils.parser.UrlQuery;
+import org.appwork.utils.formatter.TimeFormatter;
+import org.appwork.utils.net.HTTPHeader;
 
-//"https?://put\\.io/(?:file|v2/files)/\\d+" website link
-//actuall downloadlink "https?://put\\.io/v2/files/\\d+/download\\?token=[a-fA-F0-9]+"
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "put.io" }, urls = { "https?://put\\.io/(files/\\d+|v2/files/\\d+/download\\?token=[a-fA-F0-9]+)" }) public class PutIO extends PluginForHost {
-
-    private static final String REQUIRES_ACCOUNT    = "requiresAccount";
-
-    private static final String X_PUTIO_LOGIN_TOKEN = "X-Putio-LoginToken";
-
-    private static class File implements Storable {
-        private String crc32;
-
-        private String name;
-
-        private long   size;
-
-        private File(/* storable */) {
-
-        }
-
-        public String getCrc32() {
-            return crc32;
-        }
-
-        public String getName() {
-            return name;
-        }
-
-        public long getSize() {
-            return size;
-        }
-
-        public void setCrc32(String crc32) {
-            this.crc32 = crc32;
-        }
-
-        public void setName(String name) {
-            this.name = name;
-        }
-
-        public void setSize(long size) {
-            this.size = size;
-        }
-    }
-
-    private static class FileWrapper implements Storable {
-        private File   file;
-        private String status;
-
-        public String getStatus() {
-            return status;
-        }
-
-        public void setStatus(String status) {
-            this.status = status;
-        }
-
-        private FileWrapper(/* storable */) {
-
-        }
-
-        public File getFile() {
-            return file;
-        }
-
-        public void setFile(File file) {
-            this.file = file;
-        }
-    }
-
-    private static class Info implements Storable {
-        private String access_token;
-
-        public Info(/* private static */) {
-        }
-
-        public String getAccess_token() {
-            return access_token;
-        }
-
-        public void setAccess_token(String access_token) {
-            this.access_token = access_token;
-        }
-    }
-
-    private static class InfoWrapper implements Storable {
-        private Info info;
-
-        public InfoWrapper(/* Storable */) {
-        }
-
-        public Info getInfo() {
-            return info;
-        }
-
-        public void setInfo(Info info) {
-            this.info = info;
-        }
-    }
-
-    private static final String ACCESS_TOKEN2 = "access_token";
-
-    private static final String COOKIE_HOST   = "http://put.io";
-    private static Object       LOCK          = new Object();
-
-    private static final String LOGIN_TOKEN22 = "login_token2";
-
-    private String              accessToken;
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "put.io" }, urls = { "https?://(?:[a-z0-9\\-]+\\.)?put\\.io/(?:(?:v2/)?files/\\d+/(mp4/download|download)|zipstream/\\d+.*|download/\\d+.*)\\?oauth_token=[A-Z0-9]+" })
+public class PutIO extends PluginForHost {
+    private final String CLIENT_ID     = "181";
+    private final String CLIENT_SECRET = "ga38bm4yv546pzauepok";
 
     public PutIO(PluginWrapper wrapper) {
         super(wrapper);
@@ -144,33 +40,45 @@ import org.appwork.utils.parser.UrlQuery;
     }
 
     @Override
-    public boolean canHandle(DownloadLink downloadLink, Account account) throws Exception {
+    public boolean canHandle(final DownloadLink downloadLink, final Account account) throws Exception {
         if (account == null) {
-            // freemode is possible if the link has a token
-            return StringUtils.isNotEmpty(downloadLink.getPluginPatternMatcher());
-        }
-        if (downloadLink != null) {
-            final String user = downloadLink.getStringProperty(REQUIRES_ACCOUNT, null);
-            if (user != null) {
-                return StringUtils.equalsIgnoreCase(user, account.getUser());
+            return false;
+        } else {
+            if (downloadLink != null) {
+                final String user = downloadLink.getStringProperty("requires_account", null);
+                if (user != null) {
+                    return StringUtils.equalsIgnoreCase(user, account.getUser());
+                }
             }
+            return super.canHandle(downloadLink, account);
         }
-        return super.canHandle(downloadLink, account);
-
     }
 
     @Override
-    public AccountInfo fetchAccountInfo(Account account) throws Exception {
+    public AccountInfo fetchAccountInfo(final Account account) throws Exception {
+        final String access_token = login(account);
         final AccountInfo ai = new AccountInfo();
-        try {
-            login(account, true);
-        } catch (final PluginException e) {
-            account.setValid(false);
-            throw e;
+        final GetRequest infoRequest = new GetRequest("https://api.put.io/v2/account/info");
+        infoRequest.getHeaders().put(new HTTPHeader("Authorization", "token " + access_token, false));
+        infoRequest.getHeaders().put(new HTTPHeader("User-Agent", "jdownloader", false));
+        infoRequest.getHeaders().put(new HTTPHeader("Accept", "application/json", false));
+        br.setFollowRedirects(true);
+        br.getPage(infoRequest);
+        final int responseCode = br.getHttpConnection().getResponseCode();
+        if (responseCode != 200) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        ai.setStatus("Premium user");
+        final HashMap<String, Object> infoResponse = JSonStorage.restoreFromString(br.toString(), TypeRef.HASHMAP, null);
+        final HashMap<String, Object> info = (HashMap<String, Object>) infoResponse.get("info");
+        final String dateExpireStr = (String) info.get("plan_expiration_date");
+        final long dateExpire = TimeFormatter.getMilliSeconds(dateExpireStr, "yyyy-MM-dd'T'HH:mm:ss", Locale.ENGLISH);
+        if (dateExpire - System.currentTimeMillis() > 0) {
+            ai.setValidUntil(dateExpire);
+            account.setType(AccountType.PREMIUM);
+        } else {
+            account.setType(AccountType.FREE);
+        }
         ai.setUnlimitedTraffic();
-        account.setValid(true);
         return ai;
     }
 
@@ -180,63 +88,57 @@ import org.appwork.utils.parser.UrlQuery;
     }
 
     @Override
-    public int getMaxSimultanFreeDownloadNum() {
-        return 20;
+    public void handleFree(DownloadLink link) throws Exception {
+        throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
     }
 
-    @Override
-    public void handleFree(DownloadLink link) throws Exception {
-        br.setFollowRedirects(true);
-        final String accessToken = getToken(link.getPluginPatternMatcher());
-        if (StringUtils.isNotEmpty(accessToken)) {
-            dl = jd.plugins.BrowserAdapter.openDownload(br, link, "https://put.io/v2/files/" + getID(link.getPluginPatternMatcher()) + "/download?token=" + accessToken, true, 0);
-            if (dl.getConnection().getContentType().contains("html")) {
-                br.followConnection();
-                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-            }
-            dl.startDownload();
-            return;
+    private String getToken(String url) {
+        return new Regex(url, "token=([a-fA-f0-9]+)").getMatch(0);
+    }
+
+    private boolean isZipStreamURL(final String url) {
+        return StringUtils.containsIgnoreCase(url, "/zipstream/");
+    }
+
+    private String getID(String url) throws PluginException {
+        final String id = new Regex(url, "(files|download)/(\\d+)").getMatch(1);
+        if (id == null) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        } else {
+            return id;
         }
-        throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
+    }
+
+    private boolean isDownload(URLConnectionAdapter con) {
+        return con.isOK() && (con.isContentDisposition() || !StringUtils.containsIgnoreCase(con.getContentType(), "text"));
     }
 
     @Override
     public void handlePremium(DownloadLink link, Account account) throws Exception {
-        requestFileInformation(link);
-        String id = getID(link.getPluginPatternMatcher());
-        String linkToken = getToken(link.getPluginPatternMatcher());
-        HeadRequest head = null;
-        String finalLink = null;
-
-        br.setFollowRedirects(false);
-        br.setAllowedResponseCodes(200, 302, 401);
-
-        login(account, false);
-        br.getPage(head = new HeadRequest(finalLink = createDownloadUrl(id, accessToken)));
-        if (head.getHttpConnection().getResponseCode() != 302) {
-            if (StringUtils.isEmpty(linkToken)) {
-
-                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-            } else {
-                // try with the linkToken
-                finalLink = createDownloadUrl(id, linkToken);
-                br.getPage(head = new HeadRequest(finalLink));
-                if (head.getHttpConnection().getResponseCode() != 302) {
-                    throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-                }
+        final String access_token = login(account);
+        final String url = getDownloadURL(link, access_token);
+        final Browser brc = br.cloneBrowser();
+        brc.setFollowRedirects(true);
+        brc.getHeaders().put("Authorization", "token " + access_token);
+        dl = jd.plugins.BrowserAdapter.openDownload(brc, link, url, true, 0);
+        final int responseCode = dl.getConnection().getResponseCode();
+        if (isDownload(dl.getConnection())) {
+            dl.startDownload();
+        } else if (responseCode == 404) {
+            try {
+                br.followConnection();
+            } catch (final IOException e) {
+                logger.log(e);
             }
-        }
-
-        dl = jd.plugins.BrowserAdapter.openDownload(br, link, finalLink, true, 0);
-        if (dl.getConnection().getContentType().contains("html")) {
-            br.followConnection();
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        } else {
+            try {
+                br.followConnection();
+            } catch (final IOException e) {
+                logger.log(e);
+            }
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        dl.startDownload();
-    }
-
-    private String createDownloadUrl(String id, String token) {
-        return "https://put.io/v2/files/" + id + "/download?token=" + token;
     }
 
     @Override
@@ -244,140 +146,86 @@ import org.appwork.utils.parser.UrlQuery;
         return false;
     }
 
-    @SuppressWarnings("unchecked")
-    private void login(final Account account, final boolean force) throws Exception {
-        synchronized (LOCK) {
-            try {
-                /** Load cookies */
-                br.setCookiesExclusive(true);
-                final Object ret = account.getProperty("cookies", null);
-                boolean acmatch = Encoding.urlEncode(account.getUser()).equals(account.getStringProperty("name", Encoding.urlEncode(account.getUser())));
-                if (acmatch) {
-                    acmatch = Encoding.urlEncode(account.getPass()).equals(account.getStringProperty("pass", Encoding.urlEncode(account.getPass())));
+    private String login(final Account account) throws Exception {
+        synchronized (account) {
+            final PutRequest authRequest = new PutRequest("https://api.put.io/v2/oauth2/authorizations/clients/" + CLIENT_ID + "?client_secret=" + CLIENT_SECRET);
+            final String credentials = account.getUser() + ":" + account.getPass();
+            final String auth = org.appwork.utils.encoding.Base64.encodeToString(credentials.getBytes("UTF-8"));
+            authRequest.getHeaders().put(new HTTPHeader("Authorization", "Basic " + auth, false));
+            authRequest.getHeaders().put(new HTTPHeader("User-Agent", "jdownloader", false));
+            authRequest.getHeaders().put(new HTTPHeader("Accept", "application/json", false));
+            br.setFollowRedirects(true);
+            br.getPage(authRequest);
+            final int responseCode = br.getHttpConnection().getResponseCode();
+            if (responseCode == 200) {
+                final HashMap<String, Object> authResponse = JSonStorage.restoreFromString(br.toString(), TypeRef.HASHMAP, null);
+                final String access_token = (String) authResponse.get("access_token");
+                if (access_token != null) {
+                    account.setProperty("access_token", access_token);
+                    return access_token;
+                } else {
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
-                String access_token = account.getStringProperty(ACCESS_TOKEN2);
-                String login_token2 = account.getStringProperty(LOGIN_TOKEN22);
-                if (acmatch && ret != null && ret instanceof HashMap<?, ?> && !force && StringUtils.isNotEmpty(access_token) && StringUtils.isNotEmpty(login_token2)) {
-                    final HashMap<String, String> cookies = (HashMap<String, String>) ret;
-                    if (account.isValid()) {
-
-                        this.accessToken = access_token;
-                        br.getHeaders().put(X_PUTIO_LOGIN_TOKEN, account.getStringProperty(LOGIN_TOKEN22));
-                        for (final Map.Entry<String, String> cookieEntry : cookies.entrySet()) {
-                            final String key = cookieEntry.getKey();
-                            final String value = cookieEntry.getValue();
-                            this.br.setCookie(COOKIE_HOST, key, value);
-                        }
-                        return;
-                    }
-                }
-                br.setFollowRedirects(true);
-                String infoJson = br.postPage("https://put.io/login", new UrlQuery().append("next", "/v2/account/info?access_token=1&intercom=1&sharing=1", true).append("name", account.getUser(), true).append("password", account.getPass(), true));
-                login_token2 = br.getCookie(br.getHost(), LOGIN_TOKEN22);
-
-                br.getHeaders().put(X_PUTIO_LOGIN_TOKEN, login_token2);
-                // String infoJson = br.getPage("https://put.io/v2/account/info?access_token=1&intercom=1&sharing=1");
-                InfoWrapper map = JSonStorage.restoreFromString(infoJson, new TypeRef<InfoWrapper>() {
-                });
-
-                if (map == null || map.getInfo() == null || StringUtils.isEmpty(map.getInfo().getAccess_token()) || StringUtils.isEmpty(login_token2)) {
-                    throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
-                }
-                accessToken = map.getInfo().getAccess_token();
-                account.setProperty(ACCESS_TOKEN2, accessToken);
-                account.setProperty(LOGIN_TOKEN22, login_token2);
-
-                if (br.getCookie(COOKIE_HOST, LOGIN_TOKEN22) == null) {
-                    throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
-                }
-                /** Save cookies */
-                final HashMap<String, String> cookies = new HashMap<String, String>();
-                final Cookies add = this.br.getCookies(COOKIE_HOST);
-                for (final Cookie c : add.getCookies()) {
-                    cookies.put(c.getKey(), c.getValue());
-                }
-                account.setProperty("name", Encoding.urlEncode(account.getUser()));
-                account.setProperty("pass", Encoding.urlEncode(account.getPass()));
-                account.setProperty("cookies", cookies);
-            } catch (final PluginException e) {
-                account.setProperty("cookies", Property.NULL);
-                throw e;
+            } else if (responseCode == 401) {
+                throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
+            } else {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
+        }
+    }
+
+    private String getDownloadURL(final DownloadLink link, String access_token) throws PluginException {
+        final String finalLink;
+        if (isZipStreamURL(link.getPluginPatternMatcher())) {
+            finalLink = link.getPluginPatternMatcher();
+        } else {
+            final String id = getID(link.getPluginPatternMatcher());
+            // final String linkToken = getToken(link.getPluginPatternMatcher());
+            if (id == null) {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            } else if (access_token == null) {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            }
+            finalLink = "https://api.put.io/v2/files/" + id + "/download?oauth_token=" + access_token;
+        }
+        if (finalLink == null) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        } else {
+            return finalLink;
         }
     }
 
     @Override
-    public AvailableStatus requestFileInformation(DownloadLink link) throws Exception {
-
-        // login(account, false);
-        String url = link.getPluginPatternMatcher();
-        link.setProperty(REQUIRES_ACCOUNT, null);
-        String token = getToken(url);
-        String id = getID(url);
-        boolean triedAtLeastOneAccount = false;
-        // first try accounts
-        for (Account account : AccountController.getInstance().getValidAccounts(getHost())) {
-
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
+        for (final Account account : AccountController.getInstance().getValidAccounts(getHost())) {
             try {
-                login(account, false);
-                triedAtLeastOneAccount = true;
-                String infoJson = br.getPage("https://put.io/v2/files/" + id + "?mp4_size=1&start_from=1&stream_url=1");
-                if (!br.getRequest().getHttpConnection().isOK()) {
-                    continue;
+                final String access_token = login(account);
+                final Request request = new HeadRequest(getDownloadURL(link, access_token));
+                request.getHeaders().put(new HTTPHeader("Authorization", "token " + access_token, false));
+                br.setFollowRedirects(true);
+                br.getPage(request);
+                final URLConnectionAdapter connection = br.getHttpConnection();
+                final int responseCode = connection.getResponseCode();
+                if (isDownload(connection)) {
+                    link.setDownloadSize(connection.getCompleteContentLength());
+                    link.setProperty("requires_account", account.getUser());
+                    if (connection.isContentDisposition()) {
+                        link.setFinalFileName(getFileNameFromDispositionHeader(connection));
+                    }
+                    return AvailableStatus.TRUE;
+                } else if (responseCode == 404) {
+                    throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+                } else {
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
                 }
-                FileWrapper fileInfo = JSonStorage.restoreFromString(infoJson, new TypeRef<FileWrapper>() {
-                });
-
-                if (fileInfo == null || fileInfo.getFile() == null || !"OK".equals(fileInfo.getStatus())) {
-                    continue;
+            } catch (final PluginException e) {
+                if (e.getLinkStatus() == LinkStatus.ERROR_FILE_NOT_FOUND) {
+                    throw e;
                 }
-                final String filename = fileInfo.getFile().getName();
-                final long filesize = fileInfo.getFile().getSize();
-                if (filename == null) {
-                    continue;
-                }
-                link.setHashInfo(HashInfo.newInstanceSafe(fileInfo.getFile().getCrc32(), TYPE.CRC32));
-                link.setFinalFileName(filename.trim());
-                link.setDownloadSize(filesize);
-                link.setProperty(REQUIRES_ACCOUNT, account.getUser());
-                return AvailableStatus.TRUE;
-
-            } catch (Throwable e) {
-                e.printStackTrace();
+                logger.log(e);
             }
         }
-
-        if (StringUtils.isNotEmpty(token)) {
-            br.setFollowRedirects(false);
-            br.getPage(createDownloadUrl(id, token));
-            String redirect = br.getRedirectLocation();
-            HeadRequest head = new HeadRequest(redirect);
-            br.getPage(head);
-
-            final String contentDisposition = head.getResponseHeader(HTTPConstants.HEADER_RESPONSE_CONTENT_DISPOSITION);
-            String filename = HTTPConnectionUtils.getFileNameFromDispositionHeader(contentDisposition);
-            long size = head.getHttpConnection().getCompleteContentLength();
-            if (br.containsHTML("File Not Found")) {
-                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-            }
-
-            link.setFinalFileName(filename);
-            link.setDownloadSize(size);
-            return AvailableStatus.TRUE;
-
-        } else if (!triedAtLeastOneAccount) {
-            throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
-        }
-
-        return AvailableStatus.FALSE;
-    }
-
-    private String getToken(String url) {
-        return new Regex(url, "token=([a-fA-f0-9]+)").getMatch(0);
-    }
-
-    private String getID(String url) {
-        return new Regex(url, "files/(\\d+)").getMatch(0);
+        throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
     }
 
     @Override

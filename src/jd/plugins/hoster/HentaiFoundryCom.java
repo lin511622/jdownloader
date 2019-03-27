@@ -13,17 +13,16 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
-import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
 import jd.PluginWrapper;
+import jd.config.ConfigContainer;
+import jd.config.ConfigEntry;
 import jd.config.Property;
 import jd.http.Browser;
-import jd.http.Browser.BrowserException;
 import jd.http.Cookie;
 import jd.http.Cookies;
 import jd.http.Request;
@@ -40,99 +39,118 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "hentai-foundry.com" }, urls = { "http://www\\.hentai\\-foundrydecrypted\\.com/pictures/user/[A-Za-z0-9\\-_]+/\\d+|http://www\\.hentai\\-foundry\\.com/stories/user/[A-Za-z0-9\\-_]+/\\d+/[A-Za-z0-9\\-_]+\\.pdf" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "hentai-foundry.com" }, urls = { "https?://www\\.hentai-foundry\\.com/pictures/user/[A-Za-z0-9\\-_]+/\\d+|https?://www\\.hentai-foundry\\.com/stories/user/[A-Za-z0-9\\-_]+/\\d+/[A-Za-z0-9\\-_]+\\.pdf" })
 public class HentaiFoundryCom extends PluginForHost {
-
     public HentaiFoundryCom(PluginWrapper wrapper) {
         super(wrapper);
-        this.enablePremium("http://www.hentai-foundry.com/users/create");
+        setConfigElements();
+        this.enablePremium("https://www.hentai-foundry.com/users/create");
     }
 
     /* DEV NOTES */
     // Tags:
     // protocol: no https
     // other: connections & downloads limites cause we re downloading small files
-
-    private static final String type_direct_pdf = "http://www\\.hentai\\-foundry\\.com/stories/user/[A-Za-z0-9\\-_]+/\\d+/[A-Za-z0-9\\-_]+\\.pdf";
-    private static final String type_picture    = "http://www\\.hentai\\-foundry\\.com/pictures/user/[A-Za-z0-9\\-_]+/\\d+";
-
+    private static final String type_direct_pdf = "https?://www\\.hentai\\-foundry\\.com/stories/user/[A-Za-z0-9\\-_]+/\\d+/[A-Za-z0-9\\-_]+\\.pdf";
+    private static final String type_picture    = "https?://www\\.hentai\\-foundry\\.com/pictures/user/[A-Za-z0-9\\-_]+/\\d+";
     private String              dllink          = null;
+    private boolean             server_issues   = false;
 
     @Override
     public String getAGBLink() {
-        return "http://www.hentai-foundry.com/";
+        return "https://www.hentai-foundry.com/";
     }
 
-    public void correctDownloadLink(final DownloadLink link) {
-        link.setUrlDownload(link.getDownloadURL().replace("hentai-foundrydecrypted.com/", "hentai-foundry.com/"));
+    private void setConfigElements() {
+        getConfig().addEntry(new ConfigEntry(ConfigContainer.TYPE_CHECKBOX, getPluginConfig(), "Filename_id", "Choose file name + id?").setDefaultValue(false));
+    }
+
+    public static String getFID(final String url) {
+        return new Regex(url, "/user/[A-Za-z0-9\\-_]+/(\\d+)").getMatch(0);
     }
 
     @SuppressWarnings("deprecation")
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws IOException, PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
         dllink = null;
+        server_issues = false;
         String filename = null;
         String ext = null;
-        this.setBrowserExclusive();
+        final String fid = getFID(downloadLink.getDownloadURL());
         br.setFollowRedirects(true);
         if (downloadLink.getDownloadURL().matches(type_direct_pdf)) {
             dllink = downloadLink.getDownloadURL() + "?enterAgree=1&size=0";
             ext = ".pdf";
-            filename = new Regex(downloadLink.getDownloadURL(), "([A-Za-z0-9\\-_]+\\.pdf)$").getMatch(0);
+            filename = fid + "_" + new Regex(downloadLink.getDownloadURL(), "([A-Za-z0-9\\-_]+\\.pdf)$").getMatch(0);
         } else {
             br.getPage(downloadLink.getDownloadURL() + "?enterAgree=1&size=0");
             if (br.getHttpConnection().getResponseCode() == 404) {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
             filename = br.getRegex("<title>([^<>]*?) - Hentai Foundry</title>").getMatch(0);
-            dllink = br.getRegex("(//pictures\\.hentai-foundry\\.com/{1,}[^<>\"]*?)\"").getMatch(0);
-            if (filename == null || dllink == null) {
+            dllink = br.getRegex("(//pictures\\.hentai-foundry\\.com/{1,}[^<>\"\\[\\]]+)\"").getMatch(0);
+            if (filename == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-            dllink = Request.getLocation(Encoding.htmlDecode(dllink), br.getRequest());
-            filename = Encoding.htmlDecode(filename);
+            if (dllink != null) {
+                dllink = Request.getLocation(Encoding.htmlDecode(dllink), br.getRequest());
+            }
+            if (getPluginConfig().getBooleanProperty("Filename_id", true)) {
+                filename = Encoding.htmlDecode(filename) + "_" + fid;
+            } else {
+                filename = fid + "_" + Encoding.htmlDecode(filename);
+            }
             filename = filename.trim();
             filename = encodeUnicode(filename);
         }
-        if (ext == null) {
+        if (ext == null && dllink != null) {
             ext = getFileNameExtensionFromString(dllink, ".png");
+            /*
+             * 2017-01-30: Fallback for some pictures - thei´r urls end with "." and they do not even have an extensions via browser -->
+             * Usually these are .jpg files.
+             */
+            if (!ext.matches("\\.[A-Za-z]{3,5}")) {
+                ext = ".jpg";
+            }
+        } else if (ext == null) {
+            ext = ".jpg";
         }
         if (!filename.endsWith(ext)) {
             filename += ext;
         }
         downloadLink.setFinalFileName(filename);
-        final Browser br2 = br.cloneBrowser();
-        // In case the link redirects to the finallink
-        br2.setFollowRedirects(true);
-        URLConnectionAdapter con = null;
-
-        try {
-            con = br.openHeadConnection(dllink);
-        } catch (final BrowserException e) {
-            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-        } finally {
+        if (dllink != null) {
+            URLConnectionAdapter con = null;
             try {
-                con.disconnect();
-            } catch (final Throwable e) {
+                con = br.openHeadConnection(dllink);
+            } finally {
+                try {
+                    con.disconnect();
+                } catch (final Throwable e) {
+                }
+            }
+            if (!con.getContentType().contains("html")) {
+                downloadLink.setDownloadSize(con.getLongContentLength());
+            } else {
+                server_issues = true;
             }
         }
-        if (!con.getContentType().contains("html")) {
-            downloadLink.setDownloadSize(con.getLongContentLength());
-        } else {
-            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
-        }
-        downloadLink.setProperty("directlink", dllink);
         return AvailableStatus.TRUE;
     }
 
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception, PluginException {
         requestFileInformation(downloadLink);
-        doFree(downloadLink, true, 1, "free_directlink");
+        doFree(downloadLink, false, 1, "free_directlink");
     }
 
     private void doFree(final DownloadLink downloadLink, final boolean resumable, final int maxchunks, final String directlinkproperty) throws Exception, PluginException {
-        dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, resumable, maxchunks);
+        if (server_issues) {
+            throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Unknown server error", 5 * 60 * 1000l);
+        } else if (dllink == null) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, downloadLink, dllink, resumable, maxchunks);
         if (dl.getConnection().getContentType().contains("html")) {
             if (dl.getConnection().getResponseCode() == 403) {
                 throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Server error 403", 60 * 60 * 1000l);
@@ -176,8 +194,8 @@ public class HentaiFoundryCom extends PluginForHost {
                     }
                 }
                 br.setFollowRedirects(true);
-                br.getPage("http://www.hentai-foundry.com/?enterAgree=1&size=0");
-                final String csrftoken = br.getRegex("value=\"([a-z0-9]+)\" name=\"YII_CSRF_TOKEN\"").getMatch(0);
+                br.getPage("https://www.hentai-foundry.com/?enterAgree=1&size=0");
+                final String csrftoken = br.getRegex("value=\"([^\"]+)\" name=\"YII_CSRF_TOKEN\"").getMatch(0);
                 if (csrftoken == null) {
                     if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nPlugin defekt, bitte den JDownloader Support kontaktieren!", PluginException.VALUE_ID_PREMIUM_DISABLE);
@@ -188,7 +206,7 @@ public class HentaiFoundryCom extends PluginForHost {
                     }
                 }
                 br.postPage("/site/login", "LoginForm%5BrememberMe%5D=1&YII_CSRF_TOKEN=" + csrftoken + "&LoginForm%5Busername%5D=" + Encoding.urlEncode(account.getUser()) + "&LoginForm%5Bpassword%5D=" + Encoding.urlEncode(account.getPass()));
-                if (!br.containsHTML("site/logout\\'>Logout</a>")) {
+                if (!br.containsHTML("site/logout'>Logout</a>")) {
                     if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     } else {
@@ -216,7 +234,7 @@ public class HentaiFoundryCom extends PluginForHost {
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         final AccountInfo ai = new AccountInfo();
         try {
-            login(this.br, account, true);
+            login(br, account, true);
         } catch (PluginException e) {
             account.setValid(false);
             throw e;
@@ -233,11 +251,9 @@ public class HentaiFoundryCom extends PluginForHost {
 
     @Override
     public void handlePremium(final DownloadLink link, final Account account) throws Exception {
+        login(br, account, false);
         requestFileInformation(link);
-        login(this.br, account, false);
-        br.setFollowRedirects(false);
-        br.getPage(link.getDownloadURL());
-        doFree(link, true, 1, "account_free_directlink");
+        doFree(link, false, 1, "account_free_directlink");
     }
 
     @Override

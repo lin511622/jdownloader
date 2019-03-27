@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -30,9 +29,8 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "romhustler.net" }, urls = { "http://(www\\.)?romhustler\\.net/(?:file|download)/\\d+/[A-Za-z0-9/\\+=%]+" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "romhustler.net" }, urls = { "http://(www\\.)?romhustler\\.net/(?:file|download)/\\d+/[A-Za-z0-9/\\+=%]+" })
 public class RomHustlerNet extends PluginForHost {
-
     public RomHustlerNet(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -64,7 +62,17 @@ public class RomHustlerNet extends PluginForHost {
         this.setBrowserExclusive();
         prepBrowser(br);
         final String decrypterLink = downloadLink.getStringProperty("decrypterLink", null);
-        br.getPage(decrypterLink);
+        if (decrypterLink == null) {
+            /* This should never happen. */
+            // throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            br.getPage(downloadLink.getDownloadURL());
+            String filename = br.getRegex("itemprop=\"name\">([^<>]+)</h1>").getMatch(0);
+            if (filename != null) {
+                downloadLink.setName(filename + " " + System.currentTimeMillis());
+            }
+        } else {
+            br.getPage(decrypterLink);
+        }
         String jslink = br.getRegex("\"(/js/cache[a-z0-9\\-]+\\.js)\"").getMatch(0);
         if (jslink != null) {
             try {
@@ -87,7 +95,6 @@ public class RomHustlerNet extends PluginForHost {
             }
             sleep(wait * 1001l, downloadLink);
         }
-
         final String fuid = new Regex(downloadLink.getDownloadURL(), "/(\\d+)/").getMatch(0);
         if (fuid == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -100,7 +107,6 @@ public class RomHustlerNet extends PluginForHost {
             br2.getPage("/link/" + fuid + "?_=" + System.currentTimeMillis());
             ddlink = br2.getRegex("\"hashed\":\"(http:[^<>\"]*?)\"").getMatch(0);
         }
-
         if (ddlink == null || !ddlink.startsWith("http") || ddlink.length() > 500) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
@@ -108,13 +114,11 @@ public class RomHustlerNet extends PluginForHost {
         if (downloadLink.getBooleanProperty("splitlink", false)) {
             ddlink += "/1";
         }
-
         dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, ddlink, true, -4);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-
         String filename = getFileNameFromHeader(dl.getConnection());
         filename = Encoding.htmlDecode(filename);
         downloadLink.setFinalFileName(filename);
@@ -129,5 +133,4 @@ public class RomHustlerNet extends PluginForHost {
 
     public void resetPluginGlobals() {
     }
-
 }

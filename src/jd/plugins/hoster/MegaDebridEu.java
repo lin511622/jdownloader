@@ -13,35 +13,38 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 
 import jd.PluginWrapper;
 import jd.config.Property;
+import jd.http.Browser;
 import jd.nutils.encoding.Encoding;
 import jd.plugins.Account;
+import jd.plugins.Account.AccountType;
 import jd.plugins.AccountInfo;
+import jd.plugins.AccountInvalidException;
+import jd.plugins.AccountUnavailableException;
 import jd.plugins.DownloadLink;
 import jd.plugins.DownloadLink.AvailableStatus;
 import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
+import jd.plugins.components.PluginJSonUtils;
 
 import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
+import org.jdownloader.scripting.JavaScriptEngineFactory;
 
 @HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "mega-debrid.eu" }, urls = { "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsdgfd32423" })
 public class MegaDebridEu extends PluginForHost {
-
     private static HashMap<Account, HashMap<String, Long>> hostUnavailableMap = new HashMap<Account, HashMap<String, Long>>();
     private static final String                            NOCHUNKS           = "NOCHUNKS";
-    private static Object                                  ACCLOCK            = new Object();
     private final String                                   mName              = "www.mega-debrid.eu";
-    private final String                                   mProt              = "http://";
+    private final String                                   mProt              = "https://";
 
     public MegaDebridEu(PluginWrapper wrapper) {
         super(wrapper);
@@ -58,67 +61,72 @@ public class MegaDebridEu extends PluginForHost {
         return new FEATURE[] { FEATURE.MULTIHOST };
     }
 
+    private void prepBrowser(final Browser br) {
+        br.setFollowRedirects(true);
+        br.setCustomCharset("UTF-8");
+        br.getHeaders().put("User-Agent", "JDownloader-" + Math.max(super.getVersion(), 0));
+    }
+
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
         AccountInfo ac = new AccountInfo();
-        br.setConnectTimeout(60 * 1000);
-        br.setReadTimeout(60 * 1000);
-        br.setFollowRedirects(true);
-        final String token = login(account);
-        if (!"ok".equalsIgnoreCase(getJson("response_code"))) {
-            ac.setStatus("\r\nInvalid username/password!\r\nFalscher Benutzername/Passwort!");
-            logger.severe("mega-debrid.eu: Error, can not parse left days. Account: " + account.getUser() + "\r\nAPI response:\r\n\r\n" + br.toString());
-            account.setValid(false);
-            return ac;
-        }
-        if (token != null) {
-            account.setProperty("token", token);
-        } else {
-            logger.warning("token could not be found");
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-        }
-        ac.setValidUntil(-1);
-        final String daysLeft = getJson("vip_end");
+        prepBrowser(br);
+        login(account);
+        final String daysLeft = PluginJSonUtils.getJson(br, "vip_end");
         if (daysLeft != null && !"0".equals(daysLeft)) {
             ac.setValidUntil(Long.parseLong(daysLeft) * 1000l);
         } else if ("0".equals(daysLeft)) {
             ac.setExpired(true);
-            ac.setStatus("No vip? Expired?");
+            account.setType(AccountType.FREE);
+            ac.setStatus("Free Account!");
             return ac;
         } else {
-            ac.setStatus("Can not determine account expire time!");
-            logger.severe("Error, can not parse left days. API response:\r\n\r\n" + br.toString());
-            account.setValid(false);
-            return ac;
+            throw new AccountInvalidException();
         }
-
         // now it's time to get all supported hosts
-        br.getPage("/api.php?action=getHosters");
-        if (!"ok".equalsIgnoreCase(getJson("response_code"))) {
-            ac.setStatus("can not get supported hosts");
-            logger.severe("Error, can not parse supported hosts. API response:\r\n\r\n" + br.toString());
-            account.setValid(false);
-            return ac;
+        br.getPage("/api.php?action=getHostersList");
+        final LinkedHashMap<String, Object> results = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaMap(br.toString());
+        if (!"ok".equalsIgnoreCase((String) results.get("response_code"))) {
+            throw new AccountInvalidException();
         }
-        String[] hosts = br.getRegex("\\[\"([a-z0-9\\.\\-]+)\"").getColumn(0);
-        ArrayList<String> supportedHosts = new ArrayList<String>(Arrays.asList(hosts));
-        account.setValid(true);
+        final ArrayList<String> supportedHosts = new ArrayList<String>();
+        for (final Object resultz : (ArrayList<Object>) results.get("hosters")) {
+            final LinkedHashMap<String, Object> r = (LinkedHashMap<String, Object>) resultz;
+            if (!"up".equals(r.get("status")) || r.get("domains") == null) {
+                continue;
+            }
+            for (final String domain : (ArrayList<String>) r.get("domains")) {
+                supportedHosts.add(domain);
+            }
+        }
         ac.setMultiHostSupport(this, supportedHosts);
-        ac.setStatus("Account valid");
+        account.setType(AccountType.PREMIUM);
+        ac.setStatus("Premium Account");
         return ac;
     }
 
     private String login(Account account) throws Exception {
-        synchronized (ACCLOCK) {
+        synchronized (account) {
             br.getPage(mProt + mName + "/api.php?action=connectUser&login=" + Encoding.urlEncode(account.getUser()) + "&password=" + Encoding.urlEncode(account.getPass()));
-            final String token = getJson("token");
+            if (br.getHttpConnection().getResponseCode() == 403 || br.getHttpConnection().getResponseCode() == 404) {
+                // server issue
+                throw new PluginException(LinkStatus.ERROR_PREMIUM, "Host provider has server issues!", PluginException.VALUE_ID_PREMIUM_TEMP_DISABLE);
+            }
+            final String token = PluginJSonUtils.getJson(br, "token");
+            if (!"ok".equalsIgnoreCase(PluginJSonUtils.getJson(br, "response_code"))) {
+                throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
+            }
+            if (token != null) {
+                account.setProperty("token", token);
+            } else {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            }
             return token;
         }
     }
 
     /** no override to keep plugin compatible to old stable */
     public void handleMultiHost(final DownloadLink link, final Account account) throws Exception {
-
         synchronized (hostUnavailableMap) {
             HashMap<String, Long> unavailableMap = hostUnavailableMap.get(account);
             if (unavailableMap != null) {
@@ -134,8 +142,7 @@ public class MegaDebridEu extends PluginForHost {
                 }
             }
         }
-
-        String url = link.getDownloadURL();
+        String url = link.getDefaultPlugin().buildExternalDownloadURL(link, this);
         // link corrections
         if (link.getHost().matches("ddlstorage\\.com")) {
             // needs full url!
@@ -148,9 +155,8 @@ public class MegaDebridEu extends PluginForHost {
             url += "/n/" + link.getName();
         }
         url = Encoding.urlEncode(url);
-
         showMessage(link, "Phase 1/2: Generate download link");
-        br.setFollowRedirects(true);
+        prepBrowser(br);
         String token = account.getStringProperty("token", null);
         if (token == null) {
             // this shouldn't happen!
@@ -162,7 +168,7 @@ public class MegaDebridEu extends PluginForHost {
         }
         for (int i = 0; i != 3; i++) {
             br.postPage(mProt + mName + "/api.php?action=getLink&token=" + token, "link=" + url);
-            if ("TOKEN_ERROR".equalsIgnoreCase(getJson("response_code")) && "Token error, please log-in".equalsIgnoreCase(getJson("response_text"))) {
+            if ("TOKEN_ERROR".equalsIgnoreCase(PluginJSonUtils.getJson(br, "response_code")) && "Token error, please log-in".equalsIgnoreCase(PluginJSonUtils.getJson(br, "response_text"))) {
                 if (i == 2) {
                     // big problem!
                     throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\n BIG PROBLEM_2", PluginException.VALUE_ID_PREMIUM_DISABLE);
@@ -202,21 +208,35 @@ public class MegaDebridEu extends PluginForHost {
         }
         String dllink = br.getRegex("\"debridLink\":\"(.*?)\"\\}").getMatch(0);
         if (dllink == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            final String responseCode = PluginJSonUtils.getJson(br, "response_code");
+            if (br.containsHTML("Limite de lien dépassée pour cet hébergeur")) {
+                tempUnavailableHoster(account, link, 60 * 60 * 1000l);
+            } else if (br.containsHTML("Limite de trafic dépassée pour cet hébergeur")) {
+                tempUnavailableHoster(account, link, 10 * 60 * 1000l);
+            } else if ("UNALLOWED_IP".equals(responseCode)) {
+                throw new AccountUnavailableException("UNALLOWED_IP", 6 * 60 * 1000l);
+            } else if (br.containsHTML("VPN, proxy ou serveur détecté\\.")) {
+                throw new AccountInvalidException("VPN/Proxy/Dedicated Server Prohibitied");
+            } else if ("UNRESTRICTING_ERROR".equals(responseCode)) {
+                throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE);
+            } else {
+                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+            }
         }
         dllink = dllink.replace("\\", "").replace("\"", "");
         showMessage(link, "Phase 2/2: Download");
-
         int maxChunks = 0;
         if (link.getBooleanProperty(NOCHUNKS, false)) {
             maxChunks = 1;
         }
-
-        dl = jd.plugins.BrowserAdapter.openDownload(br, link, dllink, true, maxChunks);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, link, dllink, true, maxChunks);
         if (dl.getConnection().getContentType().contains("html")) {
             br.followConnection();
             if (br.containsHTML(">400 Bad Request<")) {
                 logger.info("Temporarily removing hoster from hostlist because of server error 400");
+                tempUnavailableHoster(account, link, 10 * 60 * 1000l);
+            } else if (br.containsHTML("Erreur#")) {
+                logger.info("Temporarily removing hoster from hostlist because of server error");
                 tempUnavailableHoster(account, link, 10 * 60 * 1000l);
             }
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -281,14 +301,6 @@ public class MegaDebridEu extends PluginForHost {
         return true;
     }
 
-    private String getJson(final String parameter) {
-        String result = br.getRegex("\"" + parameter + "\":(\\d+)").getMatch(0);
-        if (result == null) {
-            result = br.getRegex("\"" + parameter + "\":\"([^<>\"]*?)\"").getMatch(0);
-        }
-        return result;
-    }
-
     @Override
     public void reset() {
     }
@@ -296,5 +308,4 @@ public class MegaDebridEu extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

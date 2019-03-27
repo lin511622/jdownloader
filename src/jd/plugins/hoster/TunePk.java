@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.util.ArrayList;
@@ -31,13 +30,12 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
-import jd.plugins.components.PluginJSonUtils;
 
+import org.appwork.utils.StringUtils;
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
 @HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "tune.pk" }, urls = { "https?://(?:www\\.)?tune\\.pk/player/embed_player\\.php\\?vid=\\d+|https?://embed\\.tune\\.pk/play/\\d+|https?(?:www\\.)?://tune\\.pk/video/\\d+" })
 public class TunePk extends PluginForHost {
-
     public TunePk(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -46,14 +44,12 @@ public class TunePk extends PluginForHost {
     // Tags:
     // protocol: no https
     // other:
-
     /* Extension which will be used if no correct extension is found */
     private static final String  default_Extension = ".mp4";
     /* Connection stuff */
     private static final boolean free_resume       = true;
     private static final int     free_maxchunks    = 0;
     private static final int     free_maxdownloads = -1;
-
     private String               dllink            = null;
     private boolean              server_issues     = false;
     BrowserException             e                 = null;
@@ -72,20 +68,44 @@ public class TunePk extends PluginForHost {
         this.setBrowserExclusive();
         br.setFollowRedirects(true);
         final String fid = new Regex(link.getDownloadURL(), "(\\d+)").getMatch(0);
-        br.getPage("http://embed." + this.getHost() + "/play/" + fid + "?autoplay=no&ssl=no&inline=true");
-        if (br.getHttpConnection().getResponseCode() == 404 || this.br.containsHTML("class=\"gotune\"")) {
+        link.setName(fid);
+        // br.getPage("https://embed." + this.getHost() + "/play/" + fid + "?autoplay=no&ssl=no&inline=true");
+        // br.getPage(link.getDownloadURL().replace("http:", "https:"));
+        /* 2017-04-27: apikey from website: 777750fea4d3bd585bf47dc1873619fc */
+        br.getPage("https://" + this.getHost() + "/api_public/playerConfigs/?api_key=777750fea4d3bd585bf47dc1873619fc&id=" + fid + "&autoplay=yes&embed=true&country=de");
+        if (br.getHttpConnection().getResponseCode() == 404 || br.containsHTML("class=\"gotune\"|>Not available!<|Video does not exist")) {
             /* E.g. Woops,<br>this video has been deactivated <a href="//tune.pk" class="gotune" target="_blank">Goto tune.pk</a> */
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-
-        /* Find highest quality */
-        // final String json_sources = this.br.getRegex("_details\\.player\\.sources[\t\n\r ]*?=[\t\n\r ]*?(\\[\\{.*?\\}\\])").getMatch(0);
-        final String json_sources = this.br.getRegex("sources\":(\\[\\{.*?\\}\\])").getMatch(0);
-        if (json_sources == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        if (br.containsHTML("Unable to load player configurations")) {
+            br.getPage("https://embed." + getHost() + "/play/" + fid + "?autoplay=no&ssl=yes&inline=true");
+            if (br.containsHTML(">this video has been deactivated")) {
+                throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+            }
+            dllink = br.getRegex("contentURL\" content=\"([^<>\"]+)\"").getMatch(0);
+            checkSize(link, dllink);
+            String filename = getTitleFromEmbedWebsite();
+            filename = Encoding.htmlDecode(filename);
+            filename = filename.trim();
+            filename = encodeUnicode(filename);
+            String ext = getFileNameExtensionFromString(dllink, default_Extension);
+            if (dllink != null && ext == null) {
+                ext = getFileNameExtensionFromString(dllink, default_Extension);
+                if (StringUtils.isEmpty(ext)) {
+                    ext = default_Extension;
+                }
+            }
+            link.setFinalFileName(filename);
+            return AvailableStatus.TRUE;
         }
-        LinkedHashMap<String, Object> entries = null;
-        final ArrayList<Object> ressourcelist = (ArrayList<Object>) JavaScriptEngineFactory.jsonToJavaObject(json_sources);
+        LinkedHashMap<String, Object> entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaMap(br.toString());
+        String filename = (String) JavaScriptEngineFactory.walkJson(entries, "data/details/video/title");
+        final String errormessage = (String) JavaScriptEngineFactory.walkJson(entries, "data/error/message");
+        if (!StringUtils.isEmpty(errormessage) && errormessage.equalsIgnoreCase("This video has been deactivated")) {
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        }
+        /* Find highest quality */
+        final ArrayList<Object> ressourcelist = (ArrayList<Object>) JavaScriptEngineFactory.walkJson(entries, "data/details/player/sources");
         String dllinktemp = null;
         long bitratetemp = 0;
         long bitratemax = 0;
@@ -98,30 +118,18 @@ public class TunePk extends PluginForHost {
                 dllink = dllinktemp;
             }
         }
-
-        String filename = br.getRegex("details\\.video\\.title[\t\n\r ]*?=[\t\n\r ]*?\\'([^<>\"\\']+)\\';").getMatch(0);
-        if (filename == null) {
-            filename = br.getRegex("<title>([^<>\"]+) \\| Tune\\.pk</title>").getMatch(0);
-        }
-        if (filename == null) {
-            filename = br.getRegex("itemprop=\"name\">([^<>\"]*?)<").getMatch(0);
-        }
-        if (filename == null) {
-            filename = br.getRegex("<title>([^<>\"]*?)</title>").getMatch(0);
-        }
-        if (filename == null) {
+        if (StringUtils.isEmpty(filename)) {
             filename = fid;
         }
-        if (filename == null || dllink == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-        }
-        dllink = Encoding.htmlDecode(dllink);
         filename = Encoding.htmlDecode(filename);
         filename = filename.trim();
         filename = encodeUnicode(filename);
-        String ext = PluginJSonUtils.getJsonValue(json_sources, "type");
+        String ext = getFileNameExtensionFromString(dllink, default_Extension);
         if (dllink != null && ext == null) {
             ext = getFileNameExtensionFromString(dllink, default_Extension);
+            if (StringUtils.isEmpty(ext)) {
+                ext = default_Extension;
+            }
         }
         /* Make sure that we get a correct extension */
         if (ext == null || !ext.matches("\\.[A-Za-z0-9]{3,5}")) {
@@ -188,6 +196,43 @@ public class TunePk extends PluginForHost {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         dl.startDownload();
+    }
+
+    /** For embed.tune.pk. */
+    private String getTitleFromEmbedWebsite() {
+        String title = br.getRegex("details\\.video\\.title[\t\n\r ]*?=[\t\n\r ]*?\\'([^<>\"\\']+)\\';").getMatch(0);
+        if (title == null) {
+            title = br.getRegex("<title>([^<>\"]+) \\| Tune\\.pk</title>").getMatch(0);
+        }
+        if (title == null) {
+            title = br.getRegex("itemprop=\"name\">([^<>\"]*?)<").getMatch(0);
+        }
+        if (title == null) {
+            title = br.getRegex("<title>([^<>\"]*?)</title>").getMatch(0);
+        }
+        return title;
+    }
+
+    private String checkSize(final DownloadLink link, final String flink) throws Exception {
+        URLConnectionAdapter con = null;
+        final Browser br2 = br.cloneBrowser();
+        br2.setFollowRedirects(true);
+        try {
+            con = br2.openGetConnection(flink);
+            if (!con.getContentType().contains("html")) {
+                link.setDownloadSize(con.getLongContentLength());
+                dllink = flink;
+            } else {
+                dllink = null;
+            }
+        } catch (final Exception e) {
+        } finally {
+            try {
+                con.disconnect();
+            } catch (final Exception e) {
+            }
+        }
+        return dllink;
     }
 
     @Override

@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.text.SimpleDateFormat;
@@ -35,9 +34,8 @@ import org.jdownloader.downloader.hls.HLSDownloader;
 import org.jdownloader.plugins.components.hls.HlsContainer;
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
-@HostPlugin(revision = "$Revision: 32254 $", interfaceVersion = 3, names = { "svt.se" }, urls = { "https?://(?:www\\.)?(?:svt|svtplay)\\.se/.+" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "svt.se" }, urls = { "https?://(?:www\\.)?(?:svt|svtplay)\\.se/.+" })
 public class SvtSe extends PluginForHost {
-
     public SvtSe(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -62,19 +60,21 @@ public class SvtSe extends PluginForHost {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         link.setLinkID(this.videoid);
-        br.getPage("http://www.svt.se/videoplayer-api/video/" + this.videoid);
+        br.getPage("http://api.svt.se/video/" + this.videoid);
         if (br.getHttpConnection().getResponseCode() == 404) {
             /* Strange result on 404: {"message":"To many retry attempts to video API","status":404} */
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         entries = (LinkedHashMap<String, Object>) JavaScriptEngineFactory.jsonToJavaObject(br.toString());
-
         final String channel = "svtplay";
         final String date = (String) JavaScriptEngineFactory.walkJson(entries, "rights/date/forDate");
         final String title = (String) entries.get("programTitle");
-        final String subtitle = (String) entries.get("episodeTitle");
-        if (title == null || subtitle == null || channel == null) {
+        String subtitle = (String) entries.get("episodeTitle");
+        if (title == null || channel == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        }
+        if (subtitle == null) {
+            subtitle = "";
         }
         final String date_formatted = formatDate(date);
         String filename = "";
@@ -83,9 +83,7 @@ public class SvtSe extends PluginForHost {
         }
         filename += channel + "_" + title + " - " + subtitle + ".mp4";
         filename = encodeUnicode(filename);
-
         link.setFinalFileName(filename);
-
         return AvailableStatus.TRUE;
     }
 
@@ -103,7 +101,9 @@ public class SvtSe extends PluginForHost {
             }
             if (format.equals("hls")) {
                 hls_master = (String) entries.get("url");
-                break;
+                if (hls_master != null) {
+                    break;
+                }
             }
         }
         if (hls_master == null) {
@@ -117,7 +117,7 @@ public class SvtSe extends PluginForHost {
         if (hlsbest == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
-        final String url_hls = hlsbest.downloadurl;
+        final String url_hls = hlsbest.getDownloadurl();
         checkFFmpeg(downloadLink, "Download a HLS Stream");
         dl = new HLSDownloader(downloadLink, br, url_hls);
         dl.startDownload();
@@ -155,5 +155,4 @@ public class SvtSe extends PluginForHost {
     @Override
     public void resetDownloadlink(final DownloadLink link) {
     }
-
 }

@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.File;
@@ -51,9 +50,8 @@ import org.appwork.utils.formatter.SizeFormatter;
 import org.appwork.utils.formatter.TimeFormatter;
 import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "rarefile.net" }, urls = { "https?://(www\\.)?rarefile\\.net/[a-z0-9]{12}" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "rarefile.net" }, urls = { "https?://(www\\.)?rarefile\\.net/[a-z0-9]{12}" })
 public class RareFileNet extends PluginForHost {
-
     private String              correctedBR         = "";
     private static final String PASSWORDTEXT        = "(<br><b>Password:</b> <input|<br><b>Passwort:</b> <input)";
     private static final String COOKIE_HOST         = "http://rarefile.net";
@@ -68,7 +66,6 @@ public class RareFileNet extends PluginForHost {
     // free: Allows 1 chunk (no resume) + 2? maxsimdl (45min waits)
     // protocol: Has https cert but httpd not setup correctly
     // captchatype: 4dignum
-
     @Override
     public void correctDownloadLink(DownloadLink link) {
         link.setUrlDownload(link.getDownloadURL().replace("https://", "http://"));
@@ -109,7 +106,7 @@ public class RareFileNet extends PluginForHost {
         br.setCookie(COOKIE_HOST, "lang", "english");
         br.getPage(link.getDownloadURL());
         doSomething();
-        if (new Regex(correctedBR, Pattern.compile("(No such file|>File Not Found<|>The file was removed by|Reason (of|for) deletion:\n)", Pattern.CASE_INSENSITIVE)).matches()) {
+        if (new Regex(correctedBR, Pattern.compile("(No such file|>File Not Found<|>The file was removed by|Reason (of|for) deletion:\n|>This server has crashed)", Pattern.CASE_INSENSITIVE)).matches()) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         if (correctedBR.contains(MAINTENANCE)) {
@@ -141,7 +138,7 @@ public class RareFileNet extends PluginForHost {
             if (filesize == null) {
                 filesize = new Regex(correctedBR, "</font>[ ]+\\((.*?)\\)(.*?)</font>").getMatch(0);
                 if (filesize == null) {
-                    filesize = new Regex(correctedBR, "([\\d\\.]+ ?(GB|MB))").getMatch(0);
+                    filesize = new Regex(correctedBR, ">Size ?: ?([\\d\\.]+ ?(GB|MB))").getMatch(0);
                 }
             }
         }
@@ -175,7 +172,6 @@ public class RareFileNet extends PluginForHost {
             logger.info("Found md5hash: " + md5hash);
             downloadLink.setMD5Hash(md5hash);
         }
-
         String dllink = null;
         if (getLinkWithoutLogin) {
             dllink = downloadLink.getStringProperty("freelink");
@@ -204,7 +200,6 @@ public class RareFileNet extends PluginForHost {
                 dllink = null;
             }
         }
-
         /**
          * Video links can already be found here, if a link is found here we can skip wait times and captchas
          */
@@ -229,7 +224,6 @@ public class RareFileNet extends PluginForHost {
                 password = true;
                 logger.info("The downloadlink seems to be password protected.");
             }
-
             /* Captcha START */
             if (correctedBR.contains(";background:#ccc;text-align")) {
                 logger.info("Detected captcha method \"plaintext captchas\" for this host");
@@ -390,7 +384,7 @@ public class RareFileNet extends PluginForHost {
             }
         }
         /** Wait time reconnect handling */
-        if (new Regex(correctedBR, "(You have reached the download\\-limit|You have to wait)").matches()) {
+        if (new Regex(correctedBR, "(You have reached the download\\-limit|class=\"err\">You have to wait)").matches()) {
             String tmphrs = new Regex(correctedBR, "\\s+(\\d+)\\s+hours?").getMatch(0);
             if (tmphrs == null) {
                 tmphrs = new Regex(correctedBR, "You have to wait.*?\\s+(\\d+)\\s+hours?").getMatch(0);
@@ -476,26 +470,21 @@ public class RareFileNet extends PluginForHost {
 
     private String decodeDownloadLink(String s) {
         String decoded = null;
-
         try {
             Regex params = new Regex(s, "\\'(.*?[^\\\\])\\',(\\d+),(\\d+),\\'(.*?)\\'");
-
             String p = params.getMatch(0).replaceAll("\\\\", "");
             int a = Integer.parseInt(params.getMatch(1));
             int c = Integer.parseInt(params.getMatch(2));
             String[] k = params.getMatch(3).split("\\|");
-
             while (c != 0) {
                 c--;
                 if (k[c].length() != 0) {
                     p = p.replaceAll("\\b" + Integer.toString(c, a) + "\\b", k[c]);
                 }
             }
-
             decoded = p;
         } catch (Exception e) {
         }
-
         String finallink = null;
         if (decoded != null) {
             finallink = new Regex(decoded, "name=\"src\"value=\"(.*?)\"").getMatch(0);
@@ -522,12 +511,7 @@ public class RareFileNet extends PluginForHost {
     @Override
     public AccountInfo fetchAccountInfo(Account account) throws Exception {
         AccountInfo ai = new AccountInfo();
-        try {
-            login(account, true);
-        } catch (PluginException e) {
-            account.setValid(false);
-            return ai;
-        }
+        login(account, true);
         String space = br.getRegex(Pattern.compile("<td>Used space:</td>.*?<td.*?b>([0-9\\.]+) of [0-9\\.]+ (Mb|GB)</b>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE)).getMatch(0);
         if (space != null) {
             ai.setUsedSpace(space.trim() + " Mb");
@@ -683,7 +667,9 @@ public class RareFileNet extends PluginForHost {
                 account.setProperty("pass", Encoding.urlEncode(account.getPass()));
                 account.setProperty("cookies", cookies);
             } catch (final PluginException e) {
-                account.setProperty("cookies", Property.NULL);
+                if (e.getLinkStatus() == LinkStatus.ERROR_PREMIUM) {
+                    account.setProperty("cookies", Property.NULL);
+                }
                 throw e;
             }
         }
@@ -720,5 +706,4 @@ public class RareFileNet extends PluginForHost {
     public SiteTemplate siteTemplateType() {
         return SiteTemplate.SibSoft_XFileShare;
     }
-
 }

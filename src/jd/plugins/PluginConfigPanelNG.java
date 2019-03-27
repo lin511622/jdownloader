@@ -2,6 +2,7 @@ package jd.plugins;
 
 import java.awt.Color;
 import java.awt.Component;
+import java.awt.Container;
 import java.awt.Graphics;
 import java.awt.Rectangle;
 import java.awt.event.ActionEvent;
@@ -38,6 +39,7 @@ import jd.controlling.AccountControllerListener;
 import jd.gui.swing.jdgui.JDGui;
 import jd.gui.swing.jdgui.views.settings.ConfigurationView;
 import jd.gui.swing.jdgui.views.settings.components.Checkbox;
+import jd.gui.swing.jdgui.views.settings.components.ComboBox;
 import jd.gui.swing.jdgui.views.settings.components.Label;
 import jd.gui.swing.jdgui.views.settings.components.Spinner;
 import jd.gui.swing.jdgui.views.settings.components.TextInput;
@@ -52,6 +54,7 @@ import org.appwork.storage.config.ConfigInterface;
 import org.appwork.storage.config.JsonConfig;
 import org.appwork.storage.config.annotations.DescriptionForConfigEntry;
 import org.appwork.storage.config.handler.BooleanKeyHandler;
+import org.appwork.storage.config.handler.EnumKeyHandler;
 import org.appwork.storage.config.handler.IntegerKeyHandler;
 import org.appwork.storage.config.handler.KeyHandler;
 import org.appwork.storage.config.handler.LongKeyHandler;
@@ -94,7 +97,6 @@ import org.jdownloader.premium.BuyAndAddPremiumAccount;
 import org.jdownloader.premium.BuyAndAddPremiumDialogInterface;
 import org.jdownloader.settings.GraphicalUserInterfaceSettings;
 import org.jdownloader.settings.staticreferences.CFG_GUI;
-import org.jdownloader.statistics.StatsManager;
 import org.jdownloader.updatev2.gui.LAFOptions;
 
 public abstract class PluginConfigPanelNG extends AbstractConfigPanel implements AccountControllerListener {
@@ -147,7 +149,10 @@ public abstract class PluginConfigPanelNG extends AbstractConfigPanel implements
                 @Override
                 protected void runInEDT() {
                     updateAccountSettings(event.getAccount().getPlugin());
-                    ((JComponent) getParent()).revalidate();
+                    final Container parent = getParent();
+                    if (parent != null && parent instanceof JComponent) {
+                        ((JComponent) parent).revalidate();
+                    }
                 }
             };
             break;
@@ -595,7 +600,7 @@ public abstract class PluginConfigPanelNG extends AbstractConfigPanel implements
                         LazyHostPlugin plg = HostPluginController.getInstance().get(domainInfo.getTld());
                         if (plg != null) {
                             try {
-                                StatsManager.I().openAfflink(plg.getPrototype(null), null, "MultiHostPanel");
+                                AccountController.openAfflink(plg.getPrototype(null), null, "MultiHostPanel");
                                 return;
                             } catch (UpdateRequiredClassNotFoundException e1) {
                                 e1.printStackTrace();
@@ -655,6 +660,8 @@ public abstract class PluginConfigPanelNG extends AbstractConfigPanel implements
             addPair(label, null, new Spinner(new ConfigIntSpinnerModel((IntegerKeyHandler) m)));
         } else if (m instanceof LongKeyHandler) {
             addPair(label, null, new Spinner(new ConfigLongSpinnerModel((LongKeyHandler) m)));
+        } else if (m instanceof EnumKeyHandler) {
+            addPair(label, null, null, new ComboBox<Enum>(m, ((EnumKeyHandler) m).values(), null));
         } else {
             UIOManager.I().showException("Unsupported Type: " + m, new Exception());
         }
@@ -693,6 +700,10 @@ public abstract class PluginConfigPanelNG extends AbstractConfigPanel implements
     }
 
     private final CopyOnWriteArraySet<ConfigInterface> interfaces = new CopyOnWriteArraySet<ConfigInterface>();
+
+    protected boolean showKeyHandler(KeyHandler<?> keyHandler) {
+        return keyHandler != null;
+    }
 
     public void build(ConfigInterface cfg) {
         interfaces.add(cfg);
@@ -741,6 +752,9 @@ public abstract class PluginConfigPanelNG extends AbstractConfigPanel implements
             }
         });
         parent: for (KeyHandler<?> m : list) {
+            if (!showKeyHandler(m)) {
+                continue;
+            }
             for (Group g : interfaceGroups) {
                 if (g.matches(m)) {
                     g.add(m);
@@ -778,7 +792,7 @@ public abstract class PluginConfigPanelNG extends AbstractConfigPanel implements
         }
     }
 
-    protected boolean useCustomUI(KeyHandler h) {
+    protected boolean useCustomUI(KeyHandler<?> h) {
         return h.getAnnotation(CustomUI.class) != null;
     }
 

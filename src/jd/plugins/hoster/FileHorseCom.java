@@ -13,10 +13,12 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
+
+import org.appwork.utils.formatter.SizeFormatter;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
 
 import jd.PluginWrapper;
 import jd.http.Browser;
@@ -30,12 +32,8 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-import org.appwork.utils.formatter.SizeFormatter;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "filehorse.com" }, urls = { "http://(www\\.)?(mac\\.)?filehorse\\.com/download\\-[a-z0-9\\-]+/(\\d+/)?" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "filehorse.com" }, urls = { "https?://(www\\.)?(mac\\.)?filehorse\\.com/download\\-[a-z0-9\\-]+/(\\d+/)?" })
 public class FileHorseCom extends PluginForHost {
-
     public FileHorseCom(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -55,19 +53,20 @@ public class FileHorseCom extends PluginForHost {
         if (br.containsHTML("(>404 Error \\- Page Not Found<|>Page Not Found)")) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-        String filename = br.getRegex("<title>([^<>\"]*?) Download for").getMatch(0);
+        String filename = br.getRegex("<title>([^<>\"]*?)</title>").getMatch(0);
         String filesize = br.getRegex("id=\"btn_file_size\">\\(([^<>\"]*?)\\)</span>").getMatch(0);
         if (filesize == null) {
             filesize = br.getRegex(">File size / license:</p><p>(\\d+(\\.\\d+)? [A-Za-z]{1,5})").getMatch(0);
         }
         if (filesize == null) {
-            filesize = br.getRegex(">Download Now</span></a><p>\\(([^<>\"]*?)\\) Safe").getMatch(0);
+            filesize = br.getRegex("Download</span></a><p>\\(([^<>\"]*?)\\) Safe").getMatch(0);
         }
         final String pagepiece = br.getRegex("<div id=\"sidebar\">(.*?)<\\!\\-\\- AddThis Button BEGIN \\-\\->").getMatch(0);
         if (filesize == null && pagepiece != null) {
             filesize = new Regex(pagepiece, "(\\d+(\\.{1,2})? (B|b|MB|KB|GB))").getMatch(0);
         }
         if (filename == null || filesize == null) {
+            logger.info("filename: " + filename + ", filesize: " + filesize);
             if (!br.containsHTML("\"main_down_link\"")) {
                 throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
             }
@@ -86,6 +85,9 @@ public class FileHorseCom extends PluginForHost {
         String dllink = br.getRegex("http-equiv=\"refresh\" content=\"\\d+; url=(http://[^<>\"]*?)\"").getMatch(0);
         if (dllink == null) {
             dllink = br.getRegex("\"(https?://(www\\.)?filehorse\\.com/download/file/[^<>\"]*?)\"").getMatch(0);
+        }
+        if (dllink == null) {
+            dllink = br.getRegex("If it doesn't\\s*<a href=\"(https?://[^<>\"]*?)\"").getMatch(0);
         }
         if (dllink == null) {
             Form d = br.getFormBySubmitvalue(Encoding.urlEncode("Download Now"));
@@ -133,5 +135,4 @@ public class FileHorseCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

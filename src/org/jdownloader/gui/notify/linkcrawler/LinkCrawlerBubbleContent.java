@@ -11,6 +11,7 @@ import jd.controlling.linkcollector.LinkCollectorCrawler;
 import jd.controlling.linkcollector.LinkOrigin;
 import jd.controlling.linkcrawler.CrawledLink;
 import jd.controlling.linkcrawler.CrawledPackage;
+import jd.gui.swing.jdgui.components.IconedProcessIndicator;
 import net.miginfocom.swing.MigLayout;
 
 import org.appwork.storage.config.JsonConfig;
@@ -26,15 +27,12 @@ import org.jdownloader.images.NewTheme;
 import org.jdownloader.updatev2.gui.LAFOptions;
 
 public class LinkCrawlerBubbleContent extends AbstractBubbleContentPanel {
-
     private Pair             duration;
     private Pair             links;
-
     private Pair             offline;
     private Pair             status;
     private Pair             statusQueue;
     private Pair             listQueue;
-
     private Pair             packages;
     private Pair             online;
     private final long       CLOSETIMEOUT = JsonConfig.create(BubbleNotifyConfig.class).getBubbleNotifyOnNewLinkgrabberLinksEndNotifyDelay();
@@ -47,15 +45,20 @@ public class LinkCrawlerBubbleContent extends AbstractBubbleContentPanel {
         if (offline != null) {
             offline.setVisible(false);
         }
-        startProgressCircle();
     }
 
-    protected void addProgress() {
+    protected IconedProcessIndicator progressCircle = null;
+
+    @Override
+    public void stop() {
+        stopProgressCircle();
+        super.stop();
     }
 
     protected void layoutComponents() {
         if (CFG_BUBBLE.CRAWLER_BUBBLE_CONTENT_ANIMATED_ICON_VISIBLE.isEnabled()) {
             setLayout(new MigLayout("ins 3 3 0 3,wrap 3", "[][fill][grow,fill]", "[]"));
+            progressCircle = createProgress(IconKey.ICON_LINKGRABBER);
             String iconKey = IconKey.ICON_LINKGRABBER;
             if (origin != null) {
                 switch (origin) {
@@ -75,6 +78,9 @@ public class LinkCrawlerBubbleContent extends AbstractBubbleContentPanel {
                 case ADD_LINKS_DIALOG:
                 case DRAG_DROP_ACTION:
                     iconKey = IconKey.ICON_ADD;
+                    break;
+                case EXTENSION:
+                    iconKey = IconKey.ICON_FOLDER_ADD;
                     break;
                 default:
                     iconKey = IconKey.ICON_LINKGRABBER;
@@ -144,7 +150,6 @@ public class LinkCrawlerBubbleContent extends AbstractBubbleContentPanel {
                 }
             }
         }
-
         boolean changes = false;
         final int linksCnt = jlc.getCrawledLinksFoundCounter();
         changes |= onlineCount != onlineCnt;
@@ -200,25 +205,15 @@ public class LinkCrawlerBubbleContent extends AbstractBubbleContentPanel {
                 final long createdTime = jlc.getCreated();
                 final int listQueueSize = jlc.getQueueSize();
                 if (listQueue != null) {
-                    if (listQueueSize > 0) {
-                        final String string = String.valueOf(listQueueSize);
-                        listQueue.setVisible(true);
-                        listQueue.setText(string);
-                        maxStringLength = Math.max(maxStringLength, string.length());
-                    } else {
-                        listQueue.setVisible(false);
-                    }
+                    final String string = String.valueOf(listQueueSize);
+                    listQueue.setText(string);
+                    maxStringLength = Math.max(maxStringLength, string.length());
                 }
                 final long statusQueueSize = jlc.getLinkChecker().checksRequested();
                 if (statusQueue != null) {
-                    if (statusQueueSize > 0) {
-                        statusQueue.setVisible(true);
-                        final String string = String.valueOf(statusQueueSize);
-                        statusQueue.setText(string);
-                        maxStringLength = Math.max(maxStringLength, string.length());
-                    } else {
-                        statusQueue.setVisible(false);
-                    }
+                    final String string = String.valueOf(statusQueueSize);
+                    statusQueue.setText(string);
+                    maxStringLength = Math.max(maxStringLength, string.length());
                 }
                 if (status != null) {
                     final String string;
@@ -266,7 +261,8 @@ public class LinkCrawlerBubbleContent extends AbstractBubbleContentPanel {
     }
 
     private void stopProgressCircle() {
-        if (progressCircle != null) {
+        final IconedProcessIndicator progressCircle = this.progressCircle;
+        if (progressCircle != null && progressCircle.isIndeterminate()) {
             progressCircle.setIndeterminate(false);
             progressCircle.setMaximum(100);
             progressCircle.setValue(100);
@@ -274,9 +270,10 @@ public class LinkCrawlerBubbleContent extends AbstractBubbleContentPanel {
     }
 
     private void startProgressCircle() {
-        if (progressCircle != null) {
+        final IconedProcessIndicator progressCircle = this.progressCircle;
+        if (progressCircle != null && !progressCircle.isIndeterminate()) {
+            progressCircle.setValue(1);
             progressCircle.setIndeterminate(true);
-            progressCircle.setValue(0);
         }
     }
 

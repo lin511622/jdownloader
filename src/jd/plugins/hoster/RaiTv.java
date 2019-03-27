@@ -59,6 +59,10 @@ public class RaiTv extends PluginForHost {
         return br;
     }
 
+    /*
+     * Example for json for single video:
+     * http://www.raiplay.it/video/2017/04/Il-tempo-e-la-Storia---Athanasius-Kircher-090ef888-7dea-4f8b-b5fb-a985dae7a07f.html?json
+     */
     /** THX: https://github.com/nightflyer73/plugin.video.raitv/tree/master/resources/lib */
     @SuppressWarnings({ "deprecation", "unchecked" })
     @Override
@@ -183,7 +187,7 @@ public class RaiTv extends PluginForHost {
             if (hlsbest == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-            final String url_hls = hlsbest.downloadurl;
+            final String url_hls = hlsbest.getDownloadurl();
             checkFFmpeg(downloadLink, "Download a HLS Stream");
             dl = new HLSDownloader(downloadLink, br, url_hls);
             dl.startDownload();
@@ -260,8 +264,12 @@ public class RaiTv extends PluginForHost {
         final long date;
         if (input.matches("\\d{2}/\\d{2}/\\d{4}")) {
             date = TimeFormatter.getMilliSeconds(input, "dd/MM/yyyy", Locale.ENGLISH);
+        } else if (input.matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}")) {
+            date = TimeFormatter.getMilliSeconds(input, "yyyy-MM-dd HH:mm:ss", Locale.ENGLISH);
         } else if (input.matches("\\d{4}-\\d{2}-\\d{2}")) {
             date = TimeFormatter.getMilliSeconds(input, "yyyy-MM-dd", Locale.ENGLISH);
+        } else if (input.matches("\\d{2}\\-\\d{2}\\-\\d{4}")) {
+            date = TimeFormatter.getMilliSeconds(input, "dd-MM-yyyy", Locale.ENGLISH);
         } else {
             date = TimeFormatter.getMilliSeconds(input, "dd-MM-yyyy HH:mm", Locale.ENGLISH);
         }

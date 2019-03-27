@@ -13,9 +13,9 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -36,9 +36,8 @@ import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 import jd.plugins.components.PluginJSonUtils;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "dinoshare.cz" }, urls = { "http://(www\\.)?dinoshare\\.cz/[a-z0-9\\-]+/[A-Za-z0-9]+/" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 2, names = { "dinoshare.cz" }, urls = { "http://(www\\.)?dinoshare\\.cz/[a-z0-9\\-]+/[A-Za-z0-9]+/?" })
 public class DinoShareCz extends PluginForHost {
-
     public DinoShareCz(PluginWrapper wrapper) {
         super(wrapper);
         this.enablePremium("http://www.dinoshare.cz/uzivatel/");
@@ -47,6 +46,13 @@ public class DinoShareCz extends PluginForHost {
     @Override
     public String getAGBLink() {
         return "http://www.dinoshare.cz/terms-dinoshare.pdf";
+    }
+
+    @SuppressWarnings("deprecation")
+    public void correctDownloadLink(final DownloadLink link) throws IOException {
+        if (!link.getDownloadURL().endsWith("/")) {
+            link.setUrlDownload(link.getDownloadURL() + "/");
+        }
     }
 
     /* Connection stuff */
@@ -59,13 +65,11 @@ public class DinoShareCz extends PluginForHost {
     private static final boolean ACCOUNT_PREMIUM_RESUME       = true;
     private static final int     ACCOUNT_PREMIUM_MAXCHUNKS    = 0;
     private static final int     ACCOUNT_PREMIUM_MAXDOWNLOADS = 20;
-
     /* don't touch the following! */
     private static AtomicInteger maxPrem                      = new AtomicInteger(1);
 
     @SuppressWarnings("deprecation")
-    @Override
-    public boolean checkLinks(final DownloadLink[] urls) {
+    public boolean xxx(final DownloadLink[] urls) { // checkLinks uses API, gets no response 2018-06-22
         if (urls == null || urls.length == 0) {
             return false;
         }
@@ -126,7 +130,16 @@ public class DinoShareCz extends PluginForHost {
 
     @Override
     public AvailableStatus requestFileInformation(final DownloadLink downloadLink) throws Exception {
-        checkLinks(new DownloadLink[] { downloadLink });
+        // checkLinks(new DownloadLink[] { downloadLink }); // Using API gets no response 2018-06-22
+        br.getPage(downloadLink.getDownloadURL());
+        String filename = br.getRegex("<h2>([^<>]*?)</h2>").getMatch(0);
+        if (filename != null) {
+            downloadLink.setFinalFileName(filename);
+        }
+        String dllink = br.getRegex("download-button[^<>]*?href=\"([^<>\\s]*?)\\s").getMatch(0);
+        if (dllink != null) {
+            return AvailableStatus.TRUE;
+        }
         if (!downloadLink.isAvailabilityStatusChecked()) {
             return AvailableStatus.UNCHECKED;
         }
@@ -139,14 +152,27 @@ public class DinoShareCz extends PluginForHost {
     @Override
     public void handleFree(final DownloadLink downloadLink) throws Exception, PluginException {
         requestFileInformation(downloadLink);
-        try {
-            throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
-        } catch (final Throwable e) {
-            if (e instanceof PluginException) {
-                throw (PluginException) e;
+        String dllink = br.getRegex("download-button[^<>]*?href=\"([^<>\\s]*?)\\s").getMatch(0);
+        if (dllink != null) {
+            dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, dllink, false, 1);
+            if (dl.getConnection().getContentType().contains("html") || dl.getConnection().getLongContentLength() == -1) {
+                logger.warning("The final dllink seems not to be a file!");
+                br.followConnection();
+                if (br.containsHTML("maximalni")) {
+                    throw new PluginException(LinkStatus.ERROR_IP_BLOCKED, "Maximum free downloads reached", 60 * 60 * 1000l);
+                }
             }
+            dl.startDownload();
+        } else {
+            try {
+                throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
+            } catch (final Throwable e) {
+                if (e instanceof PluginException) {
+                    throw (PluginException) e;
+                }
+            }
+            throw new PluginException(LinkStatus.ERROR_FATAL, "This file can only be downloaded by registered- and premium users");
         }
-        throw new PluginException(LinkStatus.ERROR_FATAL, "This file can only be downloaded by registered- and premium users");
     }
 
     private String checkDirectLink(final DownloadLink downloadLink, final String property) {
@@ -159,6 +185,8 @@ public class DinoShareCz extends PluginForHost {
                 if (con.getContentType().contains("html") || con.getLongContentLength() == -1) {
                     downloadLink.setProperty(property, Property.NULL);
                     dllink = null;
+                } else {
+                    downloadLink.setDownloadSize(con.getLongContentLength());
                 }
             } catch (final Exception e) {
                 downloadLink.setProperty(property, Property.NULL);
@@ -195,6 +223,21 @@ public class DinoShareCz extends PluginForHost {
         }
     }
 
+    private void loginWeb(final Account account) throws Exception {
+        br.setCookiesExclusive(true);
+        br.setFollowRedirects(true);
+        // br.getPage("http://www.dinoshare.cz/uzivatel/");
+        /* Todo: Use form */
+        br.postPageRaw("http://www.dinoshare.cz/uzivatel/", "user_email=" + Encoding.urlEncode(account.getUser()) + "&user_pass=" + Encoding.urlEncode(account.getPass()) + "&action=P%C5%99ihl%C3%A1sit+se");
+        if (br.containsHTML("Wrong login credentials or query argument")) {
+            if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
+                throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+            } else {
+                throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!\r\nQuick help:\r\nYou're sure that the username and password you entered are correct?\r\nIf your password contains special characters, change it (remove them) and try again!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+            }
+        }
+    }
+
     @SuppressWarnings("deprecation")
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
@@ -204,16 +247,18 @@ public class DinoShareCz extends PluginForHost {
             if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                 throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nBitte gib deine E-Mail Adresse ins Benutzername Feld ein!", PluginException.VALUE_ID_PREMIUM_DISABLE);
             } else {
-                throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nPlease enter your e-mail adress in the username field!", PluginException.VALUE_ID_PREMIUM_DISABLE);
+                throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nPlease enter your e-mail address in the username field!", PluginException.VALUE_ID_PREMIUM_DISABLE);
             }
         }
         try {
-            loginAPI(account);
+            // loginAPI(account); // Get no response 2017-12-27
+            loginWeb(account);
         } catch (PluginException e) {
             account.setValid(false);
             throw e;
         }
-        final long creditsleft = Long.parseLong(PluginJSonUtils.getJsonValue(br, "credits"));
+        // final long creditsleft = Long.parseLong(PluginJSonUtils.getJsonValue(br, "credits")); // For loginAPI
+        final long creditsleft = Long.valueOf(br.getRegex("kreditů</td>\\s*<td><a href=\"/premium/\">([^<>]+)<").getMatch(0));
         /*
          * Also treat premium accounts with low traffic (1,5 GB or less) as free so that they can't get disabled or similar because of low
          * traffic.
@@ -302,5 +347,4 @@ public class DinoShareCz extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

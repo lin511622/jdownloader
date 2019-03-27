@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
 
 import org.appwork.remoteapi.RemoteAPIRequest;
 import org.appwork.utils.StringUtils;
-import org.appwork.utils.net.httpserver.HttpConnection;
+import org.appwork.utils.net.httpserver.RawHttpConnectionInterface;
 import org.jdownloader.api.myjdownloader.MyJDownloaderDirectHttpConnection;
 import org.jdownloader.api.myjdownloader.MyJDownloaderHttpConnection;
 
@@ -75,7 +75,10 @@ public class ConnectedDevice {
 
     private String _getFrontendName() {
         final String origin = latestRequest.getRequestHeaders().getValue("Origin");
-        if (StringUtils.equals(origin, "http://my.jdownloader.org") || StringUtils.equals(origin, "https://my.jdownloader.org")) {
+        final String referer = latestRequest.getRequestHeaders().getValue("Referer");
+        if (StringUtils.startsWithCaseInsensitive(origin, "http://my.jdownloader.org") || StringUtils.startsWithCaseInsensitive(origin, "https://my.jdownloader.org")) {
+            return FRONTEND_WEBINTERFACE;
+        } else if (StringUtils.startsWithCaseInsensitive(referer, "http://my.jdownloader.org") || StringUtils.startsWithCaseInsensitive(referer, "https://my.jdownloader.org")) {
             return FRONTEND_WEBINTERFACE;
         } else if (StringUtils.startsWithCaseInsensitive(origin, "chrome-extension://")) {
             return FRONTEND_CHROME_EXTENSION;
@@ -175,7 +178,7 @@ public class ConnectedDevice {
         } else {
             num = list.size();
         }
-        final HttpConnection con = latestRequest.getHttpRequest().getConnection();
+        final RawHttpConnectionInterface con = latestRequest.getHttpRequest().getConnection();
         if (con instanceof MyJDownloaderDirectHttpConnection) {
             if (num == 0) {
                 return "0 Direct Connections via my.jdownloader";

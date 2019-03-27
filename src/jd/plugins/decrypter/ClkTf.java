@@ -13,10 +13,14 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
+
+import org.appwork.utils.StringUtils;
 
 import jd.PluginWrapper;
 import jd.controlling.ProgressController;
@@ -25,44 +29,27 @@ import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.parser.html.Form;
 import jd.plugins.CryptedLink;
-import jd.plugins.DecrypterException;
 import jd.plugins.DecrypterPlugin;
 import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForDecrypt;
+import jd.plugins.components.SiteType.SiteTemplate;
 
 /**
  *
- * after writing this... found out same as yep.pm (now dead)<br/>
- * Name: yep.pm <br/>
- * Addresses: 213.184.127.151<br/>
- * 108.61.185.218<br/>
- * 190.97.163.134<br/>
- * <br/>
- * Name: click.tf<br/>
- * Addresses: 190.97.163.134<br/>
- * 213.184.127.151<br/>
- * 108.61.185.218<br/>
- * <br/>
- * same server!!!<br/>
- *
- * I've created jac for this under this name.
- *
- * ssh.tf<br/>
- * Name: ssh.tf<br/>
- * Addresses: 103.39.133.244<br/>
- * 103.237.33.180<br/>
- * 111.221.47.171<br/>
- *
+ * I've created jac for this under the default names entry 'click.tf'.
  *
  * @author raztoki
  *
  */
-@DecrypterPlugin(revision = "$Revision: 32094 $", interfaceVersion = 3, names = { "click.tf", "ssh.tf" }, urls = { "http://click\\.tf/[a-zA-Z0-9]{8,}(/.+)?", "http://ssh\\.tf/[a-zA-Z0-9]{8,}(/.+)?" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = {}, urls = {})
 public class ClkTf extends PluginForDecrypt {
+    // add new domains here.
+    private static final String[] domains = { "click.tf", "ssh.tf", "yep.pm", "adlink.wf", "kyc.pm", "lan.wf", "led.wf" };
 
+    // all other domains mentioned within /services.html do not match expected.
     public ClkTf(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -74,7 +61,7 @@ public class ClkTf extends PluginForDecrypt {
         // some links are delivered by redirects!!
         br.setFollowRedirects(false);
         br.getPage(parameter);
-        if (br.getHttpConnection() == null || br.getHttpConnection().getResponseCode() == 404) {
+        if (br.getHttpConnection() == null || br.getHttpConnection().getResponseCode() == 404 || br.containsHTML("Invalid Link\\.")) {
             decryptedLinks.add(createOfflinelink(parameter));
             return decryptedLinks;
         }
@@ -91,7 +78,6 @@ public class ClkTf extends PluginForDecrypt {
         }
         handleCaptcha(param);
         addLinks(decryptedLinks, parameter);
-
         if (fpName != null) {
             FilePackage fp = FilePackage.getInstance();
             fp.setName(Encoding.htmlDecode(fpName.trim()));
@@ -109,8 +95,11 @@ public class ClkTf extends PluginForDecrypt {
         final String link = f.getAction();
         if (link == null) {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        } else if (!StringUtils.startsWithCaseInsensitive(link, "http://") && !StringUtils.startsWithCaseInsensitive(link, "https://")) {
+            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+        } else {
+            decryptedLinks.add(createDownloadlink(link));
         }
-        decryptedLinks.add(createDownloadlink(link));
     }
 
     private void handleCaptcha(final CryptedLink param) throws Exception {
@@ -120,18 +109,22 @@ public class ClkTf extends PluginForDecrypt {
             if (captcha == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
-            final String captchaImage = captcha.getRegex("/captcha\\.php\\?cap_id=\\d+").getMatch(-1);
+            final String captchaImage = captcha.getRegex("(/captcha\\.php\\?.*?)\"").getMatch(0);
             if (captchaImage != null) {
                 final String c = getCaptchaCode(captchaImage, param);
                 if (c == null) {
-                    throw new DecrypterException(DecrypterException.CAPTCHA);
+                    throw new PluginException(LinkStatus.ERROR_CAPTCHA);
                 }
-                captcha.put("ent_code", Encoding.urlEncode(c));
+                if (captcha.containsHTML("verifycode")) {
+                    captcha.put("verifycode", Encoding.urlEncode(c));
+                } else {
+                    captcha.put("ent_code", Encoding.urlEncode(c));
+                }
             }
             br.submitForm(captcha);
-            if (br.containsHTML("<p style='color:\\s*red;'>Wrong CAPTCHA</p>")) {
+            if (br.getRegex("(/captcha\\.php\\?.*?)\"").getMatch(0) != null) {
                 if (i + 1 > retry) {
-                    throw new DecrypterException(DecrypterException.CAPTCHA);
+                    throw new PluginException(LinkStatus.ERROR_CAPTCHA);
                 } else {
                     captcha = br.getForm(0);
                     continue;
@@ -149,4 +142,54 @@ public class ClkTf extends PluginForDecrypt {
         return true;
     }
 
+    private static AtomicReference<String> HOSTS           = new AtomicReference<String>(null);
+    private static AtomicLong              HOSTS_REFERENCE = new AtomicLong(-1);
+
+    @Override
+    public void init() {
+        // first run -1 && revision change == sync.
+        if (this.getVersion() > HOSTS_REFERENCE.get()) {
+            HOSTS.set(getHostsPattern());
+            HOSTS_REFERENCE.set(this.getVersion());
+        }
+    }
+
+    @Override
+    public String[] siteSupportedNames() {
+        return domains;
+    }
+
+    /**
+     * Returns the annotations names array
+     *
+     * @return
+     */
+    public static String[] getAnnotationNames() {
+        // never change! its linked to the JAC auto solving method.
+        return new String[] { "click.tf" };
+    }
+
+    /**
+     * returns the annotation pattern array
+     *
+     */
+    public static String[] getAnnotationUrls() {
+        // construct pattern
+        final String host = getHostsPattern();
+        return new String[] { host + "/[a-zA-Z0-9]{8,}(/.+)?" };
+    }
+
+    private static String getHostsPattern() {
+        final StringBuilder pattern = new StringBuilder();
+        for (final String name : domains) {
+            pattern.append((pattern.length() > 0 ? "|" : "") + Pattern.quote(name));
+        }
+        final String hosts = "https?://(www\\.)?" + "(?:" + pattern.toString() + ")";
+        return hosts;
+    }
+
+    @Override
+    public SiteTemplate siteTemplateType() {
+        return SiteTemplate.URLShortnerLLP_URLShortner;
+    }
 }

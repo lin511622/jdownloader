@@ -13,12 +13,15 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
 import java.text.DecimalFormat;
 import java.util.Locale;
+
+import org.appwork.utils.StringUtils;
+import org.appwork.utils.formatter.TimeFormatter;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.CaptchaHelperHostPluginRecaptchaV2;
 
 import jd.PluginWrapper;
 import jd.config.ConfigContainer;
@@ -44,15 +47,11 @@ import jd.plugins.PluginForHost;
 import jd.plugins.components.PluginJSonUtils;
 import jd.utils.locale.JDL;
 
-import org.appwork.utils.StringUtils;
-import org.appwork.utils.formatter.TimeFormatter;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "video2brain.com" }, urls = { "https?://(?:www\\.)?video2brain\\.com/(?:de/tutorial/[a-z0-9\\-]+|en/lessons/[a-z0-9\\-]+|fr/tuto/[a-z0-9\\-]+|es/tutorial/[a-z0-9\\-]+|[a-z]{2}/videos\\-\\d+\\.htm)" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "video2brain.com" }, urls = { "https?://(?:www\\.)?video2brain\\.com/(?:de/tutorial/[a-z0-9\\-]+|en/lessons/[a-z0-9\\-]+|fr/tuto/[a-z0-9\\-]+|es/tutorial/[a-z0-9\\-]+|[a-z]{2}/videos\\-\\d+\\.htm)" })
 public class Video2brainCom extends PluginForHost {
-
     public Video2brainCom(PluginWrapper wrapper) {
         super(wrapper);
-        this.enablePremium("https://www.video2brain.com/en/support/faq");
+        this.enablePremium("https://www.video2brain.com/de/registrierung");
         setConfigElements();
     }
 
@@ -77,16 +76,13 @@ public class Video2brainCom extends PluginForHost {
     private final boolean       RESUME_HTTP          = true;
     private final int           MAXCHUNKS_HTTP       = 0;
     private final int           ACCOUNT_MAXDOWNLOADS = 20;
-
     private boolean             premiumonly          = false;
     private boolean             inPremiumMode        = false;
-
     public static final String  domain               = "video2brain.com";
     // public static final String domain_dummy_education = "video2brain.com_EDUCATION";
     private final String        TYPE_OLD             = "https?://(?:www\\.)?video2brain\\.com/[a-z]{2}/videos\\-\\d+\\.htm";
     public static final String  ADD_ORDERID          = "ADD_ORDERID";
     public static final long    trust_cookie_age     = 300000l;
-
     public static final boolean defaultADD_ORDERID   = false;
 
     @SuppressWarnings("deprecation")
@@ -116,7 +112,10 @@ public class Video2brainCom extends PluginForHost {
             /* 404 - standard offline */
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         } else if (!this.br.getURL().matches("https?://(?:www\\.)?video2brain\\.com/[^/]+/[^/]+/[^/]+") && !this.br.getURL().matches(TYPE_OLD)) {
-            /* Current url is wrong --> Probably we were redirected because the added URL does not lead us to any downloadable content. */
+            /*
+             * Current url is wrong --> Probably we were redirected because the added URL does not lead us to any downloadable content -->
+             * Offline
+             */
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
         boolean set_final_filename = true;
@@ -174,6 +173,7 @@ public class Video2brainCom extends PluginForHost {
     public void handleFree(final DownloadLink downloadLink) throws Exception, PluginException {
         inPremiumMode = false;
         if (true) {
+            /* Free- and Free Account download not allowed. */
             throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
         }
         requestFileInformation(downloadLink);
@@ -198,7 +198,6 @@ public class Video2brainCom extends PluginForHost {
         Browser br2 = this.br.cloneBrowser();
         /* User-Agent is not necessarily needed! */
         br2.getHeaders().put("User-Agent", "iPad");
-
         boolean http_url_is_okay = false;
         final String html5_http_url_plain = this.br.getRegex("<video src=\\'(http[^<>\"\\']+)\\'").getMatch(0);
         String html5_http_url_full = null;
@@ -255,7 +254,6 @@ public class Video2brainCom extends PluginForHost {
             } catch (final Throwable e) {
             }
         }
-
         if (http_url_is_okay) {
             /* Prefer http - quality-wise rtmp and http are the same! */
             dl = jd.plugins.BrowserAdapter.openDownload(br, downloadLink, html5_http_url_full, RESUME_HTTP, MAXCHUNKS_HTTP);
@@ -271,7 +269,7 @@ public class Video2brainCom extends PluginForHost {
             }
             if (config_url.startsWith("trailer")) {
                 /* Fix trailer xml url as it is escaped and incomplete. */
-                config_url = "/" + url_language + "/" + Encoding.unescape(config_url);
+                config_url = "/" + url_language + "/" + Encoding.unicodeDecode(config_url);
             }
             getPage(config_url);
             final String rtmpurl = this.br.getRegex("<src>(rtmp[^\n]+)").getMatch(0);
@@ -306,13 +304,14 @@ public class Video2brainCom extends PluginForHost {
 
     private static Object LOCK = new Object();
 
-    public static void login(Browser br, final Account account) throws Exception {
+    public void login(Browser br, final Account account) throws Exception {
         synchronized (LOCK) {
             try {
                 br = newBrowser(br);
                 br.setCookiesExclusive(true);
                 String account_language = getAccountLanguage(account);
                 final Cookies cookies = account.loadCookies("");
+                /* 2018-02-15: Avoid full login whenever possible as they now have a login captcha! */
                 if (cookies != null && account_language != null) {
                     br.setCookies(domain, cookies);
                     if (System.currentTimeMillis() - account.getCookiesTimeStamp("") <= trust_cookie_age) {
@@ -338,18 +337,21 @@ public class Video2brainCom extends PluginForHost {
                 boolean success = false;
                 /**
                  * Each country/language may have individual logins - we could request this in the login mask or we simply go through all of
-                 * them.
+                 * them. <br/>
+                 * 2018-02-15: TODO: Maybe add code to first try language of users' system (if 'unsupported', use english) as we now have to
+                 * enter a captcha for each first login-attempt!
                  */
                 for (final String language : languages) {
                     /* Ignore previously saved given language - if it worked fine we would not have to re-login anyways! */
                     account_language = language;
                     final String lang_uppercase = language.toUpperCase();
-
                     /* First lets check if maybe the user has VPN education access --> No need to login with logindata! */
                     getPage(br, "https://www." + domain + "/" + language + "/education");
                     /* E.g. errormessage: Sie befinden sich außerhalb einer gültigen IP-Range für einen IP-Login. Ihre IP: 91.49.11.2 */
                     if (br.containsHTML("class=\"notice\\-page\\-msg\"")) {
-                        /* Either EDU user is not connected to his VPN or our user is a normal user who needs username & password to login */
+                        /*
+                         * Either EDU user is not connected to his VPN or our user is a normal user who needs username & password to login
+                         */
                         /* First thing we can do is to do is make sure user entered a valid E-Mail address in the username field! */
                         if (!account.getUser().matches(".+@.+\\..+")) {
                             if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
@@ -358,7 +360,6 @@ public class Video2brainCom extends PluginForHost {
                                 throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nPlease enter your e-mail adress in the username field!", PluginException.VALUE_ID_PREMIUM_DISABLE);
                             }
                         }
-
                         /* Set this property on account - it might be useful later */
                         account.setProperty("education", false);
                         getPage(br, "https://www." + domain + "/" + language + "/login");
@@ -385,6 +386,20 @@ public class Video2brainCom extends PluginForHost {
                         /* Add logindata */
                         loginform.put("email", Encoding.urlEncode(account.getUser()));
                         loginform.put("password", Encoding.urlEncode(account.getPass()));
+                        String reCaptchaKey = br.getRegex("data\\-sitekey=\"([^<>\"]+)\"").getMatch(0);
+                        if (reCaptchaKey == null) {
+                            /* 2018-02-15: Fallback-key */
+                            reCaptchaKey = "6LfAjzEUAAAAALbkVTbsN080kPgKP_lZlyEqy8Fy";
+                        }
+                        final DownloadLink dlinkbefore = this.getDownloadLink();
+                        if (dlinkbefore == null) {
+                            this.setDownloadLink(new DownloadLink(this, "Account", this.getHost(), "http://" + account.getHoster(), true));
+                        }
+                        final String recaptchaV2Response = new CaptchaHelperHostPluginRecaptchaV2(this, br, reCaptchaKey).getToken();
+                        if (dlinkbefore != null) {
+                            this.setDownloadLink(dlinkbefore);
+                        }
+                        loginform.put("captcha_response_token", Encoding.urlEncode(recaptchaV2Response));
                         loginform.put("set_cookie", "true");
                         /* Prepare Headers */
                         prepAjaxHeaders(br);
@@ -409,7 +424,6 @@ public class Video2brainCom extends PluginForHost {
                         break;
                     }
                 }
-
                 if (!success) {
                     if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUngültiger Benutzername oder ungültiges Passwort!\r\nSchnellhilfe: \r\nDu bist dir sicher, dass dein eingegebener Benutzername und Passwort stimmen?\r\nFalls dein Passwort Sonderzeichen enthält, ändere es und versuche es erneut!", PluginException.VALUE_ID_PREMIUM_DISABLE);
@@ -417,7 +431,6 @@ public class Video2brainCom extends PluginForHost {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nInvalid username/password!\r\nQuick help:\r\nYou're sure that the username and password you entered are correct?\r\nIf your password contains special characters, change it (remove them) and try again!", PluginException.VALUE_ID_PREMIUM_DISABLE);
                     }
                 }
-
                 account.saveCookies(br.getCookies(domain), "");
                 /* Save used language String to avoid unnecessary server requests for future login requests. */
                 account.setProperty("language", account_language);
@@ -480,17 +493,26 @@ public class Video2brainCom extends PluginForHost {
         this.br.getPage("https://www." + this.getHost() + "/" + accountlanguage + "/");
         /* Different url for every language/country */
         final String abonements_url = this.br.getRegex("id=\"myv2b_dd_usertype\">[^<>]*?<a href=\"(https?://(?:www\\.)?video2brain\\.com/[^/]+/my-video2brain/(options|settings)/[^/]+)\"").getMatch(0);
+        String statustext = "";
         String abonnement = null;
         String accessGroup = null;
+        String nextPayDate = null;
         boolean isPremium = false;
         long validUntil = -1;
         if (abonements_url != null) {
             /* This url should only be available for premium accounts --> Then we can RegEx the expire date. */
             this.br.getPage(abonements_url);
             if (StringUtils.containsIgnoreCase(abonements_url, "mein-abonnement")) {
+                /**
+                 * 2018-02-15: Also valid but not implemented as I'am not sure whether this is also possible for test accounts:
+                 * "video2brain-Trainingsabo monatlich" <br />
+                 * Other possible Strings: "Abonnement Premium monatlich"
+                 */
                 abonnement = br.getRegex("<div><b>Abonnement:</b>\\s*(.*?)\\s*</div>").getMatch(0);
                 accessGroup = br.getRegex("<div><b>Zugangsgruppe:</b>\\s*(.*?)\\s*</div>").getMatch(0);
-                isPremium = StringUtils.containsIgnoreCase(abonnement, "Premium");
+                nextPayDate = br.getRegex("Ihr Abonnement verlängert sich automatisch\\. Die nächste Laufzeit startet am (\\d{1,2}\\.\\d{1,2}\\.\\d{4})").getMatch(0);
+                /* 2018-02-15: User definitly has a premium account or account has a next pay-date --> Premium = true */
+                isPremium = StringUtils.containsIgnoreCase(abonnement, "Premium") || nextPayDate != null;
                 final String expiredate = this.br.getRegex("<div><b>Gültig bis:</b>\\s*([0-9\\. ]+)\\s*</div>").getMatch(0);
                 validUntil = TimeFormatter.getMilliSeconds(expiredate, "dd'.'MM'.'yyyy", Locale.GERMAN);
                 if (isPremium) {
@@ -513,39 +535,38 @@ public class Video2brainCom extends PluginForHost {
                 validUntil = TimeFormatter.getMilliSeconds(expiredate, "dd MMMM yyyy", Locale.FRENCH);
             }
         }
-        if (abonnement == null) {
-            throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_DISABLE);
-        } else {
+        if (abonnement != null) {
             if (accessGroup != null) {
                 if ("de".equalsIgnoreCase(accountlanguage)) {
-                    ai.setStatus(abonnement + "(Zugangsgruppe:" + accessGroup + ")");
+                    statustext = abonnement + "(Zugangsgruppe:" + accessGroup + ")";
                 } else {
-                    ai.setStatus(abonnement + "(Group:" + accessGroup + ")");
+                    statustext = abonnement + "(Group:" + accessGroup + ")";
                 }
             } else {
-                ai.setStatus(abonnement);
+                statustext = abonnement;
             }
+        } else {
+            statustext = "Free Account";
         }
-        /* In general if this is true user has a free account or trail subscription. */
-        final boolean html_contains_subscribe_or_upgrade_button = br.containsHTML("FooterCTA\\(\\'Subscribe\\'");
-        /*
-         * E.g. 'Activate trail' German: <a class="btn blue" href="https://www.video2brain.com/de/abonnieren/trials"
-         * onclick="Tracking.Events.FooterCTA('Subscribe', 'https\x3A\x2F\x2Fwww.video2brain.com\x2Fde\x2Fabonnieren\x2Ftrials')">10 TAGE
-         * KOSTENLOS TESTEN</a>
-         */
-        /*
-         * E.g. 'Upgrade' (from trail to paid subscription) French: <a class="btn blue"
-         * href="https://www.video2brain.com/fr/mon-video2brain/options/upgrade" onclick="Tracking.Events.FooterCTA('Subscribe',
-         * 'https\x3A\x2F\x2Fwww.video2brain.com\x2Ffr\x2Fmon\x2Dvideo2brain\x2Foptions\x2Fupgrade')">METTRE À JOUR</a>
-         */
-        /* Note that this 'is_test_abonement' is not safe! */
-        if (html_contains_subscribe_or_upgrade_button || validUntil == -1 || !isPremium) {
+        /* 2016-11-30: Removed check for "Upgrade" button as it seems to be always available! */
+        if (validUntil == -1 || !isPremium) {
             account.setType(AccountType.FREE);
+            /*
+             * Downloads via JDownloader only possible for real paid accounts --> Show this in account status to prevent users from thinking
+             * that this is a bug thus creating useless support tickets.
+             */
+            if ("de".equalsIgnoreCase(accountlanguage)) {
+                statustext += " !Downloads nur mit bezahlten Accounts möglich!";
+            } else {
+                statustext += " !Downloads require a paid account!";
+            }
         } else {
             account.setType(AccountType.PREMIUM);
         }
+        ai.setStatus(statustext);
         if (validUntil > 0) {
-            ai.setValidUntil(validUntil);
+            // add 24 hours as the day seems to be valid on last day
+            ai.setValidUntil(validUntil + (24 * 60 * 60 * 1000l));
         }
         account.setMaxSimultanDownloads(ACCOUNT_MAXDOWNLOADS);
         account.setConcurrentUsePossible(true);
@@ -561,8 +582,7 @@ public class Video2brainCom extends PluginForHost {
         if (AccountType.FREE.equals(account.getType())) {
             throw new PluginException(LinkStatus.ERROR_PREMIUM, PluginException.VALUE_ID_PREMIUM_ONLY);
         }
-        /* No need to log in - we're already logged in! */
-        // login(account);
+        /* No need to log in here - we're already logged in! */
         handleDownload(link);
     }
 
@@ -654,5 +674,4 @@ public class Video2brainCom extends PluginForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

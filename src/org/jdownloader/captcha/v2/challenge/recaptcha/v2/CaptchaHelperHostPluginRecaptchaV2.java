@@ -15,7 +15,6 @@ import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
 
-import org.appwork.utils.StringUtils;
 import org.appwork.utils.logging2.LogSource;
 import org.appwork.utils.swing.dialog.Dialog;
 import org.jdownloader.captcha.blacklist.BlacklistEntry;
@@ -24,7 +23,6 @@ import org.jdownloader.captcha.blacklist.BlockDownloadCaptchasByHost;
 import org.jdownloader.captcha.blacklist.BlockDownloadCaptchasByLink;
 import org.jdownloader.captcha.blacklist.BlockDownloadCaptchasByPackage;
 import org.jdownloader.captcha.blacklist.CaptchaBlackList;
-import org.jdownloader.captcha.v2.AbstractResponse;
 import org.jdownloader.captcha.v2.ChallengeResponseController;
 import org.jdownloader.captcha.v2.solverjob.SolverJob;
 import org.jdownloader.gui.IconKey;
@@ -35,18 +33,36 @@ import org.jdownloader.plugins.CaptchaStepProgress;
 import org.jdownloader.settings.staticreferences.CFG_GUI;
 
 public class CaptchaHelperHostPluginRecaptchaV2 extends AbstractCaptchaHelperRecaptchaV2<PluginForHost> {
-
-    public CaptchaHelperHostPluginRecaptchaV2(final PluginForHost plugin, final Browser br, final String siteKey, final String secureToken) {
-        super(plugin, br, siteKey, secureToken);
+    public CaptchaHelperHostPluginRecaptchaV2(final PluginForHost plugin, final Browser br, final String siteKey, final String secureToken, boolean boundToDomain) {
+        super(plugin, br, siteKey, secureToken, boundToDomain);
     }
 
     /* Most likely used for login captchas. */
     public CaptchaHelperHostPluginRecaptchaV2(final PluginForHost plugin, final Browser br, final String siteKey) {
-        this(plugin, br, siteKey, null);
+        this(plugin, br, siteKey, null, false);
     }
 
     public CaptchaHelperHostPluginRecaptchaV2(final PluginForHost plugin, final Browser br) {
         this(plugin, br, null);
+    }
+
+    protected RecaptchaV2Challenge createChallenge() {
+        return new RecaptchaV2Challenge(getSiteKey(), getSecureToken(), getPlugin(), br, getSiteDomain()) {
+            @Override
+            public String getSiteUrl() {
+                return CaptchaHelperHostPluginRecaptchaV2.this.getSiteUrl();
+            }
+
+            @Override
+            public String getType() {
+                final TYPE type = CaptchaHelperHostPluginRecaptchaV2.this.getType();
+                if (type != null) {
+                    return type.name();
+                } else {
+                    return TYPE.NORMAL.name();
+                }
+            }
+        };
     }
 
     public String getToken() throws PluginException, InterruptedException {
@@ -54,8 +70,8 @@ public class CaptchaHelperHostPluginRecaptchaV2 extends AbstractCaptchaHelperRec
         if (Thread.currentThread() instanceof LinkCrawlerThread) {
             logger.severe("PluginForHost.getCaptchaCode inside LinkCrawlerThread!?");
         }
-        final PluginForHost plugin = this.plugin;
-        final DownloadLink link = getPlugin().getDownloadLink();
+        final PluginForHost plugin = getPlugin();
+        final DownloadLink link = plugin.getDownloadLink();
         if (siteKey == null) {
             siteKey = getSiteKey();
             if (siteKey == null) {
@@ -75,9 +91,9 @@ public class CaptchaHelperHostPluginRecaptchaV2 extends AbstractCaptchaHelperRec
                 link.addPluginProgress(progress);
             }
             final boolean insideAccountChecker = Thread.currentThread() instanceof AccountCheckerThread;
-            final RecaptchaV2Challenge c = new RecaptchaV2Challenge(siteKey, secureToken, plugin, br, getSiteDomain(), getSiteUrl());
+            final RecaptchaV2Challenge c = createChallenge();
             try {
-                c.setTimeout(plugin.getCaptchaTimeout());
+                c.setTimeout(plugin.getChallengeTimeout(c));
                 if (insideAccountChecker || FilePackage.isDefaultFilePackage(link.getFilePackage())) {
                     // coalado: discuss why. FilePackage.isDefaultFilePackage(link.getFilePackage()) is triggered for captchas during online
                     // check es well
@@ -98,61 +114,14 @@ public class CaptchaHelperHostPluginRecaptchaV2 extends AbstractCaptchaHelperRec
                     throw new CaptchaException(blackListEntry);
                 }
                 jobs.add(ChallengeResponseController.getInstance().handle(c));
-                AbstractRecaptcha2FallbackChallenge rcFallback = null;
-                while (jobs.size() <= 20) {
-                    if (rcFallback == null && c.getResult() != null) {
-                        for (AbstractResponse<String> r : c.getResult()) {
-                            if (r.getChallenge() != null && r.getChallenge() instanceof AbstractRecaptcha2FallbackChallenge) {
-                                rcFallback = (AbstractRecaptcha2FallbackChallenge) r.getChallenge();
-                                break;
-                            }
-                        }
-                    }
-                    if (rcFallback != null && rcFallback.getToken() == null) {
-                        // retry
-                        try {
-                            rcFallback.reload(jobs.size() + 1);
-                        } catch (Throwable e) {
-                            LogSource.exception(logger, e);
-                            throw new PluginException(LinkStatus.ERROR_CAPTCHA);
-                        }
-                        if (rcFallback.doRunAntiDDosProtection()) {
-                            runDdosPrevention();
-                        }
-                        jobs.add(ChallengeResponseController.getInstance().handle(rcFallback));
-                        if (StringUtils.isNotEmpty(rcFallback.getToken())) {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
                 if (!c.isSolved()) {
                     throw new PluginException(LinkStatus.ERROR_CAPTCHA);
+                } else if (!c.isCaptchaResponseValid()) {
+                    final String value = c.getResult().getValue();
+                    throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "Captcha reponse value did not validate:" + value);
+                } else {
+                    return c.getResult().getValue();
                 }
-                if (c.getResult() != null) {
-                    for (AbstractResponse<String> r : c.getResult()) {
-                        if (r.getChallenge() instanceof AbstractRecaptcha2FallbackChallenge) {
-                            String token = ((AbstractRecaptcha2FallbackChallenge) r.getChallenge()).getToken();
-                            if (!RecaptchaV2Challenge.isValidToken(token)) {
-                                for (int i = 0; i < jobs.size(); i++) {
-                                    jobs.get(i).invalidate();
-                                }
-                                throw new PluginException(LinkStatus.ERROR_CAPTCHA);
-                            } else {
-                                for (int i = 0; i < jobs.size(); i++) {
-                                    jobs.get(i).validate();
-                                }
-                            }
-                            return token;
-                        }
-                    }
-                }
-                // check main challenge
-                if (!c.isCaptchaResponseValid()) {
-                    throw new PluginException(LinkStatus.ERROR_CAPTCHA, "Captcha reponse value did not validate!");
-                }
-                return c.getResult().getValue();
             } finally {
                 c.cleanup();
             }
@@ -170,7 +139,6 @@ public class CaptchaHelperHostPluginRecaptchaV2 extends AbstractCaptchaHelperRec
                 switch (e.getSkipRequest()) {
                 case BLOCK_ALL_CAPTCHAS:
                     CaptchaBlackList.getInstance().add(new BlockAllDownloadCaptchasEntry());
-
                     if (CFG_GUI.HELP_DIALOGS_ENABLED.isEnabled()) {
                         HelpDialog.show(false, true, HelpDialog.getMouseLocation(), "SKIPPEDHOSTER", Dialog.STYLE_SHOW_DO_NOT_DISPLAY_AGAIN, _GUI.T.ChallengeDialogHandler_viaGUI_skipped_help_title(), _GUI.T.ChallengeDialogHandler_viaGUI_skipped_help_msg(), new AbstractIcon(IconKey.ICON_SKIPPED, 32));
                     }
@@ -181,7 +149,6 @@ public class CaptchaHelperHostPluginRecaptchaV2 extends AbstractCaptchaHelperRec
                         HelpDialog.show(false, true, HelpDialog.getMouseLocation(), "SKIPPEDHOSTER", Dialog.STYLE_SHOW_DO_NOT_DISPLAY_AGAIN, _GUI.T.ChallengeDialogHandler_viaGUI_skipped_help_title(), _GUI.T.ChallengeDialogHandler_viaGUI_skipped_help_msg(), new AbstractIcon(IconKey.ICON_SKIPPED, 32));
                     }
                     break;
-
                 case BLOCK_PACKAGE:
                     CaptchaBlackList.getInstance().add(new BlockDownloadCaptchasByPackage(link.getParentNode()));
                     if (CFG_GUI.HELP_DIALOGS_ENABLED.isEnabled()) {
@@ -189,7 +156,7 @@ public class CaptchaHelperHostPluginRecaptchaV2 extends AbstractCaptchaHelperRec
                     }
                     break;
                 case TIMEOUT:
-                    getPlugin().onCaptchaTimeout(link, e.getChallenge());
+                    plugin.onCaptchaTimeout(link, e.getChallenge());
                     // TIMEOUT may fallthrough to SINGLE
                 case SINGLE:
                     CaptchaBlackList.getInstance().add(new BlockDownloadCaptchasByLink(link));
@@ -213,5 +180,4 @@ public class CaptchaHelperHostPluginRecaptchaV2 extends AbstractCaptchaHelperRec
             link.removePluginProgress(progress);
         }
     }
-
 }

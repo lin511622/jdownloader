@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.util.ArrayList;
@@ -22,6 +21,13 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import org.jdownloader.controlling.filter.CompiledFiletypeFilter;
+import org.jdownloader.plugins.ConditionalSkipReasonException;
+import org.jdownloader.plugins.WaitingSkipReason;
+import org.jdownloader.plugins.WaitingSkipReason.CAUSE;
+import org.jdownloader.plugins.components.antiDDoSForHost;
+import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
 
 import jd.PluginWrapper;
 import jd.config.Property;
@@ -38,11 +44,8 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkInfo;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
+import jd.plugins.components.MultiHosterManagement;
 import jd.plugins.components.PluginJSonUtils;
-
-import org.jdownloader.controlling.filter.CompiledFiletypeFilter;
-import org.jdownloader.plugins.components.antiDDoSForHost;
-import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
 
 /**
  *
@@ -54,33 +57,29 @@ import org.jdownloader.plugins.controller.host.LazyHostPlugin.FEATURE;
  */
 @HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "mobilism.org" }, urls = { "REGEX_NOT_POSSIBLE_RANDOM-asdfasdfsadfsfs2133" })
 public class MobilismOrg extends antiDDoSForHost {
-
     /* Tags: Script vinaget.us */
-    private static final String                            DOMAIN               = "http://mblservices.org";
-    private static final String                            NICE_HOST            = "mobilism.org";
-    private static final String                            NICE_HOSTproperty    = NICE_HOST.replaceAll("(\\.|\\-)", "");
-    private static final String                            NORESUME             = NICE_HOSTproperty + "NORESUME";
-
-    private static HashMap<Account, HashMap<String, Long>> hostUnavailableMap   = new HashMap<Account, HashMap<String, Long>>();
+    private static final String                   DOMAIN               = "http://mblservices.org";
+    private static final String                   NICE_HOST            = "mobilism.org";
+    private static final String                   NICE_HOSTproperty    = NICE_HOST.replaceAll("(\\.|\\-)", "");
+    private static final String                   NORESUME             = NICE_HOSTproperty + "NORESUME";
+    private static MultiHosterManagement          mhm                  = new MultiHosterManagement("mobilism.org");
     /* Contains <host><number of max possible chunks per download> */
-    private static HashMap<String, Boolean>                hostResumeMap        = new HashMap<String, Boolean>();
+    private static HashMap<String, Boolean>       hostResumeMap        = new HashMap<String, Boolean>();
     /* Contains <host><number of max possible chunks per download> */
-    private static HashMap<String, Integer>                hostMaxchunksMap     = new HashMap<String, Integer>();
+    private static HashMap<String, Integer>       hostMaxchunksMap     = new HashMap<String, Integer>();
     /* Contains <host><number of max possible simultan downloads> */
-    private static HashMap<String, Integer>                hostMaxdlsMap        = new HashMap<String, Integer>();
+    private static HashMap<String, Integer>       hostMaxdlsMap        = new HashMap<String, Integer>();
     /* Contains <host><number of currently running simultan downloads> */
-    private static HashMap<String, AtomicInteger>          hostRunningDlsNumMap = new HashMap<String, AtomicInteger>();
-
+    private static HashMap<String, AtomicInteger> hostRunningDlsNumMap = new HashMap<String, AtomicInteger>();
     /* Last updated: 31.03.15 */
-    private static final int                               defaultMAXDOWNLOADS  = 20;
-    private static final int                               defaultMAXCHUNKS     = 0;
-    private static final boolean                           defaultRESUME        = true;
-
-    private static Object                                  CTRLLOCK             = new Object();
-    private static AtomicInteger                           maxPrem              = new AtomicInteger(1);
-    private Account                                        currAcc              = null;
-    private DownloadLink                                   currDownloadLink     = null;
-    private static Object                                  LOCK                 = new Object();
+    private static final int                      defaultMAXDOWNLOADS  = 20;
+    private static final int                      defaultMAXCHUNKS     = 0;
+    private static final boolean                  defaultRESUME        = true;
+    private static Object                         CTRLLOCK             = new Object();
+    private static AtomicInteger                  maxPrem              = new AtomicInteger(1);
+    private Account                               currAcc              = null;
+    private DownloadLink                          currDownloadLink     = null;
+    private static Object                         LOCK                 = new Object();
 
     @SuppressWarnings("deprecation")
     public MobilismOrg(PluginWrapper wrapper) {
@@ -113,11 +112,10 @@ public class MobilismOrg extends antiDDoSForHost {
     }
 
     @Override
-    public AvailableStatus requestFileInformation(final DownloadLink link) throws PluginException {
+    public AvailableStatus requestFileInformation(final DownloadLink link) throws Exception {
         return AvailableStatus.UNCHECKABLE;
     }
 
-    @SuppressWarnings("deprecation")
     @Override
     public boolean canHandle(final DownloadLink downloadLink, final Account account) throws Exception {
         if (account == null) {
@@ -140,7 +138,11 @@ public class MobilismOrg extends antiDDoSForHost {
                 final int maxDlsForCurrentHost = hostMaxdlsMap.get(currentHost);
                 final AtomicInteger currentRunningDlsForCurrentHost = hostRunningDlsNumMap.get(currentHost);
                 if (currentRunningDlsForCurrentHost.get() >= maxDlsForCurrentHost) {
-                    return false;
+                    /*
+                     * Max downloads for specific host for this MOCH reached --> Avoid irritating/wrong 'Account missing' errormessage for
+                     * this case - wait and retry!
+                     */
+                    throw new ConditionalSkipReasonException(new WaitingSkipReason(CAUSE.HOST_TEMP_UNAVAILABLE, 15 * 1000, null));
                 }
             }
         }
@@ -173,7 +175,6 @@ public class MobilismOrg extends antiDDoSForHost {
                 }
             }
         }
-
         if (hostResumeMap != null) {
             final String thishost = link.getHost();
             synchronized (hostResumeMap) {
@@ -189,7 +190,7 @@ public class MobilismOrg extends antiDDoSForHost {
             maxChunks = 1;
         }
         link.setProperty(NICE_HOSTproperty + "directlink", dllink);
-        dl = jd.plugins.BrowserAdapter.openDownload(br, link, dllink, resume, maxChunks);
+        dl = new jd.plugins.BrowserAdapter().openDownload(br, link, dllink, resume, maxChunks);
         if (dl.getConnection().getResponseCode() == 416) {
             logger.info("Resume impossible, disabling it for the next try");
             link.setChunksProgress(null);
@@ -198,7 +199,7 @@ public class MobilismOrg extends antiDDoSForHost {
         }
         if (dl.getConnection().getContentType().contains("html") || dl.getConnection().getContentType().contains("json")) {
             br.followConnection();
-            handleErrorRetries("unknowndlerror", 10, 5 * 60 * 1000l);
+            mhm.handleErrorGeneric(this.currAcc, this.currDownloadLink, "unknowndlerror", 10, 5 * 60 * 1000l);
         }
         try {
             controlSlot(+1);
@@ -218,25 +219,9 @@ public class MobilismOrg extends antiDDoSForHost {
     @SuppressWarnings("deprecation")
     @Override
     public void handleMultiHost(final DownloadLink link, final Account account) throws Exception {
+        mhm.runCheck(account, link);
         br = new Browser();
         final boolean forceNewLinkGeneration = true;
-
-        synchronized (hostUnavailableMap) {
-            HashMap<String, Long> unavailableMap = hostUnavailableMap.get(account);
-            if (unavailableMap != null) {
-                Long lastUnavailable = unavailableMap.get(link.getHost());
-                if (lastUnavailable != null && System.currentTimeMillis() < lastUnavailable) {
-                    final long wait = lastUnavailable - System.currentTimeMillis();
-                    throw new PluginException(LinkStatus.ERROR_TEMPORARILY_UNAVAILABLE, "Host is temporarily unavailable via " + this.getHost(), wait);
-                } else if (lastUnavailable != null) {
-                    unavailableMap.remove(link.getHost());
-                    if (unavailableMap.size() == 0) {
-                        hostUnavailableMap.remove(account);
-                    }
-                }
-            }
-        }
-
         /*
          * When JD is started the first time and the user starts downloads right away, a full login might not yet have happened but it is
          * needed to get the individual host limits.
@@ -250,31 +235,34 @@ public class MobilismOrg extends antiDDoSForHost {
             }
         }
         this.setConstants(account, link);
-
         String dllink = checkDirectLink(link, NICE_HOSTproperty + "directlink");
         if (dllink == null || forceNewLinkGeneration) {
             /* request creation of downloadlink */
             br = new Browser();
             br.setFollowRedirects(true);
             login(account, false);
-            getPage("http://mblservices.org/amember/downloader/manual/?");
+            getPage("https://mblservices.org/amember/downloader/downloader/app/index.php?dl=" + link.getPluginPatternMatcher());
             // form
-            final String urlInputFieldName = "add_to_url";
-            final Form d1 = br.getFormByInputFieldKeyValue(urlInputFieldName, "");
-            if (d1 == null) {
-                throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-            }
-            d1.put(urlInputFieldName, Encoding.urlEncode(link.getDownloadURL()));
-            submitForm(d1);
-            // another form effectively
             final Form d2 = br.getFormbyProperty("name", "transload");
             if (d2 == null) {
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
+            final String urlInputFieldName = "link";
+            d2.put(urlInputFieldName, Encoding.urlEncode(link.getDownloadURL()));
             d2.put("premium_acc", "on");
             submitForm(d2);
             final Form d3 = br.getFormbyAction("/amember/downloader/downloader/app/index.php");
             if (d3 == null) {
+                // instead of d3 form you can get errors outputs directly from there scripts. for example rapidgator an premium cookie could
+                // not be found
+                // <div id="mesg" width="100%" align="center">Processing. Remain patient.</div><div align="center"><span
+                // class='htmlerror'><b>Login Error: Cannot find 'user__' cookie.</b></span>
+                final boolean header = br.containsHTML("<div id=\"mesg\" width=\"100%\" align=\"center\">.*?</div>");
+                final String error = br.getRegex("<span class='htmlerror'><b>(.*?)</b></span>").getMatch(0);
+                if (header && error != null) {
+                    // server side issues...
+                    mhm.handleErrorGeneric(this.currAcc, this.currDownloadLink, "multihoster_issue", 2, 10 * 60 * 1000l);
+                }
                 throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
             }
             submitForm(d3);
@@ -292,7 +280,7 @@ public class MobilismOrg extends antiDDoSForHost {
             }
             if (dllink == null && time > wait) {
                 logger.warning("Final downloadlink is null");
-                handleErrorRetries("dllinknull", 2, 10 * 60 * 1000l);
+                mhm.handleErrorGeneric(this.currAcc, this.currDownloadLink, "dllinknull", 2, 10 * 60 * 1000l);
             }
         }
         handleDL(account, link, dllink);
@@ -317,30 +305,6 @@ public class MobilismOrg extends antiDDoSForHost {
         return dllink;
     }
 
-    /**
-     * Is intended to handle out of date errors which might occur seldom by re-tring a couple of times before we temporarily remove the host
-     * from the host list.
-     *
-     * @param error
-     *            : The name of the error
-     * @param maxRetries
-     *            : Max retries before out of date error is thrown
-     */
-    private void handleErrorRetries(final String error, final int maxRetries, final long disableTime) throws PluginException {
-        int timesFailed = this.currDownloadLink.getIntegerProperty(NICE_HOSTproperty + "failedtimes_" + error, 0);
-        this.currDownloadLink.getLinkStatus().setRetryCount(0);
-        if (timesFailed <= maxRetries) {
-            logger.info(NICE_HOST + ": " + error + " -> Retrying");
-            timesFailed++;
-            this.currDownloadLink.setProperty(NICE_HOSTproperty + "failedtimes_" + error, timesFailed);
-            throw new PluginException(LinkStatus.ERROR_RETRY, error);
-        } else {
-            this.currDownloadLink.setProperty(NICE_HOSTproperty + "failedtimes_" + error, Property.NULL);
-            logger.info(NICE_HOST + ": " + error + " -> Disabling current host");
-            tempUnavailableHoster(disableTime);
-        }
-    }
-
     @SuppressWarnings({ "deprecation" })
     @Override
     public AccountInfo fetchAccountInfo(final Account account) throws Exception {
@@ -354,6 +318,11 @@ public class MobilismOrg extends antiDDoSForHost {
             throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
         }
         getPage(url);
+        // here is free account check
+        // url(/amember/downloader/manual/) will redirect, /amember/no-access/folder/id/4?url=/amember/downloader/manual/?
+        if (br.getURL().contains("/amember/no-access/") && br.containsHTML("<title>Access Denied</title>")) {
+            throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nUnsupported account type", PluginException.VALUE_ID_PREMIUM_DISABLE);
+        }
         final HashSet<String> supported = new HashSet<String>();
         String[] supportedHosts = br.getRegex("td>\\-([A-Za-z0-9\\-\\.]+)").getColumn(0);
         if (supportedHosts != null) {
@@ -366,7 +335,6 @@ public class MobilismOrg extends antiDDoSForHost {
         }
         ai.setMultiHostSupport(this, new ArrayList<String>(supported));
         account.setType(AccountType.PREMIUM);
-        ai.setStatus("Premium Account");
         ai.setUnlimitedTraffic();
         account.setValid(true);
         account.setConcurrentUsePossible(true);
@@ -412,7 +380,7 @@ public class MobilismOrg extends antiDDoSForHost {
                 }
                 // this will redirect.
                 br.setFollowRedirects(true);
-                getPage("http://mblservices.org/amember/downloader/manual/");
+                getPage("http://mblservices.org/amember/login");
                 final Form login = br.getFormbyProperty("name", "login");
                 if (login == null) {
                     throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
@@ -445,22 +413,6 @@ public class MobilismOrg extends antiDDoSForHost {
                 br.setFollowRedirects(ifr);
             }
         }
-    }
-
-    private void tempUnavailableHoster(final long timeout) throws PluginException {
-        if (this.currDownloadLink == null) {
-            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT, "Unable to handle this errorcode!");
-        }
-        synchronized (hostUnavailableMap) {
-            HashMap<String, Long> unavailableMap = hostUnavailableMap.get(this.currAcc);
-            if (unavailableMap == null) {
-                unavailableMap = new HashMap<String, Long>();
-                hostUnavailableMap.put(this.currAcc, unavailableMap);
-            }
-            /* wait 30 mins to retry this host */
-            unavailableMap.put(this.currDownloadLink.getHost(), (System.currentTimeMillis() + timeout));
-        }
-        throw new PluginException(LinkStatus.ERROR_RETRY);
     }
 
     /** Performs slight domain corrections. */
@@ -511,5 +463,4 @@ public class MobilismOrg extends antiDDoSForHost {
     @Override
     public void resetDownloadlink(DownloadLink link) {
     }
-
 }

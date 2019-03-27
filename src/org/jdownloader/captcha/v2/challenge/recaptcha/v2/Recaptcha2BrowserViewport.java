@@ -4,18 +4,14 @@ import java.awt.MouseInfo;
 import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.event.InputEvent;
-import java.awt.image.BufferedImage;
 
+import org.appwork.utils.os.CrossSystem;
 import org.jdownloader.captcha.v2.solver.browser.BrowserViewport;
 import org.jdownloader.captcha.v2.solver.browser.BrowserWindow;
+import org.jdownloader.logging.LogController;
 
 public class Recaptcha2BrowserViewport extends BrowserViewport {
-
-    private Rectangle     recaptchaIframe;
-
-    private BrowserWindow browser;
-    protected Rectangle   captchaPopupRectangle;
-    private BufferedImage image;
+    protected final Rectangle recaptchaIframe;
 
     public double getScale() {
         return scale;
@@ -25,43 +21,41 @@ public class Recaptcha2BrowserViewport extends BrowserViewport {
     public void onLoaded() {
         super.onLoaded();
         try {
-            Thread.sleep((long) (Math.random() * 3000));
+            Thread.sleep((long) (Math.random() * 1000));
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
         Point oldloc = MouseInfo.getPointerInfo().getLocation();
         int clickX = recaptchaIframe.x + scale(22) + scale(Math.random() * 20);
         int clickY = recaptchaIframe.y + scale(32) + scale(Math.random() * 20);
-        System.out.println("Press " + clickX + ":" + clickY);
+        WindowsMouseSpeedWorkaround workaround = null;
+        Integer mouseSpeed = null;
+        if (CrossSystem.isWindows()) {
+            try {
+                workaround = new WindowsMouseSpeedWorkaround();
+                mouseSpeed = workaround.getMouseSpeed();
+                LogController.CL().info("GetMouseSpeed(Before):" + mouseSpeed);
+            } catch (final Throwable e) {
+                LogController.CL().log(e);
+            }
+        }
+        // System.out.println("Press " + clickX + ":" + clickY);
         getRobot().mouseMove(clickX, clickY);
-
+        // first click ensure focus
         getRobot().mousePress(InputEvent.BUTTON1_MASK);
         getRobot().mouseRelease(InputEvent.BUTTON1_MASK);
-
+        // second click: press button
+        getRobot().mousePress(InputEvent.BUTTON1_MASK);
+        getRobot().mouseRelease(InputEvent.BUTTON1_MASK);
         getRobot().mouseMove(oldloc.x, oldloc.y);
-        // if (!Application.isJared(null)) {
-        // new Thread() {
-        // public void run() {
-        // try {
-        // long start = System.currentTimeMillis();
-        // Thread.sleep(500);
-        //
-        // while (System.currentTimeMillis() - start < 10000) {
-        // captchaPopupRectangle = find();
-        // if (captchaPopupRectangle != null) {
-        // onFoundCaptchaRectangle(captchaPopupRectangle);
-        // return;
-        // }
-        // Thread.sleep(500);
-        //
-        // }
-        //
-        // } catch (Throwable e) {
-        // e.printStackTrace();
-        // }
-        // }
-        // }.start();
-        // }
+        if (CrossSystem.isWindows() && workaround != null && mouseSpeed != null) {
+            try {
+                LogController.CL().info("GetMouseSpeed(After):" + workaround.getMouseSpeed());
+                LogController.CL().info("Set(Before)MouseSpeed:(" + mouseSpeed + ")|" + workaround.setMouseSpeed(mouseSpeed));
+            } catch (final Throwable e) {
+                LogController.CL().log(e);
+            }
+        }
     }
 
     // protected void onFoundCaptchaRectangle(Rectangle rectangle) {
@@ -104,7 +98,6 @@ public class Recaptcha2BrowserViewport extends BrowserViewport {
     // }
     //
     // }
-
     // protected Rectangle find() {
     // Rectangle spoken = getRectangleByColor(0xCCCCCC, scale(48), scale(48), 1d, scale(22), scale(32));
     //
@@ -113,25 +106,20 @@ public class Recaptcha2BrowserViewport extends BrowserViewport {
     // }
     // return null;
     // }
-
     public Recaptcha2BrowserViewport(BrowserWindow screenResource, Rectangle rect, Rectangle elementBounds) {
         super(screenResource);
-
         recaptchaIframe = rect;
         scale = recaptchaIframe.width / 306d;
-
         this.width = (int) (screenResource.getViewportWidth() * scale);
         this.height = (int) (screenResource.getViewportHeight() * scale);
         if (elementBounds == null) {
             this.x = Math.max(screenResource.getX(), rect.x - scale(48));
             this.y = Math.max(screenResource.getY(), rect.y - scale(164));
-
         } else {
             this.x = rect.x - elementBounds.x;
             this.y = rect.y - elementBounds.y;
         }
         // showImage(getRobot().createScreenCapture(new Rectangle(x, y, width, height)), null);
-
         // 48 164
     }
 }

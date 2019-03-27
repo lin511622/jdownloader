@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.regex.Pattern;
 
 import javax.script.AbstractScriptEngine;
 import javax.script.Bindings;
@@ -31,6 +32,7 @@ import javax.script.SimpleBindings;
 import javax.script.SimpleScriptContext;
 
 import org.appwork.utils.reflection.Clazz;
+import org.jdownloader.logging.LogController;
 import org.mozilla.javascript.ConsString;
 import org.mozilla.javascript.Context;
 import org.mozilla.javascript.Function;
@@ -52,7 +54,6 @@ import jd.parser.Regex;
 import jd.plugins.components.ThrowingRunnable;
 
 public class JavaScriptEngineFactory {
-
     /**
      * ExternalScriptable is an implementation of Scriptable backed by a JSR 223 ScriptContext instance.
      *
@@ -60,13 +61,11 @@ public class JavaScriptEngineFactory {
      * @author A. Sundararajan
      * @since 1.6
      */
-
     public static class ExternalScriptable implements Scriptable {
         /*
          * Underlying ScriptContext that we use to store named variables of this scope.
          */
         private ScriptContext       context;
-
         /*
          * JavaScript allows variables to be named as numbers (indexed properties). This way arrays, objects (scopes) are treated uniformly.
          * Note that JSR 223 API supports only String named variables and so we can't store these in Bindings. Also, JavaScript allows name
@@ -75,7 +74,6 @@ public class JavaScriptEngineFactory {
          * not convert.
          */
         private Map<Object, Object> indexedProps;
-
         // my prototype
         private Scriptable          prototype;
         // my parent scope, if any
@@ -134,7 +132,6 @@ public class JavaScriptEngineFactory {
                         if (value instanceof ConsString) {
                             value = value.toString();
                         }
-
                         return Context.javaToJS(value, this);
                     } else {
                         return NOT_FOUND;
@@ -356,7 +353,6 @@ public class JavaScriptEngineFactory {
                 } else {
                     tryToString = (i == 1);
                 }
-
                 String methodName;
                 Object[] args;
                 if (tryToString) {
@@ -469,7 +465,6 @@ public class JavaScriptEngineFactory {
                 if (njb instanceof NativeJavaClass) {
                     return njb;
                 }
-
                 /*
                  * script may use Java primitive wrapper type objects (such as java.lang.Integer, java.lang.Boolean etc) explicitly. If we
                  * unwrap, then these script objects will become script primitive types. For example,
@@ -500,29 +495,23 @@ public class JavaScriptEngineFactory {
      * @since 1.6
      */
     public static class RhinoTopLevel extends ImporterTopLevel {
-
         // variables defined always to help Java access from JavaScript
         // private static final String builtinVariables = "var com = Packages.com; \n" +
         // "var edu = Packages.edu; \n" + "var javax = Packages.javax; \n" +
         // "var net = Packages.net; \n" + "var org = Packages.org; \n";
-
         RhinoTopLevel(Context cx, RhinoScriptEngine engine) {
             super(cx);
             this.engine = engine;
-
             // initialize JSAdapter lazily. Reduces footprint & startup time.
             new LazilyLoadedCtor(this, "JSAdapter", "com.sun.script.javascript.JSAdapter", false);
-
             /*
              * initialize JavaAdapter. We can't lazy initialize this because lazy initializer attempts to define a new property. But,
              * JavaAdapter is an exisiting property that we overwrite.
              */
             JavaAdapter.init(cx, this, false);
-
             // add top level functions
             String names[] = { "bindings", "scope", "sync" };
             defineFunctionProperties(names, RhinoTopLevel.class, ScriptableObject.DONTENUM);
-
             // define built-in variables
             // cx.evaluateString(this, builtinVariables, "<builtin>", 1, null);
         }
@@ -600,7 +589,6 @@ public class JavaScriptEngineFactory {
      * @since 1.6
      */
     public static class RhinoCompiledScript extends CompiledScript {
-
         private RhinoScriptEngine engine;
         private Script            script;
 
@@ -610,11 +598,9 @@ public class JavaScriptEngineFactory {
         }
 
         public Object eval(ScriptContext context) throws ScriptException {
-
             Object result = null;
             Context cx = RhinoScriptEngine.enterContext();
             try {
-
                 Scriptable scope = engine.getRuntimeScope(context);
                 Object ret = script.exec(cx, scope);
                 result = engine.unwrapReturnValue(ret);
@@ -632,18 +618,15 @@ public class JavaScriptEngineFactory {
             } finally {
                 Context.exit();
             }
-
             return result;
         }
 
         public ScriptEngine getEngine() {
             return engine;
         }
-
     }
 
     public static class InterfaceImplementor {
-
         private Invocable engine;
 
         /** Creates a new instance of Invocable */
@@ -656,7 +639,6 @@ public class JavaScriptEngineFactory {
             private Object    thiz;
 
             public InterfaceImplementorInvocationHandler(Invocable engine, Object thiz) {
-
                 this.engine = engine;
                 this.thiz = thiz;
             }
@@ -699,21 +681,17 @@ public class JavaScriptEngineFactory {
      * @since 1.6
      */
     public static class RhinoScriptEngine extends AbstractScriptEngine implements Invocable, Compilable {
-
         private static final boolean DEBUG = false;
-
         /*
          * Scope where standard JavaScript objects and our extensions to it are stored. Note that these are not user defined engine level
          * global variables. These are variables have to be there on all compliant ECMAScript scopes. We put these standard objects in this
          * top level.
          */
         private RhinoTopLevel        topLevel;
-
         /*
          * map used to store indexed properties in engine scope refer to comment on 'indexedProps' in ExternalScriptable.java.
          */
         private Map<Object, Object>  indexedProps;
-
         private ScriptEngineFactory  factory;
         private InterfaceImplementor implementor;
 
@@ -721,16 +699,13 @@ public class JavaScriptEngineFactory {
          * Creates a new instance of RhinoScriptEngine
          */
         public RhinoScriptEngine() {
-
             Context cx = enterContext();
             try {
                 topLevel = new RhinoTopLevel(cx, this);
             } finally {
                 Context.exit();
             }
-
             indexedProps = new HashMap<Object, Object>();
-
             // construct object used to implement getInterface
             implementor = new InterfaceImplementor(this) {
                 protected Object convertResult(Method method, Object res) throws ScriptException {
@@ -746,13 +721,11 @@ public class JavaScriptEngineFactory {
 
         public Object eval(Reader reader, ScriptContext ctxt) throws ScriptException {
             Object ret;
-
             Context cx = enterContext();
             try {
                 Scriptable scope = getRuntimeScope(ctxt);
                 String filename = (String) get(ScriptEngine.FILENAME);
                 filename = filename == null ? "<Unknown source>" : filename;
-
                 ret = cx.evaluateReader(scope, reader, filename, 1, null);
             } catch (RhinoException re) {
                 if (DEBUG) {
@@ -773,7 +746,6 @@ public class JavaScriptEngineFactory {
             } finally {
                 cx.exit();
             }
-
             return unwrapReturnValue(ret);
         }
 
@@ -814,18 +786,15 @@ public class JavaScriptEngineFactory {
                 if (name == null) {
                     throw new NullPointerException("method name is null");
                 }
-
                 if (thiz != null && !(thiz instanceof Scriptable)) {
                     thiz = cx.toObject(thiz, topLevel);
                 }
-
                 Scriptable engineScope = getRuntimeScope(context);
                 Scriptable localScope = (thiz != null) ? (Scriptable) thiz : engineScope;
                 Object obj = ScriptableObject.getProperty(localScope, name);
                 if (!(obj instanceof Function)) {
                     throw new NoSuchMethodException("no such method: " + name);
                 }
-
                 Function func = (Function) obj;
                 Scriptable scope = func.getParentScope();
                 if (scope == null) {
@@ -856,7 +825,6 @@ public class JavaScriptEngineFactory {
             if (thiz == null) {
                 throw new IllegalArgumentException("script object can not be null");
             }
-
             try {
                 return implementor.getInterface(thiz, clasz);
             } catch (ScriptException e) {
@@ -870,17 +838,13 @@ public class JavaScriptEngineFactory {
             if (ctxt == null) {
                 throw new NullPointerException("null script context");
             }
-
             // we create a scope for the given ScriptContext
             Scriptable newScope = new ExternalScriptable(ctxt, indexedProps);
-
             // Set the prototype of newScope to be 'topLevel' so that
             // JavaScript standard objects are visible from the scope.
             newScope.setPrototype(topLevel);
-
             // define "context" variable in the new scope
             newScope.put("context", newScope, ctxt);
-
             // define "print", "println" functions in the new scope
             Context cx = enterContext();
             try {
@@ -904,7 +868,6 @@ public class JavaScriptEngineFactory {
                 if (fileName == null) {
                     fileName = "<Unknown Source>";
                 }
-
                 Scriptable scope = getRuntimeScope(context);
                 Script scr = cx.compileReader(scope, script, fileName, 1, null);
                 ret = new RhinoCompiledScript(this, scr);
@@ -920,7 +883,6 @@ public class JavaScriptEngineFactory {
         }
 
         // package-private helpers
-
         static Context enterContext() {
             // call this always so that initializer of this class runs
             // and initializes custom wrap factory and class shutter.
@@ -946,7 +908,6 @@ public class JavaScriptEngineFactory {
             if (result instanceof Wrapper) {
                 result = ((Wrapper) result).unwrap();
             }
-
             return result instanceof Undefined ? null : result;
         }
 
@@ -955,10 +916,8 @@ public class JavaScriptEngineFactory {
                 System.out.println("No file specified");
                 return;
             }
-
             InputStreamReader r = new InputStreamReader(new FileInputStream(args[0]));
             ScriptEngine engine = new RhinoScriptEngine();
-
             engine.put("x", "y");
             engine.put(ScriptEngine.FILENAME, args[0]);
             engine.eval(r);
@@ -967,7 +926,6 @@ public class JavaScriptEngineFactory {
     }
 
     public static class CustomRhinoScriptEngineFactory implements ScriptEngineFactory {
-
         public CustomRhinoScriptEngineFactory() {
         }
 
@@ -990,9 +948,7 @@ public class JavaScriptEngineFactory {
         }
 
         public ScriptEngine getScriptEngine() {
-
             try {
-
                 RhinoScriptEngine ret = new RhinoScriptEngine();
                 ret.setEngineFactory(this);
                 return ret;
@@ -1000,20 +956,16 @@ public class JavaScriptEngineFactory {
                 e.printStackTrace();
                 throw e;
             } finally {
-
             }
-
         }
 
         public String getMethodCallSyntax(String obj, String method, String... args) {
-
             String ret = obj + "." + method + "(";
             int len = args.length;
             if (len == 0) {
                 ret += ")";
                 return ret;
             }
-
             for (int i = 0; i < len; i++) {
                 ret += args[i];
                 if (i != len - 1) {
@@ -1053,30 +1005,25 @@ public class JavaScriptEngineFactory {
             for (int i = 0; i < len; i++) {
                 ret += statements[i] + ";";
             }
-
             return ret;
         }
 
         private static List<String> NAMES;
         private static List<String> MIME_TYPES;
         private static List<String> EXTENSIONS;
-
         static {
             NAMES = new ArrayList<String>(6);
             NAMES.add("js");
             NAMES.add("rhino");
             NAMES.add("JavaScript");
             NAMES.add("javascript");
-
             NAMES = Collections.unmodifiableList(NAMES);
-
             MIME_TYPES = new ArrayList<String>(4);
             MIME_TYPES.add("application/javascript");
             MIME_TYPES.add("application/ecmascript");
             MIME_TYPES.add("text/javascript");
             MIME_TYPES.add("text/ecmascript");
             MIME_TYPES = Collections.unmodifiableList(MIME_TYPES);
-
             EXTENSIONS = new ArrayList<String>(1);
             EXTENSIONS.add("js");
             EXTENSIONS = Collections.unmodifiableList(EXTENSIONS);
@@ -1139,16 +1086,14 @@ public class JavaScriptEngineFactory {
 
     public static Object jsonToJavaObject(String string) throws Exception {
         try {
-
             return org.appwork.storage.JSonStorage.restoreFromString(string, new org.appwork.storage.TypeRef<Object>() {
             });
         } catch (Throwable e) {
+            LogController.CL(true).log(e);
             // jd 09 workaround. use rhino
-
             try {
                 ScriptEngineManager mgr = getScriptEngineManager(null);
                 ScriptEngine engine = mgr.getEngineByName("JavaScript");
-
                 engine.eval("var response=" + string + ";");
                 return toMap(engine.get("response"));
             } catch (ScriptException e2) {
@@ -1162,19 +1107,19 @@ public class JavaScriptEngineFactory {
      * 2. Our parser decides whether to use Long or Integer but most times we need Long also we always need more code to ensure to get the
      * connect data type. This makes it easier.
      */
-    public static long toLong(final Object o, final long defaultvalue) {
-        long lo = defaultvalue;
+    public static long toLong(final Object value, final long defaultvalue) {
         try {
-            if (o instanceof String) {
-                lo = Long.parseLong((String) o);
-            } else if (o instanceof Long) {
-                lo = ((Long) o).longValue();
+            if (value instanceof String) {
+                return Long.parseLong((String) value);
+            } else if (value instanceof Number) {
+                return ((Number) value).longValue();
             } else {
-                lo = ((Integer) o).intValue();
+                return defaultvalue;
             }
         } catch (final Throwable e) {
+            LogController.CL(true).log(e);
+            return defaultvalue;
         }
-        return lo;
     }
 
     /**
@@ -1183,77 +1128,100 @@ public class JavaScriptEngineFactory {
      *
      * @param crawlstring
      *            String that contains info on what to get in this format: /String/String/{number representing the number of the object
-     *            inside the ArrayList}/String/and_so_on
+     *            inside the ArrayList}/String/and_so_on e.g. {objectnameOne}/{objectnameTwo}/{2}(stands for ArrayList Object on position
+     *            3)/{someobject}
      */
     @SuppressWarnings({ "unchecked", "rawtypes" })
     public static Object walkJson(final Object json, final String crawlstring) {
         if (crawlstring == null) {
             return null;
         }
-
         final String[] crawlparts = crawlstring.split("/");
+        String walkedBegin = "";
+        String walkedRemains = crawlstring;
         Object currentObject = json;
-
-        LinkedHashMap<String, Object> tmp_linkedmap = null;
-        HashMap<String, Object> tmp_map = null;
-        ArrayList<Object> tmp_list = null;
-        int crawlentry_number = 0;
-
         try {
-            for (final String crawlpart : crawlparts) {
-                final String crawlpart_crawlnumber = new Regex(crawlpart, "\\{(\\d+)\\}").getMatch(0);
-                if (crawlpart_crawlnumber != null) {
-                    crawlentry_number = Integer.parseInt(crawlpart_crawlnumber);
+            for (int i = 0; i < crawlparts.length; i++) {
+                // speed up code by existing when null. also future proof against npe
+                if (currentObject == null) {
+                    return null;
                 }
-                if (currentObject instanceof LinkedHashMap && crawlpart_crawlnumber != null) {
+                final String crawlpart = crawlparts[i];
+                walkedBegin = walkedBegin.length() == 0 ? crawlpart : walkedBegin + "/" + crawlpart;
+                // last value wont have trailing /
+                walkedRemains = walkedRemains.replaceFirst("^" + Pattern.quote(crawlpart) + "/?", "");
+                final int crawlentry_number;
+                {
+                    final String crawlpart_crawlnumber = new Regex(crawlpart, "\\{(\\d*)\\}").getMatch(0);
+                    if (crawlpart_crawlnumber != null) {
+                        if (crawlpart_crawlnumber.matches("\\d+")) {
+                            crawlentry_number = Integer.parseInt(crawlpart_crawlnumber);
+                        } else {
+                            crawlentry_number = -1;
+                        }
+                    } else {
+                        crawlentry_number = -2;
+                    }
+                }
+                if (currentObject instanceof LinkedHashMap && crawlentry_number >= -1) {
                     /*
                      * Get Object from LinkedHashMap from desired position - this is a rare case but good to have it covered here in this
-                     * way!
+                     * way! Example: "mapOne/{mapTwo}/{0}<-Not an ArrayList but we want the first map which we do not know the name of"
                      */
-                    tmp_linkedmap = (LinkedHashMap<String, Object>) currentObject;
-                    currentObject = tmp_linkedmap.get(crawlpart);
+                    final LinkedHashMap<String, Object> tmp_linkedmap = (LinkedHashMap<String, Object>) currentObject;
                     final Iterator<Entry<String, Object>> it = tmp_linkedmap.entrySet().iterator();
                     int position = 0;
+                    /* Did it find the desired value or not */
+                    boolean success = false;
                     while (it.hasNext()) {
                         final Entry<String, Object> entry = it.next();
-                        if (position == crawlentry_number) {
-                            currentObject = entry.getKey();
+                        if (crawlentry_number >= 0 && position == crawlentry_number) {
+                            currentObject = entry.getValue();
+                            success = true;
                             break;
                         }
                         position++;
                     }
-                } else if (currentObject instanceof LinkedHashMap) {
-                    tmp_linkedmap = (LinkedHashMap<String, Object>) currentObject;
-                    currentObject = tmp_linkedmap.get(crawlpart);
-                } else if (currentObject instanceof HashMap) {
-                    tmp_map = (HashMap<String, Object>) currentObject;
+                    if (!success) {
+                        currentObject = null;
+                    }
+                } else if (currentObject instanceof Map) {
+                    final Map<String, Object> tmp_map = (Map<String, Object>) currentObject;
                     currentObject = tmp_map.get(crawlpart);
-                } else if (currentObject instanceof ArrayList) {
-                    if (crawlpart_crawlnumber == null) {
+                } else if (currentObject instanceof List) {
+                    if (crawlentry_number == -2) {
                         /* crawlpart does not match the DataType we have --> Return null */
                         return null;
                     }
-                    tmp_list = (ArrayList) currentObject;
-                    currentObject = tmp_list.get(crawlentry_number);
+                    final List<Object> tmp_list = (List) currentObject;
+                    if (crawlentry_number == -1) {
+                        // look forward to match next key
+                        for (final Object list : tmp_list) {
+                            final Object test = walkJson(list, walkedRemains);
+                            if (test != null) {
+                                return test;
+                            }
+                        }
+                        // nullify
+                        currentObject = null;
+                    } else {
+                        currentObject = tmp_list.get(crawlentry_number);
+                    }
                 } else {
                     break;
                 }
             }
-
-        } catch (final Throwable e) {
-            e.printStackTrace();
+        } catch (final Exception e) {
+            LogController.CL(true).log(e);
             return null;
         }
-
         return currentObject;
     }
 
     public static Object toMap(Object obj) {
-
         if (obj == null) {
             return null;
         }
-
         if (Clazz.isPrimitiveWrapper(obj.getClass())) {
             return obj;
         } else if (obj instanceof String) {
@@ -1268,7 +1236,6 @@ public class JavaScriptEngineFactory {
                     System.out.println("Unknown Key: " + s + " " + s.getClass());
                     ret.put(s + "", toMap(((org.mozilla.javascript.NativeObject) obj).get(s)));
                 }
-
             }
             return ret;
         } else if (obj instanceof org.mozilla.javascript.NativeArray) {
@@ -1286,7 +1253,6 @@ public class JavaScriptEngineFactory {
                     System.out.println("Unknown Key: " + s + " " + s.getClass());
                     ret.put(s + "", toMap(((org.mozilla.javascript.NativeObject) obj).get(s)));
                 }
-
             }
             return ret;
         } else if (obj instanceof net.sourceforge.htmlunit.corejs.javascript.NativeArray) {
@@ -1313,5 +1279,4 @@ public class JavaScriptEngineFactory {
             JSRhinoPermissionRestricter.TRUSTED_THREAD.remove(Thread.currentThread());
         }
     }
-
 }

@@ -6,6 +6,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -20,6 +21,7 @@ import jd.plugins.download.DownloadInterface;
 
 import org.appwork.storage.config.JsonConfig;
 import org.appwork.utils.StringUtils;
+import org.appwork.utils.os.CrossSystem;
 import org.jdownloader.DomainInfo;
 import org.jdownloader.controlling.DownloadLinkView;
 import org.jdownloader.extensions.extraction.ExtractionProgress;
@@ -32,10 +34,10 @@ import org.jdownloader.plugins.ConditionalSkipReason;
 import org.jdownloader.plugins.FinalLinkState;
 import org.jdownloader.plugins.MirrorLoading;
 import org.jdownloader.plugins.SkipReason;
+import org.jdownloader.settings.GeneralSettings;
 import org.jdownloader.settings.GraphicalUserInterfaceSettings;
 
 public class FilePackageView extends ChildrenView<DownloadLink> {
-
     private static class LinkInfo {
         private long         bytesTotal = -1;
         private long         bytesDone  = -1;
@@ -45,23 +47,19 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
     }
 
     private final FilePackage              fp;
-
-    protected volatile long                lastUpdateTimestamp      = -1;
-
-    protected volatile boolean             lastRunningState         = false;
-    protected volatile long                finishedDate             = -1;
-    protected volatile long                estimatedETA             = -1;
-
-    private volatile int                   offline                  = 0;
-    private volatile int                   online                   = 0;
-    private final AtomicLong               updatesRequired          = new AtomicLong(0);
-    private volatile long                  updatesDone              = -1;
-    private volatile String                availabilityColumnString = null;
-    private volatile ChildrenAvailablility availability             = ChildrenAvailablility.UNKNOWN;
-
-    private volatile int                   items                    = 0;
-
-    protected static final long            GUIUPDATETIMEOUT         = JsonConfig.create(GraphicalUserInterfaceSettings.class).getDownloadViewRefresh();
+    protected volatile long                lastUpdateTimestamp            = -1;
+    protected volatile boolean             lastRunningState               = false;
+    protected volatile long                finishedDate                   = -1;
+    protected volatile long                estimatedETA                   = -1;
+    private volatile int                   offline                        = 0;
+    private volatile int                   online                         = 0;
+    private final AtomicLong               updatesRequired                = new AtomicLong(0);
+    private volatile long                  updatesDone                    = -1;
+    private volatile String                availabilityColumnString       = null;
+    private volatile ChildrenAvailablility availability                   = ChildrenAvailablility.UNKNOWN;
+    private volatile int                   items                          = 0;
+    protected static final long            GUIUPDATETIMEOUT               = JsonConfig.create(GraphicalUserInterfaceSettings.class).getDownloadViewRefresh();
+    protected static final boolean         FORCED_MIRROR_CASE_INSENSITIVE = CrossSystem.isWindows() || JsonConfig.create(GeneralSettings.class).isForceMirrorDetectionCaseInsensitive();
 
     public boolean isEnabled() {
         return enabledCount > 0;
@@ -90,9 +88,7 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
     }
 
     private long                  done = 0;
-
     private int                   enabledCount;
-
     private PluginStateCollection pluginStates;
 
     public PluginStateCollection getPluginStates() {
@@ -168,12 +164,10 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
         private boolean                      allFinished         = true;
         private String                       sameSource          = null;
         private boolean                      sameSourceFullUrl   = true;
-
         private HashMap<Object, PluginState> pluginStates        = new HashMap<Object, PluginState>();
     }
 
     public static class PluginState {
-
         protected String description;
         protected Icon   stateIcon;
 
@@ -203,9 +197,7 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
     private final static AbstractIcon           EXTRACTICONERROR     = new AbstractIcon(IconKey.ICON_EXTRACT_ERROR, 16);
     private final static AbstractIcon           EXTRACTICONSTART     = new AbstractIcon(IconKey.ICON_EXTRACT_RUN, 16);
     private final static AbstractIcon           FALSEICON            = new AbstractIcon(IconKey.ICON_FALSE, 16);
-
     private final static Comparator<DomainInfo> DOMAININFOCOMPARATOR = new Comparator<DomainInfo>() {
-
         @Override
         public int compare(DomainInfo o1, DomainInfo o2) {
             return o1.getTld().compareTo(o2.getTld());
@@ -369,6 +361,8 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
                         final String message = prog.getMessage(FilePackageView.this);
                         if (message != null) {
                             ps = new PluginState(null, null) {
+                                String msg = null;
+
                                 @Override
                                 public synchronized Icon getIcon() {
                                     if (stateIcon == null) {
@@ -388,7 +382,10 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
 
                                 @Override
                                 public String getDescription() {
-                                    return message + " (" + domainInfo.getTld() + ")";
+                                    if (msg == null) {
+                                        msg = message + " (" + domainInfo.getTld() + ")";
+                                    }
+                                    return msg;
                                 }
                             };
                             tmp.pluginStates.put(id, ps);
@@ -406,6 +403,7 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
                     final String message = conditionalSkipReason.getMessage(this, link);
                     if (message != null) {
                         ps = new PluginState(null, null) {
+                            String msg = null;
 
                             @Override
                             public synchronized Icon getIcon() {
@@ -426,7 +424,10 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
 
                             @Override
                             public String getDescription() {
-                                return message + " (" + domainInfo.getTld() + ")";
+                                if (msg == null) {
+                                    msg = message + " (" + domainInfo.getTld() + ")";
+                                }
+                                return msg;
                             }
                         };
                         tmp.pluginStates.put(id, ps);
@@ -471,6 +472,7 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
                 id = "error".concat(link.getHost());
                 if (!tmp.pluginStates.containsKey(id)) {
                     ps = new PluginState(null, null) {
+                        String msg = null;
 
                         @Override
                         public synchronized Icon getIcon() {
@@ -491,7 +493,10 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
 
                         @Override
                         public String getDescription() {
-                            return _GUI.T.FilePackageView_addLinkToTemp_downloaderror_() + " (" + domainInfo.getTld() + ")";
+                            if (msg == null) {
+                                msg = _GUI.T.FilePackageView_addLinkToTemp_downloaderror_() + " (" + domainInfo.getTld() + ")";
+                            }
+                            return msg;
                         }
                     };
                     tmp.pluginStates.put(id, ps);
@@ -504,7 +509,6 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
             case FINISHED_CRC32:
             case FINISHED_MIRROR:
             }
-
             // }
             final ExtractionStatus extractionStatus = link.getExtractionStatus();
             if (extractionStatus != null) {
@@ -521,15 +525,25 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
                             ps = tmp.pluginStates.get(id);
                             if (ps == null) {
                                 ps = new ExtractionPluginState(null, EXTRACTICONERROR) {
+                                    String msg = null;
+
                                     @Override
                                     public String getDescription() {
-                                        final StringBuilder sb = new StringBuilder();
-                                        sb.append(extractionStatus.getExplanation());
-                                        for (final DownloadLink archive : archives.values()) {
-                                            sb.append("\r\n");
-                                            sb.append(archive.getName());
+                                        if (msg == null) {
+                                            final StringBuilder sb = new StringBuilder();
+                                            sb.append(extractionStatus.getExplanation());
+                                            sb.append(": ");
+                                            int i = 0;
+                                            for (final DownloadLink archive : archives.values()) {
+                                                if (i > 0) {
+                                                    sb.append("\r\n");
+                                                }
+                                                sb.append(archive.getName());
+                                                i++;
+                                            }
+                                            msg = sb.toString();
                                         }
-                                        return sb.toString();
+                                        return msg;
                                     };
                                 };
                                 tmp.pluginStates.put(id, ps);
@@ -549,15 +563,25 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
                             ps = tmp.pluginStates.get(id);
                             if (ps == null) {
                                 ps = new ExtractionPluginState(null, EXTRACTICONOK) {
+                                    String msg = null;
+
                                     @Override
                                     public String getDescription() {
-                                        final StringBuilder sb = new StringBuilder();
-                                        sb.append(extractionStatus.getExplanation());
-                                        for (final DownloadLink archive : archives.values()) {
-                                            sb.append("\r\n");
-                                            sb.append(archive.getName());
+                                        if (msg == null) {
+                                            final StringBuilder sb = new StringBuilder();
+                                            sb.append(extractionStatus.getExplanation());
+                                            sb.append(": ");
+                                            int i = 0;
+                                            for (final DownloadLink archive : archives.values()) {
+                                                if (i > 0) {
+                                                    sb.append("\r\n");
+                                                }
+                                                sb.append(archive.getName());
+                                                i++;
+                                            }
+                                            msg = sb.toString();
                                         }
-                                        return sb.toString();
+                                        return msg;
                                     };
                                 };
                                 tmp.pluginStates.put(id, ps);
@@ -581,9 +605,14 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
                                     final String message = prog2.getMessage(FilePackageView.this);
                                     if (message != null) {
                                         ps = new PluginState(null, EXTRACTICONSTART) {
+                                            String msg = null;
+
                                             @Override
                                             public String getDescription() {
-                                                return message + " (" + link.getName() + ")";
+                                                if (msg == null) {
+                                                    msg = message + " (" + link.getName() + ")";
+                                                }
+                                                return msg;
                                             };
                                         };
                                         tmp.pluginStates.put(id, ps);
@@ -595,9 +624,14 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
                             final String message = extractionStatus.getExplanation();
                             if (message != null) {
                                 ps = new PluginState(null, EXTRACTICONSTART) {
+                                    String msg = null;
+
                                     @Override
                                     public String getDescription() {
-                                        return message + " (" + link.getName() + ")";
+                                        if (msg == null) {
+                                            msg = message + " (" + link.getName() + ")";
+                                        }
+                                        return msg;
                                     };
                                 };
                                 tmp.pluginStates.put(id, ps);
@@ -611,9 +645,13 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
         if (skipReason != null || finalLinkState != null) {
             tmp.newFinalCount++;
         }
-
         final boolean isEnabled = link.isEnabled();
-        final String displayName = view.getDisplayName();
+        final String displayName;
+        if (FORCED_MIRROR_CASE_INSENSITIVE) {
+            displayName = view.getDisplayName().toLowerCase(Locale.ENGLISH);
+        } else {
+            displayName = view.getDisplayName();
+        }
         if (isEnabled) {
             if (finalLinkState == null || FinalLinkState.PLUGIN_DEFECT.equals(finalLinkState)) {
                 tmp.allFinished = false;
@@ -686,7 +724,6 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
                 }
             }
         }
-
         if (tmp.allFinished && link.getFinishedDate() > tmp.newFinishedDate) {
             /*
              * we can set latest finished date because all links till now are finished
@@ -718,7 +755,6 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
     }
 
     private final void updateAvailability(Temp tmp) {
-
         if (online == tmp.items) {
             availability = ChildrenAvailablility.ONLINE;
             return;
@@ -760,5 +796,4 @@ public class FilePackageView extends ChildrenView<DownloadLink> {
     public int size() {
         return items;
     }
-
 }

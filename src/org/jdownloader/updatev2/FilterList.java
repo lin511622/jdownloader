@@ -1,9 +1,9 @@
 package org.jdownloader.updatev2;
 
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.appwork.exceptions.WTFException;
+import org.appwork.loggingv3.LogV3;
 import org.appwork.storage.Storable;
 
 public class FilterList implements Storable {
@@ -62,17 +62,19 @@ public class FilterList implements Storable {
                 } else {
                     size++;
                     final int index = entry.lastIndexOf("@");
-                    if (index >= 0 && index + 1 < entry.length() && entry.matches("^[a-zA-Z0-9.-_@]+$")) {
+                    if (index >= 0 && index + 1 < entry.length()) {
                         final String username = entry.substring(0, index);
                         final String host = entry.substring(index + 1);
                         try {
                             accountPatterns[i] = Pattern.compile(username, Pattern.CASE_INSENSITIVE);
                         } catch (Throwable e) {
+                            LogV3.log(e);
                             accountPatterns[i] = Pattern.compile(".*" + Pattern.quote(username) + ".*", Pattern.CASE_INSENSITIVE);
                         }
                         try {
                             domainPatterns[i] = Pattern.compile(host, Pattern.CASE_INSENSITIVE);
                         } catch (Throwable e) {
+                            LogV3.log(e);
                             domainPatterns[i] = Pattern.compile(".*" + Pattern.quote(host) + ".*", Pattern.CASE_INSENSITIVE);
                         }
                     } else {
@@ -80,6 +82,7 @@ public class FilterList implements Storable {
                         try {
                             domainPatterns[i] = Pattern.compile(entry, Pattern.CASE_INSENSITIVE);
                         } catch (Throwable e) {
+                            LogV3.log(e);
                             domainPatterns[i] = Pattern.compile(".*" + Pattern.quote(entry) + ".*", Pattern.CASE_INSENSITIVE);
                         }
                     }
@@ -91,29 +94,24 @@ public class FilterList implements Storable {
 
     private volatile String[] entries;
 
-    public boolean validate(String host, String accUser) {
+    public boolean validate(String host, String user) {
         if (host == null) {
             host = "";
         }
+        if (user == null) {
+            user = "";
+        }
         final Pattern[][] lPatterns = patterns;
+        final int size = this.size;
         final Pattern[] accountPatterns = lPatterns[0];
         final Pattern[] domainPatterns = lPatterns[1];
         switch (type) {
         case BLACKLIST:
             for (int i = 0; i < domainPatterns.length; i++) {
-                final Pattern domain = domainPatterns[i];
-                if (domain == null) {
-                    continue;
-                }
-                final Pattern account = accountPatterns[i];
-                if (account != null && accUser != null) {
-                    if (domain.matcher(host).find() && account.matcher(accUser).find()) {
-                        //
-                        return false;
-                    }
-                } else {
-                    if (domain.matcher(host).find()) {
-                        //
+                final Pattern domainPattern = domainPatterns[i];
+                if (domainPattern != null) {
+                    final Pattern accountPattern = accountPatterns[i];
+                    if (domainPattern.matcher(host).find() && (accountPattern == null || accountPattern.matcher(user).find())) {
                         return false;
                     }
                 }
@@ -121,26 +119,20 @@ public class FilterList implements Storable {
             return true;
         case WHITELIST:
             for (int i = 0; i < domainPatterns.length; i++) {
-                final Pattern domain = domainPatterns[i];
-                if (domain == null) {
-                    continue;
-                }
-                final Pattern account = accountPatterns[i];
-                if (account != null && accUser != null) {
-                    if (domain.matcher(host).find() && account.matcher(accUser).find()) {
-                        //
-                        return true;
-                    }
-                } else {
-                    Matcher matcher = domain.matcher(host);
-                    if (matcher.find()) {
-                        //
-                        // String g0 = matcher.group(0);
+                final Pattern domainPattern = domainPatterns[i];
+                if (domainPattern != null) {
+                    final Pattern accountPattern = accountPatterns[i];
+                    if (domainPattern.matcher(host).find() && (accountPattern == null || accountPattern.matcher(user).find())) {
                         return true;
                     }
                 }
             }
-            return false;
+            /**
+             * whitelist is only active with at least one valid entry
+             *
+             * it is too easy to switch to whitelist without any entry -> blocks all connections
+             */
+            return size == 0;
         default:
             throw new WTFException("Unknown Type: " + type);
         }

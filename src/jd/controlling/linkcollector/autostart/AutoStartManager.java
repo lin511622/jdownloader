@@ -2,10 +2,13 @@ package jd.controlling.linkcollector.autostart;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.WeakHashMap;
 
 import jd.controlling.linkcollector.LinkCollectingInformation;
 import jd.controlling.linkcollector.LinkCollector;
+import jd.controlling.linkcollector.LinkCollector.JobLinkCrawler;
 import jd.controlling.linkcollector.LinkCollector.MoveLinksMode;
+import jd.controlling.linkcollector.LinkCollectorCrawler;
 import jd.controlling.linkcrawler.CrawledLink;
 import jd.controlling.linkcrawler.CrawledPackage;
 import jd.controlling.packagecontroller.AbstractNode;
@@ -28,7 +31,6 @@ import org.jdownloader.myjdownloader.client.json.AvailableLinkState;
 import org.jdownloader.settings.staticreferences.CFG_LINKGRABBER;
 
 public class AutoStartManager implements GenericConfigEventListener<Boolean> {
-
     private final DelayedRunnable             delayer;
     private volatile boolean                  globalAutoStart;
     private volatile boolean                  globalAutoConfirm;
@@ -44,8 +46,14 @@ public class AutoStartManager implements GenericConfigEventListener<Boolean> {
         CFG_LINKGRABBER.LINKGRABBER_AUTO_CONFIRM_ENABLED.getEventSender().addListener(this, true);
         globalAutoStart = CFG_LINKGRABBER.LINKGRABBER_AUTO_START_ENABLED.isEnabled();
         globalAutoConfirm = CFG_LINKGRABBER.LINKGRABBER_AUTO_CONFIRM_ENABLED.isEnabled();
-        delayer = new DelayedRunnable(Math.max(1, CFG_LINKGRABBER.CFG.getAutoConfirmDelay()), -1) {
-
+        final int minDelay = Math.max(1, CFG_LINKGRABBER.CFG.getAutoConfirmDelay());
+        int maxDelay = CFG_LINKGRABBER.CFG.getAutoConfirmMaxDelay();
+        if (maxDelay <= 0) {
+            maxDelay = -1;
+        } else if (maxDelay < minDelay) {
+            maxDelay = minDelay;
+        }
+        delayer = new DelayedRunnable(minDelay, maxDelay) {
             @Override
             public String getID() {
                 return "AutoConfirmButton";
@@ -53,6 +61,19 @@ public class AutoStartManager implements GenericConfigEventListener<Boolean> {
 
             @Override
             public void delayedrun() {
+                final SelectionInfo<CrawledPackage, CrawledLink> selectionInfo;
+                if (!Application.isHeadless() && CFG_LINKGRABBER.CFG.isAutoStartConfirmSidebarFilterEnabled()) {
+                    /* dirty workaround */
+                    selectionInfo = new EDTHelper<SelectionInfo<CrawledPackage, CrawledLink>>() {
+                        @Override
+                        public SelectionInfo<CrawledPackage, CrawledLink> edtRun() {
+                            LinkGrabberTable.getInstance().getModel().fireStructureChange(true);
+                            return LinkGrabberTable.getInstance().getSelectionInfo(false, true);
+                        }
+                    }.getReturnValue();
+                } else {
+                    selectionInfo = LinkCollector.getInstance().getSelectionInfo();
+                }
                 LinkCollector.getInstance().getQueue().add(new QueueAction<Void, RuntimeException>() {
                     @Override
                     protected Void run() throws RuntimeException {
@@ -72,20 +93,6 @@ public class AutoStartManager implements GenericConfigEventListener<Boolean> {
                         default:
                             autoStart = globalAutoStart;
                             break;
-                        }
-                        final SelectionInfo<CrawledPackage, CrawledLink> selectionInfo;
-                        if (!Application.isHeadless() && CFG_LINKGRABBER.CFG.isAutoStartConfirmSidebarFilterEnabled()) {
-                            /* dirty workaround */
-                            selectionInfo = new EDTHelper<SelectionInfo<CrawledPackage, CrawledLink>>() {
-
-                                @Override
-                                public SelectionInfo<CrawledPackage, CrawledLink> edtRun() {
-                                    LinkGrabberTable.getInstance().getModel().fireStructureChange(true);
-                                    return LinkGrabberTable.getInstance().getSelectionInfo(false, true);
-                                }
-                            }.getReturnValue();
-                        } else {
-                            selectionInfo = LinkCollector.getInstance().getSelectionInfo();
                         }
                         final List<AbstractNode> list = new ArrayList<AbstractNode>(selectionInfo.getChildren().size());
                         boolean createNewSelection = false;
@@ -108,7 +115,7 @@ public class AutoStartManager implements GenericConfigEventListener<Boolean> {
                             if (!CFG_LINKGRABBER.CFG.isAutoConfirmManagerAssignPriorityEnabled()) {
                                 priority = null;
                             } else {
-                                priority = CFG_LINKGRABBER.CFG.getAutoConfirmManagerPiority();
+                                priority = CFG_LINKGRABBER.CFG.getAutoConfirmManagerPriority();
                             }
                             final SelectionInfo<CrawledPackage, CrawledLink> si;
                             if (createNewSelection) {
@@ -128,12 +135,39 @@ public class AutoStartManager implements GenericConfigEventListener<Boolean> {
         };
     }
 
+    private final WeakHashMap<LinkCollectorCrawler, Boolean> resetMap = new WeakHashMap<LinkCollectorCrawler, Boolean>();
+
+    public void onCrawlerFinished(LinkCollectorCrawler linkCrawler) {
+        final Boolean resetFlag;
+        synchronized (resetMap) {
+            resetFlag = resetMap.get(linkCrawler);
+        }
+        if (Boolean.TRUE.equals(resetFlag)) {
+            resetAndStart(false);
+        }
+    }
+
     public void onLinkAdded(CrawledLink link) {
         if (globalAutoStart || globalAutoConfirm || link.isAutoConfirmEnabled() || link.isAutoStartEnabled() || link.isForcedAutoStartEnabled()) {
             final LinkCollectingInformation collectingInfo = link.getCollectingInfo();
-            if (collectingInfo != null && collectingInfo.getLinkCrawler().isCollecting()) {
-                return;
+            if (collectingInfo != null) {
+                final JobLinkCrawler linkCrawler = collectingInfo.getLinkCrawler();
+                synchronized (resetMap) {
+                    resetMap.put(linkCrawler, Boolean.TRUE);
+                    if (delayer.getMaximumDelay() == -1 && collectingInfo.getLinkCrawler().isCollecting()) {
+                        resetAndStart(true);
+                        return;
+                    } else {
+                        resetMap.remove(linkCrawler);
+                    }
+                }
             }
+            resetAndStart(false);
+        }
+    }
+
+    protected void resetAndStart(final boolean onlyWhenActive) {
+        if (!onlyWhenActive || delayer.isDelayerActive()) {
             delayer.resetAndStart();
             if (eventSender.hasListener()) {
                 eventSender.fireEvent(new AutoStartManagerEvent(this, AutoStartManagerEvent.Type.RESET));

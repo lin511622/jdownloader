@@ -47,6 +47,12 @@ public class NZBSAXHandler extends DefaultHandler {
         final ArrayList<DownloadLink> downloadLinks = new ArrayList<DownloadLink>();
         final NZBSAXHandler handler = new NZBSAXHandler(downloadLinks);
         final SAXParserFactory factory = SAXParserFactory.newInstance();
+        // www.owasp.org/index.php/XML_External_Entity_(XXE)_Prevention_Cheat_Sheet
+        factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+        factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+        factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
+        factory.setXIncludeAware(false);
+        factory.setValidating(false);
         final SAXParser saxParser = factory.newSAXParser();
         try {
             saxParser.parse(new InputSource(is), handler);
@@ -177,8 +183,11 @@ public class NZBSAXHandler extends DefaultHandler {
             // XXXXX - "Filename.jpg" [XX/XX] 52,44 MB yEnc (1/41)
             String nameBySubject = new Regex(subject, "( |^)\"([^\"]*?\\.[a-z0-9]{2,4})\"").getMatch(1);
             if (nameBySubject == null) {
-                // XXX - NNNNNNNN - XXX XXX - NNNNNN - [0001 of 0100] - XX - 100.52 Kb - Filename.jpg (1/1)
-                nameBySubject = new Regex(subject, "(.+ |^)(.*?) \\(1/\\d+").getMatch(1);
+                nameBySubject = new Regex(subject, "( \"|^\"?)([^\"]*?\\.[a-z0-9]{2,4})\"").getMatch(1);
+                if (nameBySubject == null) {
+                    // XXX - NNNNNNNN - XXX XXX - NNNNNN - [0001 of 0100] - XX - 100.52 Kb - Filename.jpg (1/1)
+                    nameBySubject = new Regex(subject, "(.+ |^)(.*?) \\(1/\\d+").getMatch(1);
+                }
             }
             if (nameBySubject == null) {
                 final String fileNameExtension = Files.getExtension(subject);

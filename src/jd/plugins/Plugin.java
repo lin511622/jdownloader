@@ -63,9 +63,12 @@ import org.appwork.utils.StringUtils;
 import org.appwork.utils.logging2.LogInterface;
 import org.appwork.utils.logging2.extmanager.LoggerFactory;
 import org.appwork.utils.net.httpconnection.HTTPConnectionUtils;
+import org.appwork.utils.net.httpconnection.HTTPConnectionUtils.DispositionHeader;
 import org.appwork.utils.net.httpconnection.HTTPProxy;
+import org.jdownloader.auth.AuthenticationInfo.Type;
 import org.jdownloader.auth.Login;
 import org.jdownloader.captcha.v2.Challenge;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v2.RecaptchaV2Challenge;
 import org.jdownloader.captcha.v2.solverjob.SolverJob;
 import org.jdownloader.gui.IconKey;
 import org.jdownloader.gui.dialog.AskCrawlerPasswordDialogInterface;
@@ -190,8 +193,17 @@ public abstract class Plugin implements ActionListener {
     }
 
     public static String getFileNameFromDispositionHeader(final URLConnectionAdapter urlConnection) {
+        final DispositionHeader dispositionHeader = parseDispositionHeader(urlConnection);
+        if (dispositionHeader != null) {
+            return dispositionHeader.getFilename();
+        } else {
+            return null;
+        }
+    }
+
+    public static DispositionHeader parseDispositionHeader(final URLConnectionAdapter urlConnection) {
         final String contentDisposition = urlConnection.getHeaderField(HTTPConstants.HEADER_RESPONSE_CONTENT_DISPOSITION);
-        return HTTPConnectionUtils.getFileNameFromDispositionHeader(contentDisposition);
+        return HTTPConnectionUtils.parseDispositionHeader(contentDisposition);
     }
 
     /**
@@ -381,7 +393,7 @@ public abstract class Plugin implements ActionListener {
      * @return
      * @throws PluginException
      */
-    protected Login requestLogins(String message, DownloadLink link) throws PluginException {
+    protected Login requestLogins(String message, String realm, DownloadLink link) throws PluginException {
         if (message == null) {
             message = _JDT.T.Plugin_requestLogins_message();
         }
@@ -392,15 +404,26 @@ public abstract class Plugin implements ActionListener {
             link.addPluginProgress(prg);
             final AskUsernameAndPasswordDialogInterface handle = UIOManager.I().show(AskUsernameAndPasswordDialogInterface.class, new AskForUserAndPasswordDialog(message, link));
             if (handle.getCloseReason() == CloseReason.OK) {
-                String password = handle.getPassword();
+                final String password = handle.getPassword();
                 if (StringUtils.isEmpty(password)) {
                     throw new PluginException(LinkStatus.ERROR_FATAL, _JDT.T.plugins_errors_wrongpassword());
                 }
-                String username = handle.getUsername();
+                final String username = handle.getUsername();
                 if (StringUtils.isEmpty(username)) {
                     throw new PluginException(LinkStatus.ERROR_FATAL, _JDT.T.plugins_errors_wrongusername());
                 }
-                return new Login(username, password);
+                final Type type;
+                if (StringUtils.startsWithCaseInsensitive(link.getDownloadURL(), "ftp")) {
+                    type = Type.FTP;
+                } else {
+                    type = Type.HTTP;
+                }
+                return new Login(type, realm, link.getHost(), username, password, false) {
+                    @Override
+                    public boolean isRememberSelected() {
+                        return handle.isRememberSelected();
+                    }
+                };
             } else {
                 throw new PluginException(LinkStatus.ERROR_FATAL, _JDT.T.plugins_errors_wrongpassword());
             }
@@ -499,7 +522,7 @@ public abstract class Plugin implements ActionListener {
         cleanupLastChallengeResponse();
         br = null;
         for (final File clean : cleanUpCaptchaFiles) {
-            if (!clean.delete()) {
+            if (clean != null && !clean.delete()) {
                 clean.deleteOnExit();
             }
         }
@@ -570,11 +593,19 @@ public abstract class Plugin implements ActionListener {
     /**
      * Returns the time in ms until a captcha request times out. this can be different for every plugin.
      *
-     * @PluginDevelopers: Please do not use the @Override Annotation when overriding this method. At least not until 2.0 stable release
+     *
      * @return
      */
-    public int getCaptchaTimeout() {
+    public int getChallengeTimeout(Challenge<?> challenge) {
         return CFG_CAPTCHA.CFG.getDefaultChallengeTimeout();
+    }
+
+    public boolean keepAlive(Challenge<?> challenge) {
+        if (challenge != null && challenge instanceof RecaptchaV2Challenge) {
+            return true;
+        } else {
+            return false;
+        }
     }
 
     /**
@@ -605,6 +636,8 @@ public abstract class Plugin implements ActionListener {
             output = output.replace("\\", "∖");
             output = output.replace("*", "#");
             output = output.replace("?", "¿");
+            // not illegal
+            // output = output.replace("!", "¡");
             output = output.replace("!", "¡");
             output = output.replace("\"", "'");
             return output;
@@ -759,10 +792,6 @@ public abstract class Plugin implements ActionListener {
      */
     public String siteSupportedPath() {
         return null;
-    }
-
-    public int getChallengeTimeout(Challenge<?> captchaChallenge) {
-        return -1;
     }
 
     protected List<Challenge<?>> challenges = null;

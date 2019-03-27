@@ -5,6 +5,8 @@ import java.util.Set;
 import java.util.WeakHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
 
+import jd.controlling.downloadcontroller.DownloadControllerConfig;
+import jd.controlling.faviconcontroller.FavIconsConfig;
 import jd.controlling.linkchecker.LinkCheckerConfig;
 import jd.controlling.linkcrawler.LinkCrawlerConfig;
 
@@ -21,9 +23,7 @@ import org.appwork.utils.swing.dialog.ExtFileSystemViewSettings;
 import org.jdownloader.controlling.ffmpeg.FFmpegSetup;
 import org.jdownloader.gui.notify.gui.CFG_BUBBLE;
 import org.jdownloader.gui.shortcuts.ShortcutSettings;
-import org.jdownloader.jdserv.stats.StatsManagerConfigV2;
 import org.jdownloader.logging.LogController;
-import org.jdownloader.phantomjs.PhantomJSConfig;
 import org.jdownloader.plugins.config.PluginConfigInterface;
 import org.jdownloader.plugins.config.PluginJsonConfig;
 import org.jdownloader.plugins.controller.PluginClassLoader;
@@ -47,6 +47,7 @@ import org.jdownloader.settings.staticreferences.CFG_PACKAGIZER;
 import org.jdownloader.settings.staticreferences.CFG_RECONNECT;
 import org.jdownloader.settings.staticreferences.CFG_SILENTMODE;
 import org.jdownloader.updatev2.InternetConnectionSettings;
+import org.jdownloader.updatev2.LastChanceSettings;
 import org.jdownloader.updatev2.UpdateSettings;
 import org.jdownloader.updatev2.gui.LAFOptions;
 
@@ -73,22 +74,22 @@ public class AdvancedConfigManager {
         register(CFG_MYJD.CFG);
         register(JsonConfig.create(AccountSettings.class));
         register(CFG_GUI.CFG);
-        register(JsonConfig.create(PhantomJSConfig.class));
         register(JsonConfig.create(LinkCheckerConfig.class));
         register(JsonConfig.create(LinkCrawlerConfig.class));
+        register(JsonConfig.create(DownloadControllerConfig.class));
         register(CFG_LINKGRABBER.CFG);
         register(CFG_LINKCOLLECTOR.CFG);
         register(CFG_RECONNECT.CFG);
         register(CFG_API.CFG);
         register(CFG_PACKAGIZER.CFG);
         register(JsonConfig.create(FFmpegSetup.class));
-        register(JsonConfig.create(StatsManagerConfigV2.class));
         register(JsonConfig.create(LogConfig.class));
         register(JsonConfig.create(ShortcutSettings.class));
         register(JsonConfig.create(RtmpdumpSettings.class));
         register(JsonConfig.create(UpdateSettings.class));
+        register(JsonConfig.create(LastChanceSettings.class));
         register(JsonConfig.create(ExtFileSystemViewSettings.class));
-
+        register(JsonConfig.create(FavIconsConfig.class));
         register(JsonConfig.create(SoundSettings.class));
         register(CFG_BUBBLE.CFG);
         register(CFG_CAPTCHA.CFG);
@@ -168,5 +169,4 @@ public class AdvancedConfigManager {
         ret.addAll(listPluginsInterfaces());
         return ret;
     }
-
 }

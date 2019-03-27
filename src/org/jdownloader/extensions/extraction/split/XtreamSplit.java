@@ -13,7 +13,6 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package org.jdownloader.extensions.extraction.split;
 
 import java.io.EOFException;
@@ -49,9 +48,9 @@ import org.jdownloader.extensions.extraction.ExtractionController;
 import org.jdownloader.extensions.extraction.ExtractionControllerConstants;
 import org.jdownloader.extensions.extraction.ExtractionControllerException;
 import org.jdownloader.extensions.extraction.ExtractionExtension;
+import org.jdownloader.extensions.extraction.FLUSH_MODE;
 import org.jdownloader.extensions.extraction.IExtraction;
 import org.jdownloader.extensions.extraction.Item;
-import org.jdownloader.extensions.extraction.MissingArchiveFile;
 import org.jdownloader.extensions.extraction.content.PackedFile;
 import org.jdownloader.extensions.extraction.gui.iffileexistsdialog.IfFileExistsDialog;
 import org.jdownloader.extensions.extraction.multi.ArchiveException;
@@ -59,14 +58,16 @@ import org.jdownloader.extensions.extraction.multi.CheckException;
 import org.jdownloader.settings.IfFileExistsAction;
 
 public class XtreamSplit extends IExtraction {
-
     private final static int                       HEADER_SIZE = 104;
-
     private boolean                                md5         = false;
     private File                                   outputFile;
     private final WeakHashMap<ArchiveFile, byte[]> hashes      = new WeakHashMap<ArchiveFile, byte[]>();
-
     private final SplitType                        splitType   = SplitType.XTREMSPLIT;
+    private final ExtractionExtension              extension;
+
+    public XtreamSplit(ExtractionExtension extension) {
+        this.extension = extension;
+    }
 
     public Archive buildArchive(ArchiveFactory link, boolean allowDeepInspection) throws ArchiveException {
         return SplitType.createArchive(link, splitType, allowDeepInspection);
@@ -81,6 +82,10 @@ public class XtreamSplit extends IExtraction {
     public void extract(ExtractionController ctrl) {
         final Archive archive = getExtractionController().getArchive();
         final FileBytesCache cache = getExtractionController().getFileBytesCache();
+        FLUSH_MODE flushMode = getExtractionController().getExtension().getSettings().getFlushMode();
+        if (flushMode == null) {
+            flushMode = FLUSH_MODE.NONE;
+        }
         RandomAccessFile fos = null;
         FileBytesCacheFlusher flusher = null;
         final AtomicBoolean fileOpen = new AtomicBoolean(false);
@@ -150,7 +155,6 @@ public class XtreamSplit extends IExtraction {
             final RandomAccessFile ffos = fos;
             final NullsafeAtomicReference<IOException> ioException = new NullsafeAtomicReference<IOException>(null);
             flusher = new FileBytesCacheFlusher() {
-
                 @Override
                 public void flushed() {
                 }
@@ -197,7 +201,6 @@ public class XtreamSplit extends IExtraction {
                         }
                         partLength = partLength - toBeSkipped;
                     }
-
                     long partRead = 0;
                     // Skip md5 hashes at the end if it's the last file
                     final boolean isItTheLastFile = partIndex == (archive.getArchiveFiles().size() - 1);
@@ -219,7 +222,7 @@ public class XtreamSplit extends IExtraction {
                                 throw ioException.get();
                             }
                             // Sum up bytes for control
-                            getExtractionController().addAndGetProcessedBytes(dataRead);
+                            getExtractionController().addProcessedBytesAndPauseIfNeeded(dataRead);
                             partRead += dataRead;
                             if (md5) {
                                 // Update MD5
@@ -229,7 +232,6 @@ public class XtreamSplit extends IExtraction {
                             throw new EOFException("EOF during merge");
                         }
                     }
-
                     // Check MD5 hashes
                     if (md5) {
                         final byte[] calculatedHash = md.digest();
@@ -260,7 +262,6 @@ public class XtreamSplit extends IExtraction {
         } finally {
             final FileBytesCacheFlusher fflusher = flusher;
             cache.execute(new Runnable() {
-
                 @Override
                 public void run() {
                     if (fileOpen.get()) {
@@ -273,19 +274,26 @@ public class XtreamSplit extends IExtraction {
                         }
                     }
                 }
-
             });
-            try {
+            if (fos != null) {
                 try {
-                    if (fos != null) {
-                        fos.getChannel().force(true);
-                    }
-                } finally {
-                    if (fos != null) {
+                    try {
+                        switch (flushMode) {
+                        case FULL:
+                            fos.getChannel().force(true);
+                            break;
+                        case DATA:
+                            fos.getChannel().force(false);
+                            break;
+                        default:
+                            break;
+                        }
+                    } finally {
                         fos.close();
                     }
+                } catch (Throwable e) {
+                    getExtractionController().getLogger().log(e);
                 }
-            } catch (Throwable e) {
             }
         }
     }
@@ -339,7 +347,6 @@ public class XtreamSplit extends IExtraction {
                 final RandomAccessFile raf = IO.open(lastFile, "r");
                 try {
                     awfc = new AWFCUtils(new InputStream() {
-
                         @Override
                         public int read() throws IOException {
                             return raf.read();
@@ -384,16 +391,12 @@ public class XtreamSplit extends IExtraction {
     public DummyArchive checkComplete(Archive archive) throws CheckException {
         if (archive.getSplitType() == splitType) {
             try {
-                final DummyArchive ret = new DummyArchive(archive, splitType.name());
-                boolean hasMissingArchiveFiles = false;
+                final DummyArchive dummyArchive = new DummyArchive(archive, splitType);
                 for (ArchiveFile archiveFile : archive.getArchiveFiles()) {
-                    if (archiveFile instanceof MissingArchiveFile) {
-                        hasMissingArchiveFiles = true;
-                    }
-                    ret.add(new DummyArchiveFile(archiveFile));
+                    dummyArchive.add(new DummyArchiveFile(archiveFile));
                 }
                 final ArchiveFile firstFile = archive.getArchiveFiles().get(0);
-                if (hasMissingArchiveFiles == false && firstFile.exists()) {
+                if (dummyArchive.isComplete() && firstFile.exists()) {
                     final String firstArchiveFile = firstFile.getFilePath();
                     final String partNumberOfFirstArchiveFile = splitType.getPartNumberString(firstArchiveFile);
                     if (splitType.getFirstPartIndex() != splitType.getPartNumber(partNumberOfFirstArchiveFile)) {
@@ -415,13 +418,13 @@ public class XtreamSplit extends IExtraction {
                         final List<ArchiveFile> missingArchiveFiles = SplitType.getMissingArchiveFiles(archive, splitType, numberOfParts);
                         if (missingArchiveFiles != null) {
                             for (ArchiveFile missingArchiveFile : missingArchiveFiles) {
-                                ret.add(new DummyArchiveFile(missingArchiveFile));
+                                dummyArchive.add(new DummyArchiveFile(missingArchiveFile));
                             }
                         }
-                        if (ret.getSize() < numberOfParts) {
-                            throw new CheckException("Missing archiveParts(" + numberOfParts + "!=" + ret.getSize() + ") for Archive(" + archive.getName() + ")");
-                        } else if (ret.getSize() > numberOfParts) {
-                            throw new CheckException("Too many archiveParts(" + numberOfParts + "!=" + ret.getSize() + ") for Archive(" + archive.getName() + ")");
+                        if (dummyArchive.getSize() < numberOfParts) {
+                            throw new CheckException("Missing archiveParts(" + numberOfParts + "!=" + dummyArchive.getSize() + ") for Archive(" + archive.getName() + ")");
+                        } else if (dummyArchive.getSize() > numberOfParts) {
+                            throw new CheckException("Too many archiveParts(" + numberOfParts + "!=" + dummyArchive.getSize() + ") for Archive(" + archive.getName() + ")");
                         }
                     } finally {
                         if (is != null) {
@@ -429,7 +432,7 @@ public class XtreamSplit extends IExtraction {
                         }
                     }
                 }
-                return ret;
+                return dummyArchive;
             } catch (CheckException e) {
                 throw e;
             } catch (Throwable e) {
@@ -454,5 +457,4 @@ public class XtreamSplit extends IExtraction {
         }
         return false;
     }
-
 }

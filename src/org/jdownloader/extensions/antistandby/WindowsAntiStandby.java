@@ -22,15 +22,12 @@ import org.appwork.utils.logging2.LogSource;
 import org.jdownloader.jna.windows.Kernel32;
 import org.jdownloader.logging.LogController;
 
-import jd.controlling.downloadcontroller.DownloadWatchDog;
-
 public class WindowsAntiStandby extends Thread implements Runnable {
 
-    private final AtomicBoolean        lastState = new AtomicBoolean(false);
-    private static final int           sleep     = 5000;
+    private final AtomicBoolean        lastEnabledState         = new AtomicBoolean(false);
+    private final AtomicBoolean        lastDisplayRequiredState = new AtomicBoolean(false);
+    private static final int           sleep                    = 5000;
     private final AntiStandbyExtension jdAntiStandby;
-
-    private final LogSource logger;
 
     public WindowsAntiStandby(final AntiStandbyExtension jdAntiStandby) {
         super();
@@ -38,35 +35,21 @@ public class WindowsAntiStandby extends Thread implements Runnable {
         this.setDaemon(true);
         setName("WindowsAntiStandby");
 
-        logger = LogController.CL(AntiStandbyExtension.class);
     }
 
     @Override
     public void run() {
+        final LogSource logger = LogController.CL(WindowsAntiStandby.class);
         try {
             while (jdAntiStandby.isAntiStandbyThread()) {
-                switch (jdAntiStandby.getMode()) {
-                case DOWNLOADING:
-                    if (DownloadWatchDog.getInstance().getStateMachine().isState(DownloadWatchDog.RUNNING_STATE, DownloadWatchDog.STOPPING_STATE)) {
-                        enableAntiStandby(true);
-                    } else {
-                        enableAntiStandby(false);
-                    }
-                    break;
-                case RUNNING:
-                    enableAntiStandby(true);
-                    break;
-                default:
-                    logger.finest("JDAntiStandby: Config error (unknown mode: " + jdAntiStandby.getMode() + ")");
-                    break;
-                }
+                enableAntiStandby(logger, jdAntiStandby.requiresAntiStandby());
                 sleep(sleep);
             }
         } catch (Throwable e) {
             logger.log(e);
         } finally {
             try {
-                enableAntiStandby(false);
+                enableAntiStandby(logger, false);
             } catch (final Throwable e) {
             } finally {
                 logger.fine("JDAntiStandby: Terminated");
@@ -75,15 +58,17 @@ public class WindowsAntiStandby extends Thread implements Runnable {
         }
     }
 
-    private void enableAntiStandby(final boolean enabled) {
-        if (lastState.compareAndSet(!enabled, enabled)) {
+    private void enableAntiStandby(final LogSource logger, final boolean enabled) {
+        final boolean displayRequired = jdAntiStandby.getSettings().isDisplayRequired();
+        if (lastEnabledState.compareAndSet(!enabled, enabled) || lastDisplayRequiredState.compareAndSet(!displayRequired, displayRequired)) {
             if (enabled) {
-                if (jdAntiStandby.getSettings().isDisplayRequired()) {
+                if (displayRequired) {
                     Kernel32.INSTANCE.SetThreadExecutionState(Kernel32.ES_CONTINUOUS | Kernel32.ES_SYSTEM_REQUIRED | Kernel32.ES_DISPLAY_REQUIRED);
+                    logger.fine("JDAntiStandby: Start and Prevent Screensaver");
                 } else {
                     Kernel32.INSTANCE.SetThreadExecutionState(Kernel32.ES_CONTINUOUS | Kernel32.ES_SYSTEM_REQUIRED);
+                    logger.fine("JDAntiStandby: Start");
                 }
-                logger.fine("JDAntiStandby: Start");
             } else {
                 Kernel32.INSTANCE.SetThreadExecutionState(Kernel32.ES_CONTINUOUS);
                 logger.fine("JDAntiStandby: Stop");

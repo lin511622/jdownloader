@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.decrypter;
 
 import java.util.ArrayList;
@@ -28,11 +27,11 @@ import jd.plugins.DownloadLink;
 import jd.plugins.FilePackage;
 
 import org.appwork.utils.StringUtils;
+import org.jdownloader.controlling.filter.CompiledFiletypeFilter;
 import org.jdownloader.plugins.components.antiDDoSForDecrypt;
 
-@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "8muses.com" }, urls = { "https?://(?:www\\.)?8muses\\.com/(?:index/category/[a-z0-9\\-_]+|album(?:/[a-z0-9\\-_]+){1,3})" }) 
+@DecrypterPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "8muses.com" }, urls = { "https?://(?:www\\.)?8muses\\.com/(?:comix/|comics/)?(?:index/category/[a-z0-9\\-_]+|album(?:/[a-z0-9\\-_]+){1,6})" })
 public class EightMusesComDecrypter extends antiDDoSForDecrypt {
-
     public EightMusesComDecrypter(PluginWrapper wrapper) {
         super(wrapper);
     }
@@ -46,21 +45,36 @@ public class EightMusesComDecrypter extends antiDDoSForDecrypt {
             decryptedLinks.add(this.createOfflinelink(parameter));
             return decryptedLinks;
         }
-        String fpName = parameter.substring(parameter.lastIndexOf("/") + 1);
+        String fpName = br.getRegex("<title>(.*?)</title>").getMatch(0);
+        if (fpName == null) {
+            fpName = parameter.substring(parameter.lastIndexOf("/") + 1);
+        }
         String[] categories = br.getRegex("(/index/category/[a-z0-9\\-_]+)\" data\\-original\\-title").getColumn(0);
         if (categories == null || categories.length == 0) {
             categories = br.getRegex("(\"|')(/album(?:/[a-z0-9\\-_]+){2,3})\\1").getColumn(1);
         }
         final String[] links = br.getRegex("(/picture/[^<>\"]*?)\"").getColumn(0);
         if ((links == null || links.length == 0) && (categories == null || categories.length == 0)) {
-            logger.warning("Decrypter broken for link: " + parameter);
-            return null;
+            final String[] issues = br.getRegex("href=\"([^<>\"]+/Issue-\\d+)\">").getColumn(0);
+            if (issues != null && issues.length > 0) {
+                for (String issue : issues) {
+                    issue = Request.getLocation(issue, br.getRequest());
+                    final DownloadLink dl = createDownloadlink(issue);
+                    decryptedLinks.add(dl);
+                    logger.info("issue: " + issue);
+                }
+                return decryptedLinks;
+            }
+            logger.info("Unsupported or offline url");
+            return decryptedLinks;
         }
         if (links != null && links.length > 0) {
             final FilePackage fp = FilePackage.getInstance();
             fp.setName(Encoding.htmlDecode(fpName.trim()));
             for (final String singleLink : links) {
                 final DownloadLink dl = createDownloadlink(Request.getLocation(singleLink, br.getRequest()));
+                dl.setMimeHint(CompiledFiletypeFilter.ImageExtensions.JPG);
+                dl.setAvailable(true);
                 fp.add(dl);
                 decryptedLinks.add(dl);
             }
@@ -75,8 +89,6 @@ public class EightMusesComDecrypter extends antiDDoSForDecrypt {
                 }
             }
         }
-
         return decryptedLinks;
     }
-
 }

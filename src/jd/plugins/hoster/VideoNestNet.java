@@ -74,7 +74,7 @@ import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
 import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
 import org.jdownloader.scripting.JavaScriptEngineFactory;
 
-@HostPlugin(revision = "$Revision: 32094 $", interfaceVersion = 3, names = { "videonest.net" }, urls = { "https?://(www\\.)?videonest\\.net/((vid)?embed-)?[a-z0-9]{12}" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "videonest.net" }, urls = { "https?://(www\\.)?videonest\\.net/((vid)?embed-)?[a-z0-9]{12}" }) 
 @SuppressWarnings("deprecation")
 public class VideoNestNet extends PluginForHost {
     // Site Setters
@@ -104,7 +104,7 @@ public class VideoNestNet extends PluginForHost {
     private final boolean              captchaSkipableSolveMedia    = false;
     // Connection Management
     // note: CAN NOT be negative or zero! (ie. -1 or 0) Otherwise math sections fail. .:. use [1-20]
-    private static final AtomicInteger totalMaxSimultanFreeDownload = new AtomicInteger(20);
+    private static AtomicInteger totalMaxSimultanFreeDownload = new AtomicInteger(20);
 
     // DEV NOTES
     // XfileShare Version 3.0.8.5

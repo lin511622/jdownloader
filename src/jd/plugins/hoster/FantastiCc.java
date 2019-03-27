@@ -13,7 +13,6 @@
 //
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.IOException;
@@ -29,14 +28,13 @@ import jd.plugins.HostPlugin;
 import jd.plugins.LinkStatus;
 import jd.plugins.PluginException;
 import jd.plugins.PluginForHost;
+import jd.plugins.components.PluginJSonUtils;
 
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "fantasti.cc" }, urls = { "http://(?:www\\.)?fantasti\\.cc/user/[^/]+/videos/upload/[^/]+/\\d+/" })
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "fantasti.cc" }, urls = { "https?://(?:www\\.)?fantasti\\.cc/(user/[^/]+/videos/upload/[^/]+/\\d+/|embed/\\d+/?)" })
 public class FantastiCc extends PluginForHost {
-
     public FantastiCc(PluginWrapper wrapper) {
         super(wrapper);
     }
-
     /* DEV NOTES */
     /* Porn_plugin */
     // Tags:
@@ -47,7 +45,6 @@ public class FantastiCc extends PluginForHost {
     private static final boolean free_resume       = true;
     private static final int     free_maxchunks    = 0;
     private static final int     free_maxdownloads = -1;
-
     private String               dllink            = null;
     private boolean              server_error      = false;
 
@@ -64,7 +61,7 @@ public class FantastiCc extends PluginForHost {
         br.setFollowRedirects(false);
         int counter = 0;
         String redirecturl = downloadLink.getDownloadURL();
-        downloadLink.setName(new Regex(redirecturl, "videos/upload/(.+)").getMatch(0));
+        downloadLink.setName(new Regex(redirecturl, "(?:videos/upload|embed)/(.+)").getMatch(0));
         do {
             this.br.getPage(redirecturl);
             redirecturl = this.br.getRedirectLocation();
@@ -75,7 +72,10 @@ public class FantastiCc extends PluginForHost {
         }
         String filename = br.getRegex("lass=\"title\"><h1>([^<>\"]*?)</h1>").getMatch(0);
         if (filename == null) {
-            filename = new Regex(downloadLink.getDownloadURL(), "fantasti\\.cc/user/[^/]+/videos/upload/([^/]+)/.+").getMatch(0);
+            filename = PluginJSonUtils.getJson(br, "title");
+            if (filename == null) {
+                filename = new Regex(downloadLink.getDownloadURL(), "fantasti\\.cc/user/[^/]+/videos/upload/([^/]+)/.+").getMatch(0);
+            }
         }
         dllink = br.getRegex("(http://[a-z0-9\\.\\-]+/get_file/[^<>\"\\&]*?)(?:\\&|\\'|\")").getMatch(0);
         if (dllink == null) {

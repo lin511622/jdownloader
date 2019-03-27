@@ -29,32 +29,26 @@ import org.jdownloader.gui.translate._GUI;
 import org.jdownloader.images.AbstractIcon;
 
 public class ConnectedDevicesTableModel extends ExtTableModel<ConnectedDevice> {
-
     private DelayedRunnable delayer;
 
     public ConnectedDevicesTableModel() {
         super("SolverOrderTableModel");
-
         update();
         delayer = new DelayedRunnable(1000) {
-
             @Override
             public void delayedrun() {
                 update();
             }
         };
         RemoteAPIController.getInstance().getUaController().getEventSender().addListener(new UserAgentListener() {
-
             @Override
             public void onRemovedAPIUserAgent(ConnectedDevice ua) {
                 delayer.resetAndStart();
-
             }
 
             @Override
             public void onNewAPIUserAgent(ConnectedDevice ua) {
                 delayer.resetAndStart();
-
             }
 
             @Override
@@ -66,7 +60,6 @@ public class ConnectedDevicesTableModel extends ExtTableModel<ConnectedDevice> {
 
     private void update() {
         new EDTRunner() {
-
             @Override
             protected void runInEDT() {
                 // make sure that this class is loaded. it contains the logic to restore old settings.
@@ -75,28 +68,23 @@ public class ConnectedDevicesTableModel extends ExtTableModel<ConnectedDevice> {
                 _replaceTableData(tableData, false);
             }
         };
-
     }
 
     @Override
     protected void initColumns() {
-
         addColumn(new ExtTextColumn<ConnectedDevice>(_GUI.T.ConnectedDevicesTableModel_frontend()) {
-
             @Override
             public String getStringValue(ConnectedDevice value) {
                 return value.getFrontendName();
             }
         });
         addColumn(new ExtTextColumn<ConnectedDevice>(_GUI.T.ConnectedDevicesTableModel_device()) {
-
             @Override
             public String getStringValue(ConnectedDevice value) {
                 return value.getDeviceName();
             }
         });
         addColumn(new ExtTextColumn<ConnectedDevice>(_GUI.T.ConnectedDevicesTableModel_connection()) {
-
             @Override
             public String getStringValue(ConnectedDevice value) {
                 return value.getConnectionString();
@@ -109,20 +97,14 @@ public class ConnectedDevicesTableModel extends ExtTableModel<ConnectedDevice> {
             protected MigPanel         editor;
             protected RendererMigPanel renderer;
             private RenderLabel        label;
-            private boolean            editable = true;
-
             {
                 editorBtn = new JButton("");
-
                 editorBtn.addActionListener(new ActionListener() {
-
                     @Override
                     public void actionPerformed(ActionEvent e) {
+                        stopCellEditing();
                         if (device != null) {
                             if (UIOManager.I().showConfirmDialog(0, _GUI.T.lit_are_you_sure(), _GUI.T.myjd_kill_connections_are_you_sure(), new AbstractIcon(IconKey.ICON_QUESTION, 32), _GUI.T.lit_yes(), null)) {
-                                editable = false;
-                                stopCellEditing();
-                                editorBtn.setEnabled(false);
                                 RemoteAPIController.getInstance().getUaController().disconnectDecice(device);
                                 update();
                             }
@@ -132,11 +114,9 @@ public class ConnectedDevicesTableModel extends ExtTableModel<ConnectedDevice> {
                 label = new RenderLabel();
                 rendererBtn = new JButton("");
                 this.editor = new MigPanel("ins 1", "[grow,fill]", "[18!]") {
-
                     @Override
                     public void requestFocus() {
                     }
-
                 };
                 editor.add(editorBtn);
                 this.renderer = new RendererMigPanel("ins 1", "[grow,fill]", "[18!]");
@@ -146,7 +126,7 @@ public class ConnectedDevicesTableModel extends ExtTableModel<ConnectedDevice> {
 
             @Override
             public boolean isEditable(ConnectedDevice obj) {
-                return editable;
+                return true;
             }
 
             @Override
@@ -201,9 +181,7 @@ public class ConnectedDevicesTableModel extends ExtTableModel<ConnectedDevice> {
             }
 
             public ExtTableHeaderRenderer getHeaderRenderer(final JTableHeader jTableHeader) {
-
                 final ExtTableHeaderRenderer ret = new ExtTableHeaderRenderer(this, jTableHeader) {
-
                     @Override
                     public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
                         super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
@@ -212,9 +190,7 @@ public class ConnectedDevicesTableModel extends ExtTableModel<ConnectedDevice> {
                         setText(_GUI.T.ConnectedDevicesTableModel_kill());
                         return this;
                     }
-
                 };
-
                 return ret;
             }
 

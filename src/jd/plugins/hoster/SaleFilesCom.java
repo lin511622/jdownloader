@@ -13,10 +13,11 @@
 //
 //    You should have received a copy of the GNU General Public License
 //    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 package jd.plugins.hoster;
 
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Locale;
 import java.util.Random;
@@ -26,15 +27,23 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
+import org.appwork.utils.StringUtils;
+import org.appwork.utils.formatter.SizeFormatter;
+import org.appwork.utils.formatter.TimeFormatter;
+import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
+import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
+
 import jd.PluginWrapper;
 import jd.config.Property;
 import jd.http.Browser;
 import jd.http.Cookies;
 import jd.http.URLConnectionAdapter;
+import jd.nutils.encoding.Base64;
 import jd.nutils.encoding.Encoding;
 import jd.parser.Regex;
 import jd.parser.html.Form;
 import jd.parser.html.HTMLParser;
+import jd.parser.html.InputField;
 import jd.plugins.Account;
 import jd.plugins.Account.AccountType;
 import jd.plugins.AccountInfo;
@@ -49,18 +58,11 @@ import jd.plugins.components.SiteType.SiteTemplate;
 import jd.plugins.components.UserAgents;
 import jd.utils.locale.JDL;
 
-import org.appwork.utils.formatter.SizeFormatter;
-import org.appwork.utils.formatter.TimeFormatter;
-import org.jdownloader.captcha.v2.challenge.keycaptcha.KeyCaptcha;
-import org.jdownloader.captcha.v2.challenge.recaptcha.v1.Recaptcha;
-
-@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "salefiles.com" }, urls = { "https?://(www\\.)?salefiles\\.com/(?:embed\\-)?[a-z0-9]{12}" }) 
+@HostPlugin(revision = "$Revision$", interfaceVersion = 3, names = { "salefiles.com" }, urls = { "https?://(www\\.)?salefiles\\.com/(?:embed\\-)?[a-z0-9]{12}" })
 public class SaleFilesCom extends PluginForHost {
-
     /* Some HTML code to identify different (error) states */
     private static final String            HTML_PASSWORDPROTECTED          = "<br><b>Passwor(d|t):</b> <input";
     private static final String            HTML_MAINTENANCE_MODE           = ">This server is in maintenance mode";
-
     /* Here comes our XFS-configuration */
     /* primary website url, take note of redirects */
     private static final String            COOKIE_HOST                     = "http://salefiles.com";
@@ -68,10 +70,8 @@ public class SaleFilesCom extends PluginForHost {
     private static final String            NICE_HOSTproperty               = COOKIE_HOST.replaceAll("(https://|http://|\\.|\\-)", "");
     /* domain names used within download links */
     private static final String            DOMAINS                         = "(salefiles\\.com)";
-
     /* Errormessages inside URLs */
     private static final String            URL_ERROR_PREMIUMONLY           = "/?op=login&redirect=";
-
     /* All kinds of XFS-plugin-configuration settings - be sure to configure this correctly when developing new XFS plugins! */
     /*
      * If activated, filename can be null - fuid will be used instead then. Also the code will check for imagehosts-continue-POST-forms and
@@ -84,40 +84,33 @@ public class SaleFilesCom extends PluginForHost {
     private static final boolean           VIDEOHOSTER_2                   = false;
     /* Enable this for imagehosts */
     private static final boolean           IMAGEHOSTER                     = false;
-
     private static final boolean           SUPPORTS_HTTPS                  = false;
     private static final boolean           SUPPORTS_HTTPS_FORCED           = false;
     private static final boolean           SUPPORTS_AVAILABLECHECK_ALT     = true;
     private static final boolean           SUPPORTS_AVAILABLECHECK_ABUSE   = true;
     private static final boolean           ENABLE_RANDOM_UA                = false;
     private static final boolean           ENABLE_HTML_FILESIZE_CHECK      = true;
-
     /* Waittime stuff */
     private static final boolean           WAITFORCED                      = false;
     private static final int               WAITSECONDSMIN                  = 3;
     private static final int               WAITSECONDSMAX                  = 100;
     private static final int               WAITSECONDSFORCED               = 5;
-
     /* Supported linktypes */
     private static final String            TYPE_EMBED                      = "https?://[A-Za-z0-9\\-\\.]+/embed\\-[a-z0-9]{12}";
     private static final String            TYPE_NORMAL                     = "https?://[A-Za-z0-9\\-\\.]+/[a-z0-9]{12}";
-
     /* Texts displaed to the user in some errorcases */
     private static final String            USERTEXT_ALLWAIT_SHORT          = "Waiting till new downloads can be started";
     private static final String            USERTEXT_MAINTENANCE            = "This server is under maintenance";
     private static final String            USERTEXT_PREMIUMONLY_LINKCHECK  = "Only downloadable via premium or registered";
-
     /* Properties */
     private static final String            PROPERTY_DLLINK_FREE            = "freelink";
     private static final String            PROPERTY_DLLINK_ACCOUNT_FREE    = "freelink2";
     private static final String            PROPERTY_DLLINK_ACCOUNT_PREMIUM = "premlink";
     private static final String            PROPERTY_PASS                   = "pass";
-
     /* Used variables */
     private String                         correctedBR                     = "";
     private String                         fuid                            = null;
     private String                         passCode                        = null;
-
     private static AtomicReference<String> agent                           = new AtomicReference<String>(null);
     /* note: CAN NOT be negative or zero! (ie. -1 or 0) Otherwise math sections fail. .:. use [1-20] */
     private static AtomicInteger           totalMaxSimultanFreeDownload    = new AtomicInteger(1);
@@ -132,10 +125,9 @@ public class SaleFilesCom extends PluginForHost {
      * General maintenance mode information: If an XFS website is in FULL maintenance mode (e.g. not only one url is in maintenance mode but
      * ALL) it is usually impossible to get any filename/filesize/status information!<br />
      * protocol: no https<br />
-     * captchatype: recaptcha<br />
+     * captchatype: recaptchaV2<br />
      * other:<br />
      */
-
     @SuppressWarnings({ "deprecation", "unused" })
     @Override
     public void correctDownloadLink(final DownloadLink link) {
@@ -179,10 +171,11 @@ public class SaleFilesCom extends PluginForHost {
         getPage(link.getDownloadURL());
         if (new Regex(correctedBR, "(No such file|>File Not Found<|>The file was removed by|Reason for deletion:\n|File Not Found|>The file expired)").matches()) {
             throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
+        } else if (correctedBR.contains("name=\"fname\" value=\"\"")) {
+            /* 2018-11-13: Special */
+            throw new PluginException(LinkStatus.ERROR_FILE_NOT_FOUND);
         }
-
         altbr = this.br.cloneBrowser();
-
         if (new Regex(correctedBR, HTML_MAINTENANCE_MODE).matches()) {
             if (SUPPORTS_AVAILABLECHECK_ABUSE) {
                 fileInfo[0] = this.getFnameViaAbuseLink(altbr, link);
@@ -226,14 +219,12 @@ public class SaleFilesCom extends PluginForHost {
             logger.warning("Alternative linkcheck failed!");
             return AvailableStatus.UNCHECKABLE;
         }
-
         scanInfo(fileInfo);
         // abbreviated over x chars long
         if (!inValidate(fileInfo[0]) && fileInfo[0].endsWith("&#133;") && SUPPORTS_AVAILABLECHECK_ABUSE) {
             logger.warning("filename length is larrrge");
             fileInfo[0] = this.getFnameViaAbuseLink(altbr, link);
         }
-
         if (fileInfo[0] == null && IMAGEHOSTER) {
             /* Imagehosts often do not show any filenames, at least not on the first page plus they often have their abuse-url disabled. */
             fileInfo[0] = this.fuid;
@@ -265,7 +256,6 @@ public class SaleFilesCom extends PluginForHost {
     private String[] scanInfo(final String[] fileInfo) {
         final String sharebox0 = "copy\\(this\\);.+>(.+) - ([\\d\\.]+ (?:B|KB|MB|GB))</a></textarea>[\r\n\t ]+</div>";
         final String sharebox1 = "copy\\(this\\);.+\\](.+) - ([\\d\\.]+ (?:B|KB|MB|GB))\\[/URL\\]";
-
         /* standard traits from base page */
         if (fileInfo[0] == null) {
             fileInfo[0] = new Regex(correctedBR, "You have requested.*?https?://(www\\.)?" + DOMAINS + "/" + fuid + "/(.*?)</font>").getMatch(2);
@@ -306,11 +296,11 @@ public class SaleFilesCom extends PluginForHost {
                             fileInfo[1] = new Regex(correctedBR, sharebox1).getMatch(1);
                             // generic failover#1
                             if (fileInfo[1] == null) {
-                                fileInfo[1] = new Regex(correctedBR, "(\\d+(?:\\.\\d+)? ?(KB|MB|GB))").getMatch(0);
+                                // fileInfo[1] = new Regex(correctedBR, "(\\d+(?:\\.\\d+)? ?(KB|MB|GB))").getMatch(0);
                             }
                             // generic failover#2
                             if (fileInfo[1] == null) {
-                                fileInfo[1] = new Regex(correctedBR, "(\\d+(?:\\.\\d+)? ?(?:B(?:ytes?)?))").getMatch(0);
+                                // fileInfo[1] = new Regex(correctedBR, "(\\d+(?:\\.\\d+)? ?(?:B(?:ytes?)?))").getMatch(0);
                             }
                         }
                     }
@@ -347,7 +337,7 @@ public class SaleFilesCom extends PluginForHost {
     private String getFilesizeViaAvailablecheckAlt(final Browser br, final DownloadLink dl) {
         String filesize = null;
         try {
-            postPage(br, COOKIE_HOST + "/?op=checkfiles", "op=checkfiles&process=Check+URLs&list=" + Encoding.urlEncode(dl.getDownloadURL()), false);
+            postPage(br, COOKIE_HOST + "/?op=check_files", "op=check_files&process=Check+URLs&list=" + Encoding.urlEncode(dl.getDownloadURL()), false);
             filesize = br.getRegex(">" + dl.getDownloadURL() + "</td><td style=\"color:green;\">Found</td><td>([^<>\"]*?)</td>").getMatch(0);
         } catch (final Throwable e) {
         }
@@ -513,26 +503,45 @@ public class SaleFilesCom extends PluginForHost {
                     }
                     dlForm.put("code", code.toString());
                     logger.info("Put captchacode " + code.toString() + " obtained by captcha metod \"plaintext captchas\" in the form.");
-                } else if (correctedBR.contains("/captchas/")) {
+                } else if (correctedBR.contains("/captchas/") || containsCaptchaWithinImageBase64()) {
                     logger.info("Detected captcha method \"Standard captcha\" for this host");
-                    final String[] sitelinks = HTMLParser.getHttpLinks(br.toString(), null);
-                    String captchaurl = null;
-                    if (sitelinks == null || sitelinks.length == 0) {
-                        logger.warning("Standard captcha captchahandling broken!");
-                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-                    }
-                    for (String link : sitelinks) {
-                        if (link.contains("/captchas/")) {
-                            captchaurl = link;
-                            break;
+                    String code = null;
+                    if (correctedBR.contains("/captchas/")) {
+                        String captchaurl = null;
+                        final String[] sitelinks = HTMLParser.getHttpLinks(br.toString(), null);
+                        if (sitelinks == null || sitelinks.length == 0) {
+                            logger.warning("Standard captcha captchahandling broken!");
+                            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                        }
+                        for (String link : sitelinks) {
+                            if (link.contains("/captchas/")) {
+                                captchaurl = link;
+                                break;
+                            }
+                        }
+                        if (captchaurl == null) {
+                            logger.warning("Standard captcha captchahandling broken!");
+                            throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
+                        }
+                        code = getCaptchaCode("xfilesharingprobasic", captchaurl, downloadLink);
+                    } else {
+                        // by raztoki
+                        // image to file
+                        final File imageFile = getLocalCaptchaFile("." + imageBase64[0]);
+                        // ensure that the file is created
+                        if (!imageFile.exists()) {
+                            imageFile.createNewFile();
+                        }
+                        final byte[] decoded = Base64.decode(imageBase64[1]);
+                        // write to file
+                        Files.write(imageFile.toPath(), decoded, StandardOpenOption.WRITE);
+                        code = getCaptchaCode("xfilesharingprobasic", imageFile, downloadLink);
+                        // it's crazy i know we return "" from captcha refresher/reloader AND empty submission...
+                        if ("".equals(code)) {
+                            throw new PluginException(LinkStatus.ERROR_CAPTCHA);
                         }
                     }
-                    if (captchaurl == null) {
-                        logger.warning("Standard captcha captchahandling broken!");
-                        throw new PluginException(LinkStatus.ERROR_PLUGIN_DEFECT);
-                    }
-                    String code = getCaptchaCode("xfilesharingprobasic", captchaurl, downloadLink);
-                    dlForm.put("code", code);
+                    dlForm.put("code", Encoding.urlEncode(code));
                     logger.info("Put captchacode " + code + " obtained by captcha metod \"Standard captcha\" in the form.");
                 } else if (new Regex(correctedBR, "(api\\.recaptcha\\.net|google\\.com/recaptcha/api/)").matches()) {
                     logger.info("Detected captcha method \"Re Captcha\" for this host");
@@ -548,7 +557,6 @@ public class SaleFilesCom extends PluginForHost {
                     skipWaittime = true;
                 } else if (br.containsHTML("solvemedia\\.com/papi/")) {
                     logger.info("Detected captcha method \"solvemedia\" for this host");
-
                     final org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia sm = new org.jdownloader.captcha.v2.challenge.solvemedia.SolveMedia(br);
                     File cf = null;
                     try {
@@ -620,6 +628,19 @@ public class SaleFilesCom extends PluginForHost {
             /* remove download slot */
             controlFree(-1);
         }
+    }
+
+    private String[] imageBase64 = null;
+
+    private boolean containsCaptchaWithinImageBase64() {
+        final String captchaTable = br.getRegex(".*(<\\s*table\\s*[^>]*>.*?>\\s*Enter code below:\\s*<.*?class=\"captcha_code\">.*?<\\s*/table\\s*>)").getMatch(0);
+        if (captchaTable != null) {
+            imageBase64 = new Regex(captchaTable, "<img src=\"data:image/([0-9a-zA-Z]+);base64,(.*?)\"").getRow(0);
+            if (imageBase64 != null && imageBase64.length == 2) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -708,14 +729,11 @@ public class SaleFilesCom extends PluginForHost {
     private void correctBR() throws NumberFormatException, PluginException {
         correctedBR = br.toString();
         ArrayList<String> regexStuff = new ArrayList<String>();
-
         // remove custom rules first!!! As html can change because of generic cleanup rules.
-
         /* generic cleanup */
         regexStuff.add("<\\!(\\-\\-.*?\\-\\-)>");
         regexStuff.add("(display: ?none;\">.*?</div>)");
         regexStuff.add("(visibility:hidden>.*?<)");
-
         for (String aRegex : regexStuff) {
             String results[] = new Regex(correctedBR, aRegex).getColumn(0);
             if (results != null) {
@@ -773,26 +791,21 @@ public class SaleFilesCom extends PluginForHost {
 
     private String decodeDownloadLink(final String s) {
         String decoded = null;
-
         try {
             Regex params = new Regex(s, "\\'(.*?[^\\\\])\\',(\\d+),(\\d+),\\'(.*?)\\'");
-
             String p = params.getMatch(0).replaceAll("\\\\", "");
             int a = Integer.parseInt(params.getMatch(1));
             int c = Integer.parseInt(params.getMatch(2));
             String[] k = params.getMatch(3).split("\\|");
-
             while (c != 0) {
                 c--;
                 if (k[c].length() != 0) {
                     p = p.replaceAll("\\b" + Integer.toString(c, a) + "\\b", k[c]);
                 }
             }
-
             decoded = p;
         } catch (Exception e) {
         }
-
         String finallink = null;
         if (decoded != null) {
             /* Open regex is possible because in the unpacked JS there are usually only 1 links */
@@ -866,13 +879,12 @@ public class SaleFilesCom extends PluginForHost {
             }
             wait = i;
         }
-
         wait -= passedTime;
         if (wait > 0) {
-            logger.info("Waiting waittime: " + wait);
+            logger.info("Waiting: " + wait);
             sleep(wait * 1000l, downloadLink);
         } else {
-            logger.info("Found no waittime");
+            logger.info("No waittime applied");
         }
     }
 
@@ -1182,7 +1194,18 @@ public class SaleFilesCom extends PluginForHost {
                 }
                 br.setFollowRedirects(true);
                 getPage(COOKIE_HOST + "/login.html");
-                final Form loginform = br.getFormbyProperty("name", "FL");
+                final Form forms[] = br.getForms();
+                Form loginform = null;
+                if (forms != null) {
+                    for (Form form : forms) {
+                        final InputField token = form.getInputFieldByName("token");
+                        final InputField op = form.getInputFieldByName("op");
+                        if (token != null && StringUtils.isNotEmpty(token.getValue()) && op != null && StringUtils.equalsIgnoreCase(op.getValue(), "login")) {
+                            loginform = form;
+                            break;
+                        }
+                    }
+                }
                 if (loginform == null) {
                     if ("de".equalsIgnoreCase(System.getProperty("user.language"))) {
                         throw new PluginException(LinkStatus.ERROR_PREMIUM, "\r\nPlugin defekt, bitte den JDownloader Support kontaktieren!", PluginException.VALUE_ID_PREMIUM_DISABLE);
@@ -1287,5 +1310,4 @@ public class SaleFilesCom extends PluginForHost {
     public SiteTemplate siteTemplateType() {
         return SiteTemplate.SibSoft_XFileShare;
     }
-
 }
